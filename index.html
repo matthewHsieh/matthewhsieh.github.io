@@ -1,26 +1,32 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Matthew Hsieh | 個人網頁</title>
+    <title>Matthew Hsieh | Digital Twin Engineer</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 </head>
 <body>
-    <nav class="navbar">
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
         <div class="nav-container">
-            <h2 class="nav-logo">Matthew Hsieh</h2>
-            <div class="nav-menu">
-                <a href="#home" class="nav-link">首頁</a>
-                <a href="#about" class="nav-link">關於我</a>
-                <a href="#skills" class="nav-link">技能</a>
-                <a href="#experience" class="nav-link">經驗</a>
-                <a href="#projects" class="nav-link">專案</a>
-                <a href="#contact" class="nav-link">聯絡</a>
+            <div class="nav-brand">
+                <h2 class="nav-logo">Matthew Hsieh</h2>
+                <span class="nav-subtitle">Digital Twin Engineer</span>
             </div>
-            <div class="hamburger">
+            <div class="nav-menu" id="nav-menu">
+                <a href="#home" class="nav-link">Home</a>
+                <a href="#about" class="nav-link">About</a>
+                <a href="#skills" class="nav-link">Skills</a>
+                <a href="#experience" class="nav-link">Experience</a>
+                <a href="#projects" class="nav-link">Projects</a>
+                <a href="#contact" class="nav-link">Contact</a>
+            </div>
+            <div class="hamburger" id="hamburger">
                 <span class="bar"></span>
                 <span class="bar"></span>
                 <span class="bar"></span>
@@ -28,196 +34,347 @@
         </div>
     </nav>
 
+    <!-- Hero Section -->
     <section id="home" class="hero">
+        <div class="hero-background">
+            <div class="hero-particles"></div>
+        </div>
         <div class="hero-container">
             <div class="hero-content">
-                <h1 class="hero-title">Hi, I'm <span class="highlight">Matthew Hsieh</span></h1>
-                <p class="hero-subtitle">數位孿生工程師 | Isaac Sim 專家 | AWS IoT 整合專家</p>
+                <div class="hero-badge">
+                    <i class="fas fa-cube"></i>
+                    <span>Digital Twin Expert</span>
+                </div>
+                <h1 class="hero-title">
+                    Hi, I'm <span class="gradient-text">Matthew Hsieh</span>
+                </h1>
+                <p class="hero-subtitle">
+                    Digital Twin Engineer | Isaac Sim Expert | AWS IoT Integration Specialist
+                </p>
                 <p class="hero-description">
-                    專精於工廠數位孿生、機器人模擬以及IoT設備整合，打造智慧工廠解決方案
+                    Specializing in factory digital twins, robotics simulation, and IoT device integration to build intelligent manufacturing solutions
                 </p>
                 <div class="hero-buttons">
-                    <a href="#projects" class="btn btn-primary">查看作品</a>
-                    <a href="#contact" class="btn btn-secondary">聯絡我</a>
+                    <a href="#projects" class="btn btn-primary">
+                        <i class="fas fa-rocket"></i>
+                        View Projects
+                    </a>
+                    <a href="#contact" class="btn btn-outline">
+                        <i class="fas fa-envelope"></i>
+                        Get in Touch
+                    </a>
                 </div>
+                <div class="hero-stats">
+                    <div class="stat-item">
+                        <div class="stat-number">1+</div>
+                        <div class="stat-label">Years Experience</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">10+</div>
+                        <div class="stat-label">Projects</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">2</div>
+                        <div class="stat-label">Major Exhibitions</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <div class="scroll-arrow">
+                <i class="fas fa-chevron-down"></i>
             </div>
         </div>
     </section>
 
+    <!-- About Section -->
     <section id="about" class="about">
         <div class="container">
-            <h2 class="section-title">關於我</h2>
+            <div class="section-header">
+                <span class="section-tag">About Me</span>
+                <h2 class="section-title">Transforming Manufacturing with Digital Innovation</h2>
+                <p class="section-subtitle">
+                    From quiet lab researcher to spotlight technical evangelist in less than 6 months
+                </p>
+            </div>
             <div class="about-content">
                 <div class="about-text">
-                    <p>
-                        我是一名專精於數位孿生技術的工程師，擅長使用 NVIDIA Isaac Sim 進行工廠模擬和機器人仿真。
-                        在工業 4.0 領域具備豐富的實務經驗，能夠建構完整的智慧工廠解決方案。
-                    </p>
-                    <p>
-                        專長於整合 AWS 雲端服務與 IoT 設備，建立端到端的數據流處理架構。
-                        致力於將實體工廠數位化，透過仿真與優化提升生產效率。
-                    </p>
-                    <p>
-                        <strong>學習歷程：</strong>建中科學班 → 清大工工（因健康因素肄業）→ 大同資工 → 交大AI碩士
-                    </p>
-                </div>
-                <div class="about-stats">
-                    <div class="stat">
-                        <h3>2+</h3>
-                        <p>年開發經驗</p>
+                    <div class="about-card">
+                        <div class="card-icon">
+                            <i class="fas fa-industry"></i>
+                        </div>
+                        <h3>Digital Twin Expertise</h3>
+                        <p>
+                            Specialized in digital twin technology development and intelligent factory solutions, 
+                            using NVIDIA Isaac Sim for complex industrial process simulation and AWS IoT platform 
+                            integration to assist manufacturing digital transformation.
+                        </p>
                     </div>
-                    <div class="stat">
-                        <h3>10+</h3>
-                        <p>完成專案</p>
+                    
+                    <div class="about-card">
+                        <div class="card-icon">
+                            <i class="fas fa-graduation-cap"></i>
+                        </div>
+                        <h3>Educational Journey</h3>
+                        <p class="education-path">
+                            <strong>Academic Path:</strong> Taipei First Girls' High School Science Class → 
+                            NTHU Industrial Engineering (left due to health reasons) → 
+                            Tatung Computer Science → NYCU AI Master's
+                        </p>
                     </div>
-                    <div class="stat">
-                        <h3>5+</h3>
-                        <p>技術領域</p>
+                    
+                    <div class="about-card highlight-card">
+                        <div class="card-icon">
+                            <i class="fas fa-star"></i>
+                        </div>
+                        <h3>Professional Philosophy</h3>
+                        <p>
+                            Committed to bridging the gap between R&D and practical applications. 
+                            I believe that technology should not just be impressive in labs, but should 
+                            solve real-world problems and create tangible value for customers.
+                        </p>
                     </div>
                 </div>
             </div>
         </div>
     </section>
 
+    <!-- Skills Section -->
     <section id="skills" class="skills">
         <div class="container">
-            <h2 class="section-title">技能專長</h2>
+            <div class="section-header">
+                <span class="section-tag">Technical Skills</span>
+                <h2 class="section-title">Core Competencies</h2>
+                <p class="section-subtitle">
+                    From simulation to cloud integration, full-stack industrial solutions
+                </p>
+            </div>
             <div class="skills-grid">
-                <div class="skill-category">
-                    <i class="fas fa-cube"></i>
-                    <h3>數位孿生 & 模擬</h3>
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fas fa-cube"></i>
+                    </div>
+                    <h3>Digital Twin & Simulation</h3>
                     <p>NVIDIA Isaac Sim, PhysX, Matlib</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="90"></div>
+                    </div>
                 </div>
-                <div class="skill-category">
-                    <i class="fas fa-robot"></i>
-                    <h3>機器人技術</h3>
-                    <p>ROS/ROS2, 路徑規劃, SLAM, 機器手臂控制</p>
+                
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3>Robotics Technology</h3>
+                    <p>ROS/ROS2, Path Planning, SLAM, Robotic Arm Control</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="85"></div>
+                    </div>
                 </div>
-                <div class="skill-category">
-                    <i class="fab fa-aws"></i>
-                    <h3>雲端 & IoT</h3>
-                    <p>AWS IoT Core, Lambda, EC2, S3, MQTT, 時序資料庫</p>
+                
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fab fa-aws"></i>
+                    </div>
+                    <h3>Cloud & IoT</h3>
+                    <p>AWS IoT Core, Lambda, EC2, S3, MQTT, Time Series DB</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="80"></div>
+                    </div>
                 </div>
-                <div class="skill-category">
-                    <i class="fas fa-code"></i>
-                    <h3>程式開發</h3>
+                
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>Programming</h3>
                     <p>Python, C++, JavaScript, Docker, Linux</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="85"></div>
+                    </div>
                 </div>
-                <div class="skill-category">
-                    <i class="fas fa-chart-line"></i>
-                    <h3>數據分析</h3>
+                
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h3>Data Analysis</h3>
                     <p>TensorFlow, PyTorch, OpenCV, NumPy, Pandas</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="75"></div>
+                    </div>
                 </div>
-                <div class="skill-category">
-                    <i class="fas fa-industry"></i>
-                    <h3>工業自動化</h3>
-                    <p>PLC程式設計, SCADA, OPC-UA, Modbus</p>
+                
+                <div class="skill-card">
+                    <div class="skill-icon">
+                        <i class="fas fa-cogs"></i>
+                    </div>
+                    <h3>Industrial Automation</h3>
+                    <p>PLC Programming, SCADA, OPC-UA, Modbus</p>
+                    <div class="skill-level">
+                        <div class="level-bar" data-level="70"></div>
+                    </div>
                 </div>
             </div>
         </div>
     </section>
 
+    <!-- Experience Section -->
     <section id="experience" class="experience">
         <div class="container">
-            <h2 class="section-title">工作經驗</h2>
+            <div class="section-header">
+                <span class="section-tag">Professional Journey</span>
+                <h2 class="section-title">Experience & Achievements</h2>
+                <p class="section-subtitle">
+                    A surreal journey from newcomer to global exhibition lead in under 6 months
+                </p>
+            </div>
+            
             <div class="experience-timeline">
-                <div class="experience-item">
-                    <div class="experience-date">2023 - 現在</div>
-                    <div class="experience-content">
-                        <div class="experience-header">
+                <div class="timeline-item">
+                    <div class="timeline-date">2024 - Present</div>
+                    <div class="timeline-content">
+                        <div class="company-info">
                             <h3>Senior Engineer</h3>
                             <h4>Pegatron Corporation</h4>
+                            <span class="duration">1+ Years</span>
                         </div>
-                        <p class="experience-description">
-                            <strong>入職不到半年的超現實旅程</strong>：從最初的技術可行性評估、開發過程中兼任 PM 角色，一路走到親自站上 GTC 展場。
-                            擅長 NVIDIA Isaac Sim 數位孿生技術開發、AWS IoT 雲端整合，協助製造業數位轉型。
+                        
+                        <p class="job-description">
+                            <strong>An Unexpected Journey:</strong> From initial technical feasibility assessment, serving as PM during development, 
+                            to personally standing on the GTC exhibition floor. Specialized in NVIDIA Isaac Sim digital twin technology 
+                            development and AWS IoT cloud integration, assisting manufacturing digital transformation.
                         </p>
-                        <div class="key-highlights">
-                            <div class="highlight-item">
-                                <div class="highlight-icon">🎯</div>
-                                <div class="highlight-content">
-                                    <h5>與 Spencer Huang 深度交流</h5>
-                                    <p>為 NVIDIA 順子詳細講解專案長達10+分鐘，獲得高度評價與期待</p>
+                        
+                        <div class="key-achievements">
+                            <div class="achievement-item">
+                                <div class="achievement-icon">🎯</div>
+                                <div class="achievement-content">
+                                    <h5>Deep Engagement with Spencer Huang</h5>
+                                    <p>Detailed project presentation for 10+ minutes to Spencer Huang, receiving high praise and anticipation</p>
                                 </div>
                             </div>
-                            <div class="highlight-item">
-                                <div class="highlight-icon">📰</div>
-                                <div class="highlight-content">
-                                    <h5>日經新聞特別報導</h5>
-                                    <p>團隊作品登上《日經新聞》，成為 Computex 上備受關注的焦點</p>
+                            
+                            <div class="achievement-item">
+                                <div class="achievement-icon">📰</div>
+                                <div class="achievement-content">
+                                    <h5>Nikkei News Feature Story</h5>
+                                    <p>Team's work featured in Nikkei News as one of the highlights at Computex</p>
                                 </div>
                             </div>
-                            <div class="highlight-item">
-                                <div class="highlight-icon">🚀</div>
-                                <div class="highlight-content">
-                                    <h5>從GTC到Computex的Evolution</h5>
-                                    <p>從「火力展示创新願景」到「落地實踐轉化價值」的完整旅程</p>
+                            
+                            <div class="achievement-item">
+                                <div class="achievement-icon">🚀</div>
+                                <div class="achievement-content">
+                                    <h5>GTC to Computex Evolution</h5>
+                                    <p>Complete journey from "showcasing innovation vision" to "practical value transformation"</p>
                                 </div>
                             </div>
                         </div>
-                        <ul class="experience-achievements">
-                            <li>新部門新人但接下 GTC 等級展演案子，完成技術評估→4PM→4展演全流程</li>
-                            <li>在展場上變身為積極的技術導覽，吸引無數參觀者駐足經聯</li>
-                            <li>從 JEDI 和 YODA 展示模型到產業合作的商業意向，親身參與價值轉化</li>
-                        </ul>
                     </div>
                 </div>
             </div>
             
+            <!-- Conference Participation -->
             <div class="conference-section">
-                <h3 class="conference-title">全球頂級會議的火力展示與商業轉化</h3>
+                <div class="section-header">
+                    <h3 class="conference-title">Global Exhibition Showcase: From Innovation to Implementation</h3>
+                    <p class="conference-subtitle">Leading technical demonstrations at world's premier technology events</p>
+                </div>
                 
-                <div class="conference-story">
-                    <div class="conference-major">
-                        <div class="conference-item gtc-special">
-                            <div class="conference-content-wrapper">
-                                <div class="conference-image-gallery">
-                                    <img src="img/GTC/GTC3.jpg" alt="GTC 2024展場實況" class="main-photo">
-                                    <img src="img/GTC/GTC4.JPG" alt="GTC技術展示" class="secondary-photo">
+                <div class="conference-grid">
+                    <!-- GTC Section -->
+                    <div class="conference-card gtc-card">
+                        <div class="conference-header">
+                            <div class="conference-badge fire">🔥 Innovation Showcase</div>
+                            <h4>NVIDIA GTC 2025</h4>
+                            <p class="conference-date">March 2025 • San Jose, CA</p>
+                        </div>
+                        
+                        <div class="conference-gallery">
+                            <div class="main-image">
+                                <img src="img/GTC/GTC3.jpg" alt="GTC 2025 Exhibition Floor" class="featured-photo">
+                                <div class="image-overlay">
+                                    <span>Technical Demonstration</span>
                                 </div>
-                                <div class="conference-details">
-                                    <div class="conference-badge">🔥 火力展示</div>
-                                    <h4>NVIDIA GTC 2024</h4>
-                                    <p class="conference-insight">
-                                        <strong>從安靜的實驗室到聚光燈下的技術佈道者</strong><br>
-                                        首次親身感受研發與實際應用的落差，學會如何將技術價值說清楚、講出亮點。
-                                        Keynote和各場Session啟發我：創意的背後是紮實的思維訓練與敏捷的開發文化。
-                                    </p>
-                                    <div class="achievement-tags">
-                                        <span class="tag">與Spencer Huang深度交流</span>
-                                        <span class="tag">技術創新高度評價</span>
-                                        <span class="tag">全方位展演經驗</span>
+                            </div>
+                            <div class="gallery-section">
+                                <h6 class="gallery-title">Exhibition Highlights</h6>
+                                <div class="thumbnail-grid">
+                                    <div class="thumbnail-container">
+                                        <img src="img/GTC/GTC1.jpg" alt="GTC PEGAVERSE JEDI" class="thumbnail">
+                                        <span class="thumbnail-caption">PEGAVERSE JEDI</span>
+                                    </div>
+                                    <div class="thumbnail-container">
+                                        <img src="img/GTC/GTC2.jpg" alt="Technology Display" class="thumbnail">
+                                        <span class="thumbnail-caption">Technology Display</span>
+                                    </div>
+                                    <div class="thumbnail-container">
+                                        <img src="img/GTC/GTC4.JPG" alt="Global Developer" class="thumbnail">
+                                        <span class="thumbnail-caption">Global Developer</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
                         
-                        <div class="conference-item computex-special">
-                            <div class="conference-content-wrapper">
-                                <div class="conference-media-gallery">
-                                    <img src="img/Computex/Computex2.PNG" alt="Computex 展場盛況" class="main-photo">
-                                    <div class="media-grid">
-                                        <img src="img/Computex/Computex3.PNG" alt="技術展示" class="grid-photo">
-                                        <img src="img/Computex/Computex4.PNG" alt="產業交流" class="grid-photo">
-                                        <video src="img/Computex/Computex_VEDIO.mov" alt="蝙蝠俠Spencer Huang影片" class="grid-video" controls muted>
-                                            您的瀏覽器不支持影片播放
-                                        </video>
-                                    </div>
+                        <div class="conference-content">
+                            <div class="conference-insight">
+                                <h5>From Lab Researcher to Tech Evangelist</h5>
+                                <p>
+                                    First-hand experience of the gap between R&D and practical applications. 
+                                    Learned how to clearly articulate technical value and create compelling demonstrations 
+                                    that make even disinterested visitors stop and engage.
+                                </p>
+                            </div>
+                            
+                            <div class="conference-highlights">
+                                <div class="highlight-tag">Spencer Huang Deep Dive</div>
+                                <div class="highlight-tag">Technical Innovation Recognition</div>
+                                <div class="highlight-tag">Comprehensive Exhibition Experience</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Computex Section -->
+                    <div class="conference-card computex-card">
+                        <div class="conference-header">
+                            <div class="conference-badge diamond">💎 Commercial Implementation</div>
+                            <h4>Computex 2025</h4>
+                            <p class="conference-date">May 2025 • Taipei, Taiwan</p>
+                        </div>
+                        
+                        <div class="conference-gallery">
+                            <div class="main-image">
+                                <video src="img/Computex/Computex_VEDIO.webm" class="media-item video-item" controls muted>
+                                    Your browser does not support video playback
+                                </video>
+                                <div class="image-overlay">
+                                    <span>Home Advantage</span>
                                 </div>
-                                <div class="conference-details">
-                                    <div class="conference-badge">💎 商業轉化</div>
-                                    <h4>Computex 2024</h4>
-                                    <p class="conference-insight">
-                                        <strong>從展示模型到商業意向的華麗轉身</strong><br>
-                                        回到「主場」，見證JEDI和YODA從「好評如潮」到「商業意向」的過程。
-                                        登上《日經新聞》，與蝙蝠俠本人留影，完成從技術到產品到銷售的全方位歷練。
-                                    </p>
-                                    <div class="achievement-tags">
-                                        <span class="tag">日經新聞專題報導</span>
-                                        <span class="tag">商業合作意向</span>
-                                        <span class="tag">產業影響力擴散</span>
-                                    </div>
-                                </div>
+                            </div>
+                            <div class="media-showcase">
+                                <img src="img/Computex/Computex2.PNG" alt="Technical Details" class="media-item">
+                                <img src="img/Computex/Computex3.PNG" alt="Industry Networking" class="media-item">
+                                <img src="img/Computex/Computex4.PNG" alt="Exhibition Interaction" class="media-item">
+                                <img src="img/Computex/Computex5.PNG" alt="Team Collaboration" class="media-item">
+                                <img src="img/Computex/Computex1.jpg" alt="Computex Exhibition Success" class="featured-photo">
+                            </div>
+                        </div>
+                        
+                        <div class="conference-content">
+                            <div class="conference-insight">
+                                <h5>From Demo Models to Business Intent</h5>
+                                <p>
+                                    Witnessed JEDI and YODA evolve from exhibition demonstrations to commercial collaboration opportunities. 
+                                    Featured in Nikkei News, captured memorable moments with "Batman himself," 
+                                    completing a comprehensive journey from technology to product to sales.
+                                </p>
+                            </div>
+                            
+                            <div class="conference-highlights">
+                                <div class="highlight-tag">Nikkei News Feature</div>
+                                <div class="highlight-tag">Commercial Partnerships</div>
+                                <div class="highlight-tag">Industry Impact</div>
                             </div>
                         </div>
                     </div>
@@ -226,80 +383,117 @@
         </div>
     </section>
 
+    <!-- Projects Section -->
     <section id="projects" class="projects">
         <div class="container">
-            <h2 class="section-title">專案作品</h2>
+            <div class="section-header">
+                <span class="section-tag">Featured Work</span>
+                <h2 class="section-title">Projects & Research</h2>
+                <p class="section-subtitle">
+                    From academic research to practical applications, showcasing innovation across domains
+                </p>
+            </div>
+            
             <div class="projects-grid">
-                <div class="project-card">
-                    <div class="project-image">
-                        <div class="project-placeholder">
+                <!-- Master's Thesis -->
+                <div class="project-card featured">
+                    <div class="project-header">
+                        <div class="project-icon">
                             <i class="fas fa-graduation-cap"></i>
                         </div>
+                        <div class="project-meta">
+                            <span class="project-type">Master's Research</span>
+                            <h3>Synthetic Data Generation using Conditional Normalizing Flows</h3>
+                        </div>
                     </div>
+                    
                     <div class="project-content">
-                        <h3>碩士論文研究</h3>
-                        <p>「基於條件標準化流的合成數據生成」- 探討使用 Conditional Normalizing Flows 技術生成高品質合成數據。</p>
-                        <div class="project-tech">
+                        <p class="project-description">
+                            Master's thesis research exploring the use of Conditional Normalizing Flows technology 
+                            to generate high-quality synthetic data, focusing on data upsampling, outlier highlighting, 
+                            and objective evaluation of generated data quality.
+                        </p>
+                        
+                        <div class="tech-stack">
                             <span class="tech-tag">Machine Learning</span>
                             <span class="tech-tag">Normalizing Flows</span>
                             <span class="tech-tag">Python</span>
+                            <span class="tech-tag">Deep Learning</span>
                         </div>
+                        
                         <div class="project-links">
-                            <a href="https://ndltd.ncl.edu.tw/cgi-bin/gs32/gsweb.cgi/login?o=dnclcdr&s=id=%22112NYCU542B015%22.&searchmode=basic" class="project-link">
-                                <i class="fas fa-book"></i> 論文網址
-                            </a>
-                            <a href="https://ndltd.ncl.edu.tw/cgi-bin/gs32/gsweb.cgi/login?o=dnclcdr&s=id=%22112NYCU542B015%22.&searchmode=basic" class="project-link">
-                                <i class="fas fa-external-link-alt"></i> 查看詳情
+                            <a href="https://ndltd.ncl.edu.tw/cgi-bin/gs32/gsweb.cgi/login?o=dnclcdr&s=id=%22112NYCU542B015%22.&searchmode=basic" 
+                               class="project-link primary" target="_blank">
+                                <i class="fas fa-external-link-alt"></i>
+                                View Thesis
                             </a>
                         </div>
                     </div>
                 </div>
-
+                
+                <!-- Stock Analysis System -->
                 <div class="project-card">
-                    <div class="project-image">
-                        <div class="project-placeholder">
+                    <div class="project-header">
+                        <div class="project-icon">
                             <i class="fas fa-chart-line"></i>
                         </div>
-                    </div>
-                    <div class="project-content">
-                        <h3>股票分析回測系統</h3>
-                        <p>完整的Python股票分析與策略回測系統，支援多種技術指標計算、交易策略回測和績效視覺化分析。</p>
-                        <div class="project-tech">
-                            <span class="tech-tag">Python</span>
-                            <span class="tech-tag">pandas</span>
-                            <span class="tech-tag">matplotlib</span>
+                        <div class="project-meta">
+                            <span class="project-type">Personal Project</span>
+                            <h3>Stock Analysis & Backtesting System</h3>
                         </div>
+                    </div>
+                    
+                    <div class="project-content">
+                        <p class="project-description">
+                            Comprehensive Python-based stock analysis and strategy backtesting system supporting 
+                            multiple technical indicators, trading strategy backtesting, and performance visualization analysis.
+                        </p>
+                        
+                        <div class="tech-stack">
+                            <span class="tech-tag">Python</span>
+                            <span class="tech-tag">Pandas</span>
+                            <span class="tech-tag">Matplotlib</span>
+                            <span class="tech-tag">Financial Analysis</span>
+                        </div>
+                        
                         <div class="project-links">
-                            <a href="https://github.com/matthewHsieh/Stock" class="project-link">
-                                <i class="fab fa-github"></i> GitHub
-                            </a>
-                            <a href="https://github.com/matthewHsieh/Stock" class="project-link">
-                                <i class="fas fa-external-link-alt"></i> 查看詳情
+                            <a href="https://github.com/matthewHsieh/Stock" class="project-link" target="_blank">
+                                <i class="fab fa-github"></i>
+                                GitHub
                             </a>
                         </div>
                     </div>
                 </div>
-
+                
+                <!-- Campus Patrol Car -->
                 <div class="project-card">
-                    <div class="project-image">
-                        <div class="project-placeholder">
+                    <div class="project-header">
+                        <div class="project-icon">
                             <i class="fas fa-car"></i>
                         </div>
+                        <div class="project-meta">
+                            <span class="project-type">University Project</span>
+                            <h3>Autonomous Campus Patrol Vehicle</h3>
+                        </div>
                     </div>
+                    
                     <div class="project-content">
-                        <h3>校園自動巡邏車</h3>
-                        <p>大學專案開發的自主巡邏車輛，整合 ROS 系統、人員偵測、遠端監控和網頁控制介面，實現智能巡邏功能。</p>
-                        <div class="project-tech">
+                        <p class="project-description">
+                            University project developing an autonomous patrol vehicle integrating ROS system, 
+                            people detection, remote monitoring, and web control interface for intelligent patrol functionality.
+                        </p>
+                        
+                        <div class="tech-stack">
                             <span class="tech-tag">ROS</span>
                             <span class="tech-tag">Python</span>
                             <span class="tech-tag">PHP</span>
+                            <span class="tech-tag">Computer Vision</span>
                         </div>
+                        
                         <div class="project-links">
-                            <a href="https://github.com/matthewHsieh/campusCar" class="project-link">
-                                <i class="fab fa-github"></i> GitHub
-                            </a>
-                            <a href="https://github.com/matthewHsieh/campusCar" class="project-link">
-                                <i class="fas fa-external-link-alt"></i> 查看詳情
+                            <a href="https://github.com/matthewHsieh/campusCar" class="project-link" target="_blank">
+                                <i class="fab fa-github"></i>
+                                GitHub
                             </a>
                         </div>
                     </div>
@@ -308,56 +502,114 @@
         </div>
     </section>
 
+    <!-- Contact Section -->
     <section id="contact" class="contact">
         <div class="container">
-            <h2 class="section-title">聯絡我</h2>
+            <div class="section-header">
+                <span class="section-tag">Get In Touch</span>
+                <h2 class="section-title">Let's Build Something Amazing Together</h2>
+                <p class="section-subtitle">
+                    Ready to collaborate on your next digital twin or automation project
+                </p>
+            </div>
+            
             <div class="contact-content">
                 <div class="contact-info">
-                    <h3>讓我們連結吧！</h3>
-                    <p>如果您對我的工作感興趣，或者有任何合作機會，歡迎與我聯繫。</p>
-                    <div class="contact-methods">
-                        <div class="contact-method">
-                            <i class="fas fa-envelope"></i>
-                            <span>matthew19970221@gmail.com</span>
-                        </div>
-                        <div class="contact-method">
-                            <i class="fab fa-linkedin"></i>
-                            <a href="https://www.linkedin.com/in/%E6%98%87%E6%A2%81-%E8%A7%A3-1a6663268/" style="color: inherit; text-decoration: none;">LinkedIn Profile</a>
-                        </div>
-                        <div class="contact-method">
-                            <i class="fab fa-github"></i>
-                            <a href="https://github.com/matthewHsieh" style="color: inherit; text-decoration: none;">github.com/matthewHsieh</a>
+                    <div class="contact-card">
+                        <h3>Let's Connect!</h3>
+                        <p>
+                            If you're interested in my work or have collaboration opportunities, 
+                            feel free to reach out. I'm always excited to discuss innovative projects 
+                            and explore new possibilities in digital twin technology.
+                        </p>
+                        
+                        <div class="contact-methods">
+                            <a href="mailto:matthew19970221@gmail.com" class="contact-method">
+                                <div class="method-icon">
+                                    <i class="fas fa-envelope"></i>
+                                </div>
+                                <div class="method-info">
+                                    <span class="method-label">Email</span>
+                                    <span class="method-value">matthew19970221@gmail.com</span>
+                                </div>
+                            </a>
+                            
+                            <a href="https://www.linkedin.com/in/%E6%98%87%E6%A2%81-%E8%A7%A3-1a6663268/" 
+                               target="_blank" class="contact-method">
+                                <div class="method-icon">
+                                    <i class="fab fa-linkedin"></i>
+                                </div>
+                                <div class="method-info">
+                                    <span class="method-label">LinkedIn</span>
+                                    <span class="method-value">Professional Profile</span>
+                                </div>
+                            </a>
+                            
+                            <a href="https://github.com/matthewHsieh" target="_blank" class="contact-method">
+                                <div class="method-icon">
+                                    <i class="fab fa-github"></i>
+                                </div>
+                                <div class="method-info">
+                                    <span class="method-label">GitHub</span>
+                                    <span class="method-value">github.com/matthewHsieh</span>
+                                </div>
+                            </a>
                         </div>
                     </div>
                 </div>
+                
                 <div class="contact-form">
-                    <form>
-                        <div class="form-group">
-                            <label for="name">姓名</label>
-                            <input type="text" id="name" name="name" required>
+                    <form class="form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="name">Full Name</label>
+                                <input type="text" id="name" name="name" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="email">Email Address</label>
+                                <input type="email" id="email" name="email" required>
+                            </div>
                         </div>
                         <div class="form-group">
-                            <label for="email">電子郵件</label>
-                            <input type="email" id="email" name="email" required>
+                            <label for="subject">Subject</label>
+                            <input type="text" id="subject" name="subject" required>
                         </div>
                         <div class="form-group">
-                            <label for="message">訊息</label>
+                            <label for="message">Message</label>
                             <textarea id="message" name="message" rows="5" required></textarea>
                         </div>
-                        <button type="submit" class="btn btn-primary">發送訊息</button>
+                        <button type="submit" class="btn btn-primary full-width">
+                            <i class="fas fa-paper-plane"></i>
+                            Send Message
+                        </button>
                     </form>
                 </div>
             </div>
         </div>
     </section>
 
+    <!-- Footer -->
     <footer class="footer">
         <div class="container">
-            <p>&copy; 2024 Matthew Hsieh. All rights reserved.</p>
-            <div class="social-links">
-                <a href="https://github.com/matthewHsieh"><i class="fab fa-github"></i></a>
-                <a href="https://www.linkedin.com/in/%E6%98%87%E6%A2%81-%E8%A7%A3-1a6663268/"><i class="fab fa-linkedin"></i></a>
-                <a href="mailto:matthew19970221@gmail.com"><i class="fas fa-envelope"></i></a>
+            <div class="footer-content">
+                <div class="footer-info">
+                    <h3>Matthew Hsieh</h3>
+                    <p>Digital Twin Engineer specializing in manufacturing innovation</p>
+                </div>
+                <div class="footer-links">
+                    <a href="https://github.com/matthewHsieh" target="_blank" class="footer-link">
+                        <i class="fab fa-github"></i>
+                    </a>
+                    <a href="https://www.linkedin.com/in/%E6%98%87%E6%A2%81-%E8%A7%A3-1a6663268/" target="_blank" class="footer-link">
+                        <i class="fab fa-linkedin"></i>
+                    </a>
+                    <a href="mailto:matthew19970221@gmail.com" class="footer-link">
+                        <i class="fas fa-envelope"></i>
+                    </a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024 Matthew Hsieh. All rights reserved.</p>
             </div>
         </div>
     </footer>

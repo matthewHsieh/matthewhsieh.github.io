@@ -1,253 +1,410 @@
-// DOM 載入完成後執行
+// Enhanced JavaScript for modern portfolio website
 document.addEventListener('DOMContentLoaded', function() {
+    // Initialize all features
+    initializeNavigation();
+    initializeSkillBars();
+    initializeScrollAnimations();
+    initializeForm();
+    initializeParticles();
     
-    // 漢堡選單功能
-    const hamburger = document.querySelector('.hamburger');
-    const navMenu = document.querySelector('.nav-menu');
-    const navLinks = document.querySelectorAll('.nav-link');
+    // Mobile menu functionality
+    function initializeNavigation() {
+        const hamburger = document.getElementById('hamburger');
+        const navMenu = document.getElementById('nav-menu');
+        const navLinks = document.querySelectorAll('.nav-link');
 
-    hamburger.addEventListener('click', function() {
-        hamburger.classList.toggle('active');
-        navMenu.classList.toggle('active');
-    });
+        // Toggle mobile menu
+        if (hamburger && navMenu) {
+            hamburger.addEventListener('click', function() {
+                hamburger.classList.toggle('active');
+                navMenu.classList.toggle('active');
+            });
 
-    // 點擊導航連結時關閉選單
-    navLinks.forEach(link => {
-        link.addEventListener('click', function() {
-            hamburger.classList.remove('active');
-            navMenu.classList.remove('active');
-        });
-    });
-
-    // 滾動時導航欄樣式變化
-    const navbar = document.querySelector('.navbar');
-    
-    window.addEventListener('scroll', function() {
-        if (window.scrollY > 100) {
-            navbar.style.background = 'rgba(255, 255, 255, 0.98)';
-            navbar.style.boxShadow = '0 2px 20px rgba(0, 0, 0, 0.1)';
-        } else {
-            navbar.style.background = 'rgba(255, 255, 255, 0.95)';
-            navbar.style.boxShadow = 'none';
+            // Close menu when clicking on a link
+            navLinks.forEach(link => {
+                link.addEventListener('click', function() {
+                    hamburger.classList.remove('active');
+                    navMenu.classList.remove('active');
+                });
+            });
         }
-    });
 
-    // 平滑滾動到錨點
-    const links = document.querySelectorAll('a[href^="#"]');
-    
-    links.forEach(link => {
-        link.addEventListener('click', function(e) {
+        // Navbar scroll effect
+        const navbar = document.getElementById('navbar');
+        if (navbar) {
+            let lastScrollTop = 0;
+            
+            window.addEventListener('scroll', function() {
+                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                
+                // Add/remove scrolled class
+                if (scrollTop > 50) {
+                    navbar.classList.add('scrolled');
+                } else {
+                    navbar.classList.remove('scrolled');
+                }
+
+                // Update active nav link based on scroll position
+                updateActiveNavLink();
+                
+                lastScrollTop = scrollTop;
+            });
+        }
+
+        // Update active navigation link based on current section
+        function updateActiveNavLink() {
+            const sections = document.querySelectorAll('section[id]');
+            const scrollPos = window.scrollY + 100;
+
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.offsetHeight;
+                const sectionId = section.getAttribute('id');
+                const navLink = document.querySelector(`a[href="#${sectionId}"]`);
+
+                if (scrollPos >= sectionTop && scrollPos < sectionTop + sectionHeight) {
+                    navLinks.forEach(link => link.classList.remove('active'));
+                    if (navLink) navLink.classList.add('active');
+                }
+            });
+        }
+    }
+
+    // Skill bars animation
+    function initializeSkillBars() {
+        const observerOptions = {
+            threshold: 0.3,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const skillObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const skillBars = entry.target.querySelectorAll('.level-bar');
+                    skillBars.forEach(bar => {
+                        const level = bar.getAttribute('data-level');
+                        setTimeout(() => {
+                            bar.style.width = level + '%';
+                        }, 200);
+                    });
+                }
+            });
+        }, observerOptions);
+
+        const skillsSection = document.querySelector('.skills');
+        if (skillsSection) {
+            skillObserver.observe(skillsSection);
+        }
+    }
+
+    // Scroll animations for elements
+    function initializeScrollAnimations() {
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const scrollObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('animate-in');
+                }
+            });
+        }, observerOptions);
+
+        // Animate various elements
+        const animateElements = document.querySelectorAll(`
+            .about-card,
+            .skill-card,
+            .project-card,
+            .conference-card,
+            .achievement-item,
+            .timeline-item
+        `);
+
+        animateElements.forEach(el => {
+            scrollObserver.observe(el);
+        });
+    }
+
+    // Contact form handling
+    function initializeForm() {
+        const form = document.querySelector('.form');
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const formData = new FormData(form);
+                const data = Object.fromEntries(formData);
+                
+                // Show loading state
+                const submitBtn = form.querySelector('button[type="submit"]');
+                const originalText = submitBtn.innerHTML;
+                submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+                submitBtn.disabled = true;
+
+                // Simulate form submission (replace with actual form handling)
+                setTimeout(() => {
+                    submitBtn.innerHTML = '<i class="fas fa-check"></i> Message Sent!';
+                    submitBtn.style.background = 'var(--success-500)';
+                    
+                    setTimeout(() => {
+                        submitBtn.innerHTML = originalText;
+                        submitBtn.disabled = false;
+                        submitBtn.style.background = '';
+                        form.reset();
+                    }, 2000);
+                }, 1500);
+                
+                // Here you would typically send the data to your backend
+                console.log('Form submitted:', data);
+            });
+
+            // Add floating labels effect
+            const inputs = form.querySelectorAll('input, textarea');
+            inputs.forEach(input => {
+                input.addEventListener('focus', () => {
+                    input.parentElement.classList.add('focused');
+                });
+                
+                input.addEventListener('blur', () => {
+                    if (!input.value) {
+                        input.parentElement.classList.remove('focused');
+                    }
+                });
+                
+                // Check if input has value on load
+                if (input.value) {
+                    input.parentElement.classList.add('focused');
+                }
+            });
+        }
+    }
+
+    // Particle animation for hero section
+    function initializeParticles() {
+        const particles = document.querySelector('.hero-particles');
+        if (particles) {
+            // Create floating particles
+            for (let i = 0; i < 50; i++) {
+                createParticle(particles);
+            }
+        }
+    }
+
+    function createParticle(container) {
+        const particle = document.createElement('div');
+        particle.className = 'particle';
+        particle.style.cssText = `
+            position: absolute;
+            width: ${Math.random() * 4 + 2}px;
+            height: ${Math.random() * 4 + 2}px;
+            background: rgba(59, 130, 246, ${Math.random() * 0.5 + 0.1});
+            border-radius: 50%;
+            left: ${Math.random() * 100}%;
+            top: ${Math.random() * 100}%;
+            animation: float ${Math.random() * 20 + 10}s infinite linear;
+            pointer-events: none;
+        `;
+        
+        container.appendChild(particle);
+    }
+
+    // Smooth scrolling for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
             e.preventDefault();
+            const target = document.querySelector(this.getAttribute('href'));
             
-            const targetId = this.getAttribute('href');
-            const targetSection = document.querySelector(targetId);
-            
-            if (targetSection) {
-                const offsetTop = targetSection.offsetTop - 80; // 考慮導航欄高度
+            if (target) {
+                const navbarHeight = document.querySelector('.navbar').offsetHeight;
+                const targetPosition = target.offsetTop - navbarHeight - 20;
                 
                 window.scrollTo({
-                    top: offsetTop,
+                    top: targetPosition,
                     behavior: 'smooth'
                 });
             }
         });
     });
 
-    // 滾動動畫觀察器
-    const observerOptions = {
-        threshold: 0.1,
-        rootMargin: '0px 0px -50px 0px'
-    };
-
-    const observer = new IntersectionObserver(function(entries) {
+    // Lazy loading for images
+    const images = document.querySelectorAll('img[src]');
+    const imageObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
-                entry.target.style.opacity = '1';
-                entry.target.style.transform = 'translateY(0)';
+                const img = entry.target;
+                img.classList.add('loaded');
+                imageObserver.unobserve(img);
             }
         });
-    }, observerOptions);
-
-    // 觀察需要動畫的元素
-    const animateElements = document.querySelectorAll('.skill-category, .project-card, .stat');
-    
-    animateElements.forEach(element => {
-        element.style.opacity = '0';
-        element.style.transform = 'translateY(30px)';
-        element.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
-        observer.observe(element);
     });
 
-    // 打字效果
-    function typeWriter(element, text, speed = 100) {
-        let i = 0;
-        element.innerHTML = '';
+    images.forEach(img => imageObserver.observe(img));
+
+    // Add keyboard navigation support
+    document.addEventListener('keydown', function(e) {
+        // Close mobile menu on Escape
+        if (e.key === 'Escape') {
+            const hamburger = document.getElementById('hamburger');
+            const navMenu = document.getElementById('nav-menu');
+            
+            if (hamburger && hamburger.classList.contains('active')) {
+                hamburger.classList.remove('active');
+                navMenu.classList.remove('active');
+            }
+        }
+    });
+
+    // Performance optimization: Debounce scroll events
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    // Add CSS animations
+    const style = document.createElement('style');
+    style.textContent = `
+        /* Additional animations for enhanced UX */
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            33% { transform: translateY(-10px) rotate(120deg); }
+            66% { transform: translateY(5px) rotate(240deg); }
+        }
         
-        function type() {
-            if (i < text.length) {
-                element.innerHTML += text.charAt(i);
-                i++;
-                setTimeout(type, speed);
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
             }
         }
         
-        type();
-    }
-
-    // 數字計數動畫
-    function animateCounter(element, target, duration = 2000) {
-        const start = parseInt(element.textContent) || 0;
-        const increment = (target - start) / (duration / 16);
-        let current = start;
+        .animate-in {
+            animation: fadeInUp 0.6s ease-out forwards;
+        }
         
-        const timer = setInterval(() => {
-            current += increment;
-            element.textContent = Math.floor(current);
-            
-            if (current >= target) {
-                element.textContent = target;
-                clearInterval(timer);
+        /* Smooth image loading */
+        img {
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+        }
+        
+        img.loaded {
+            opacity: 1;
+        }
+        
+        /* Enhanced navbar scroll effect */
+        .navbar.scrolled {
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Form focus states */
+        .form-group.focused label {
+            color: var(--primary-600);
+            transform: translateY(-2px);
+        }
+        
+        /* Loading states */
+        .loading {
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        
+        /* Enhanced mobile menu animation */
+        .hamburger.active .bar:nth-child(1) {
+            transform: rotate(45deg) translate(5px, 5px);
+        }
+        
+        .hamburger.active .bar:nth-child(2) {
+            opacity: 0;
+        }
+        
+        .hamburger.active .bar:nth-child(3) {
+            transform: rotate(-45deg) translate(7px, -6px);
+        }
+        
+        /* Accessibility improvements */
+        .nav-link:focus,
+        .btn:focus,
+        .project-link:focus {
+            outline: 2px solid var(--primary-500);
+            outline-offset: 2px;
+        }
+        
+        /* Reduced motion for accessibility */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
             }
-        }, 16);
-    }
-
-    // 統計數字動畫觀察器
-    const statsObserver = new IntersectionObserver(function(entries) {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const statNumber = entry.target.querySelector('h3');
-                const targetNumber = parseInt(statNumber.textContent);
-                animateCounter(statNumber, targetNumber);
-                statsObserver.unobserve(entry.target);
-            }
-        });
-    }, { threshold: 0.5 });
-
-    // 觀察統計區塊
-    const stats = document.querySelectorAll('.stat');
-    stats.forEach(stat => {
-        statsObserver.observe(stat);
-    });
-
-    // 聯絡表單處理
-    const contactForm = document.querySelector('.contact-form form');
-    
-    if (contactForm) {
-        contactForm.addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const formData = new FormData(this);
-            const name = formData.get('name');
-            const email = formData.get('email');
-            const message = formData.get('message');
-            
-            // 簡單的表單驗證
-            if (!name || !email || !message) {
-                alert('請填寫所有必填欄位');
-                return;
-            }
-            
-            if (!isValidEmail(email)) {
-                alert('請輸入有效的電子郵件地址');
-                return;
-            }
-            
-            // 這裡可以添加實際的表單提交邏輯
-            // 目前只是顯示成功訊息
-            alert('訊息已送出！感謝您的聯繫。');
-            this.reset();
-        });
-    }
-
-    // 電子郵件驗證函數
-    function isValidEmail(email) {
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        return emailRegex.test(email);
-    }
-
-    // 頁面載入時的歡迎動畫
-    const heroTitle = document.querySelector('.hero-title');
-    if (heroTitle) {
-        const titleText = heroTitle.innerHTML;
-        heroTitle.style.opacity = '1';
-    }
-
-    // 滾動到頂部按鈕
-    const scrollTopBtn = document.createElement('button');
-    scrollTopBtn.innerHTML = '<i class="fas fa-arrow-up"></i>';
-    scrollTopBtn.className = 'scroll-top-btn';
-    scrollTopBtn.style.cssText = `
-        position: fixed;
-        bottom: 30px;
-        right: 30px;
-        width: 50px;
-        height: 50px;
-        background: #3498db;
-        color: white;
-        border: none;
-        border-radius: 50%;
-        cursor: pointer;
-        opacity: 0;
-        transition: all 0.3s ease;
-        z-index: 1000;
-        font-size: 18px;
-        box-shadow: 0 4px 12px rgba(52, 152, 219, 0.3);
+        }
     `;
     
-    document.body.appendChild(scrollTopBtn);
+    document.head.appendChild(style);
 
-    // 滾動時顯示/隱藏回到頂部按鈕
-    window.addEventListener('scroll', function() {
-        if (window.scrollY > 500) {
-            scrollTopBtn.style.opacity = '1';
-            scrollTopBtn.style.transform = 'translateY(0)';
-        } else {
-            scrollTopBtn.style.opacity = '0';
-            scrollTopBtn.style.transform = 'translateY(10px)';
-        }
-    });
-
-    // 回到頂部功能
-    scrollTopBtn.addEventListener('click', function() {
-        window.scrollTo({
-            top: 0,
-            behavior: 'smooth'
-        });
-    });
-
-    // 滑鼠懸停效果
-    scrollTopBtn.addEventListener('mouseenter', function() {
-        this.style.background = '#2980b9';
-        this.style.transform = 'translateY(-2px) scale(1.1)';
-    });
-
-    scrollTopBtn.addEventListener('mouseleave', function() {
-        this.style.background = '#3498db';
-        this.style.transform = 'translateY(0) scale(1)';
-    });
-
-    // 載入動畫完成
-    document.body.classList.add('loaded');
-    
-    // 預載入圖片（如果有的話）
-    const images = document.querySelectorAll('img[data-src]');
-    
-    if (images.length > 0) {
-        const imageObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const img = entry.target;
-                    img.src = img.dataset.src;
-                    img.classList.remove('lazy');
-                    imageObserver.unobserve(img);
-                }
-            });
-        });
-
-        images.forEach(img => {
-            imageObserver.observe(img);
-        });
-    }
-
-    console.log('Matthew Hsieh 的個人網站已載入完成！');
+    // Console welcome message for developers
+    console.log(`
+        🚀 Welcome to Matthew Hsieh's Portfolio!
+        
+        Built with modern web technologies:
+        • Semantic HTML5
+        • CSS Custom Properties
+        • Vanilla JavaScript
+        • Responsive Design
+        • Accessibility Features
+        
+        Digital Twin Engineer | Isaac Sim Expert | AWS IoT Specialist
+        
+        Feel free to explore the code and reach out for collaboration!
+    `);
 });
+
+// Utility functions for enhanced functionality
+const utils = {
+    // Throttle function for performance
+    throttle(func, limit) {
+        let inThrottle;
+        return function() {
+            const args = arguments;
+            const context = this;
+            if (!inThrottle) {
+                func.apply(context, args);
+                inThrottle = true;
+                setTimeout(() => inThrottle = false, limit);
+            }
+        };
+    },
+
+    // Check if element is in viewport
+    isInViewport(element) {
+        const rect = element.getBoundingClientRect();
+        return (
+            rect.top >= 0 &&
+            rect.left >= 0 &&
+            rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+            rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+        );
+    },
+
+    // Format date for display
+    formatDate(date) {
+        return new Intl.DateTimeFormat('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        }).format(date);
+    }
+};
