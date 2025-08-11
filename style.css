@@ -544,6 +544,317 @@ html {
     transform: translateY(-3px);
 }
 
+/* 工作經驗區段 */
+.experience {
+    padding: 5rem 0;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+.experience-timeline {
+    max-width: 800px;
+    margin: 0 auto 3rem;
+}
+
+.experience-item {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 2rem;
+    padding: 2rem;
+    background: white;
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.experience-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 4px;
+    background: linear-gradient(to bottom, #3498db, #2980b9);
+}
+
+.experience-date {
+    font-weight: 600;
+    color: #3498db;
+    font-size: 1.1rem;
+    display: flex;
+    align-items: flex-start;
+    padding-top: 0.5rem;
+}
+
+.experience-content {
+    flex: 1;
+}
+
+.experience-header h3 {
+    font-size: 1.4rem;
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+}
+
+.experience-header h4 {
+    font-size: 1.1rem;
+    color: #7f8c8d;
+    margin-bottom: 1rem;
+    font-weight: 500;
+}
+
+.experience-description {
+    color: #555;
+    margin-bottom: 1.5rem;
+    line-height: 1.7;
+}
+
+.experience-achievements {
+    list-style: none;
+    padding: 0;
+}
+
+.experience-achievements li {
+    position: relative;
+    padding-left: 1.5rem;
+    margin-bottom: 0.8rem;
+    color: #555;
+}
+
+.experience-achievements li::before {
+    content: '▶';
+    position: absolute;
+    left: 0;
+    color: #3498db;
+    font-size: 0.8rem;
+}
+
+/* 重點成就區段 */
+.key-highlights {
+    margin: 2rem 0;
+    display: grid;
+    gap: 1.5rem;
+}
+
+.highlight-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e3f2fd 100%);
+    padding: 1.5rem;
+    border-radius: 12px;
+    border-left: 4px solid #3498db;
+    transition: all 0.3s ease;
+}
+
+.highlight-item:hover {
+    transform: translateX(5px);
+    box-shadow: 0 8px 25px rgba(52, 152, 219, 0.15);
+}
+
+.highlight-icon {
+    font-size: 1.5rem;
+    min-width: 40px;
+    text-align: center;
+}
+
+.highlight-content h5 {
+    font-size: 1.1rem;
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+
+.highlight-content p {
+    color: #666;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    margin: 0;
+}
+
+/* 會議參與區段 - 重新設計 */
+.conference-section {
+    margin-top: 3rem;
+}
+
+.conference-title {
+    font-size: 2rem;
+    color: #2c3e50;
+    text-align: center;
+    margin-bottom: 3rem;
+    font-weight: 700;
+}
+
+.conference-story {
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+.conference-major {
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+}
+
+.conference-item {
+    background: white;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.1);
+    transition: all 0.4s ease;
+}
+
+.conference-item:hover {
+    transform: translateY(-10px);
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.15);
+}
+
+.conference-content-wrapper {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-height: 400px;
+}
+
+.gtc-special {
+    border-left: 6px solid #76b900;
+}
+
+.computex-special {
+    border-left: 6px solid #e74c3c;
+}
+
+/* 圖片畫廊 */
+.conference-image-gallery {
+    display: grid;
+    grid-template-rows: 1fr 0.6fr;
+    gap: 10px;
+    padding: 1.5rem;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+.conference-media-gallery {
+    display: grid;
+    grid-template-rows: 1fr 0.8fr;
+    gap: 10px;
+    padding: 1.5rem;
+    background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+}
+
+.main-photo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 12px;
+    transition: transform 0.3s ease;
+}
+
+.secondary-photo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+}
+
+.media-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    height: 120px;
+}
+
+.grid-photo, .grid-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 8px;
+}
+
+.grid-video {
+    background: #000;
+}
+
+.conference-item:hover .main-photo {
+    transform: scale(1.05);
+}
+
+/* 會議詳情 */
+.conference-details {
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.conference-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    width: fit-content;
+}
+
+.computex-special .conference-badge {
+    background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+}
+
+.conference-details h4 {
+    font-size: 1.5rem;
+    color: #2c3e50;
+    margin-bottom: 1rem;
+    font-weight: 700;
+}
+
+.conference-insight {
+    color: #555;
+    line-height: 1.7;
+    margin-bottom: 1.5rem;
+    font-size: 1rem;
+}
+
+.conference-insight strong {
+    color: #2c3e50;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+/* 成就標籤 */
+.achievement-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: auto;
+}
+
+.tag {
+    background: linear-gradient(135deg, #ecf0f1 0%, #bdc3c7 100%);
+    color: #2c3e50;
+    padding: 0.4rem 0.8rem;
+    border-radius: 15px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.gtc-special .tag {
+    background: linear-gradient(135deg, #d5f4e6 0%, #76b900 100%);
+    color: white;
+}
+
+.computex-special .tag {
+    background: linear-gradient(135deg, #fadbd8 0%, #e74c3c 100%);
+    color: white;
+}
+
+.tag:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
 /* 動畫 */
 @keyframes fadeInUp {
     from {
@@ -623,6 +934,25 @@ html {
     .projects-grid {
         grid-template-columns: 1fr;
     }
+    
+    .experience-item {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        text-align: center;
+    }
+    
+    .conference-content-wrapper {
+        grid-template-columns: 1fr;
+    }
+    
+    .conference-image-gallery,
+    .conference-media-gallery {
+        order: 2;
+    }
+    
+    .conference-details {
+        order: 1;
+    }
 }
 
 @media (max-width: 480px) {
@@ -640,5 +970,19 @@ html {
     
     .skills-grid {
         grid-template-columns: 1fr;
+    }
+    
+    .media-grid {
+        grid-template-columns: 1fr 1fr;
+        height: auto;
+    }
+    
+    .conference-title {
+        font-size: 1.5rem;
+    }
+    
+    .highlight-item {
+        flex-direction: column;
+        text-align: center;
     }
 }
