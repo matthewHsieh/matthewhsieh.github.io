@@ -172,6 +172,7 @@ create table if not exists public.snapshots (
   id                uuid primary key default gen_random_uuid(),
   user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
   snap_date         date not null default current_date,
+  price_as_of       date,         -- 這筆是用哪一天的行情算的（來源可能比當天晚發布）
   total_assets      numeric,
   liabilities       numeric,
   net_assets        numeric,
@@ -220,5 +221,6 @@ create index if not exists stocks_user_idx    on public.stocks(user_id);
 create index if not exists futures_user_idx   on public.futures(user_id);
 create index if not exists us_stocks_user_idx on public.us_stocks(user_id);
 create index if not exists balances_user_idx  on public.balances(user_id);
+alter table public.snapshots add column if not exists price_as_of date;
 create index if not exists snapshots_user_idx on public.snapshots(user_id, snap_date desc);
 create index if not exists trades_user_idx    on public.trades(user_id, trade_date desc, created_at desc);

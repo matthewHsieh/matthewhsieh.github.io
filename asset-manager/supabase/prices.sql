@@ -20,9 +20,11 @@ create table if not exists public.market_prices (
   name       text,
   price      numeric not null,
   as_of      date,
+  src        text,                    -- twse / tpex / taifex / yahoo，用來各自判斷是否已抓過
   updated_at timestamptz not null default now(),
   primary key (market, symbol)
 );
+alter table public.market_prices add column if not exists src text;
 
 alter table public.market_prices enable row level security;
 drop policy if exists "read prices" on public.market_prices;
@@ -82,100 +84,120 @@ $$;
 
 -- ------------------------------------------------------------
 -- 台股收盤價（上市 + 上櫃）
---   上市：用證交所「每日收盤行情」MI_INDEX，要帶日期。
+--   上市：證交所「每日收盤行情」MI_INDEX，要帶日期。
 --         （原本用的 STOCK_DAY_ALL 會落後好幾天，2026-09-08 實測仍停在 09-04）
---         日期以台北時區為準，從最近一天往回找，遇到假日自動退一天。
---   上櫃：櫃買中心的端點永遠回最新交易日，不用帶日期。
+--         日期以台北時區為準，往回找最近一個有資料的交易日。
+--   上櫃：櫃買中心，永遠回最新交易日。
+--   兩邊各自判斷「是不是已經有今天的資料」，已經有就跳過，
+--   所以一天可以安全地跑很多次，不會重複打對方的 API。
 -- ------------------------------------------------------------
 create or replace function public.refresh_tw_prices()
 returns integer language plpgsql security definer set search_path = public, extensions as $$
 declare
   n integer := 0; total integer := 0;
   payload jsonb; tbl jsonb;
-  d date; i integer; got boolean := false;
+  d date; i integer;
+  have_twse date; have_tpex date;
+  got boolean := false;
 begin
   perform set_config('statement_timeout', '180s', true);
+  d := (now() at time zone 'Asia/Taipei')::date;
 
-  -- ---------- 上市：往回找最近一個有資料的交易日 ----------
-  begin
-    d := (now() at time zone 'Asia/Taipei')::date;
-    for i in 0..8 loop
-      begin
-        payload := public.pm_fetch(
-          'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date='
-          || to_char(d - i, 'YYYYMMDD') || '&type=ALLBUT0999&response=json')::jsonb;
-      exception when others then
-        payload := null;
-      end;
+  select max(as_of) into have_twse from public.market_prices where market = 'tw' and src = 'twse';
+  select max(as_of) into have_tpex from public.market_prices where market = 'tw' and src = 'tpex';
 
-      if payload is not null and payload ->> 'stat' = 'OK' then
-        select t into tbl
-        from jsonb_array_elements(payload -> 'tables') t
-        where t ->> 'title' like '%每日收盤行情%'
-        limit 1;
-
-        if tbl is not null and jsonb_array_length(coalesce(tbl -> 'data', '[]'::jsonb)) > 0 then
-          insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-          select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1),
-                 public.pm_num(r ->> 8), d - i, now()
-          from jsonb_array_elements(tbl -> 'data') r
-          where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$'
-            and public.pm_num(r ->> 8) > 0
-          on conflict (market, symbol) do update
-            set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
-                as_of = excluded.as_of, updated_at = now();
-          get diagnostics n = row_count; total := total + n;
-          perform public.pm_log('twse_mi_index ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
+  -- ---------- 上市 ----------
+  if have_twse is not null and have_twse >= d then
+    perform public.pm_log('twse(略過，已有 ' || have_twse || ')', 0, true, null);
+    got := true;
+  else
+    begin
+      for i in 0..8 loop
+        -- 往回走到「我們已經有的日期」就停：收盤未發布、假日、或已是最新都會很快停下來
+        if have_twse is not null and have_twse >= (d - i) then
+          perform public.pm_log('twse(略過，已有 ' || have_twse || ')', 0, true, null);
           got := true;
           exit;
         end if;
+
+        begin
+          payload := public.pm_fetch(
+            'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date='
+            || to_char(d - i, 'YYYYMMDD') || '&type=ALLBUT0999&response=json')::jsonb;
+        exception when others then
+          payload := null;
+        end;
+
+        if payload is not null and payload ->> 'stat' = 'OK' then
+          select t into tbl from jsonb_array_elements(payload -> 'tables') t
+          where t ->> 'title' like '%每日收盤行情%' limit 1;
+
+          if tbl is not null and jsonb_array_length(coalesce(tbl -> 'data', '[]'::jsonb)) > 0 then
+            insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+            select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1), public.pm_num(r ->> 8), d - i, 'twse', now()
+            from jsonb_array_elements(tbl -> 'data') r
+            where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(r ->> 8) > 0
+            on conflict (market, symbol) do update
+              set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+                  as_of = excluded.as_of, src = excluded.src, updated_at = now();
+            get diagnostics n = row_count; total := total + n;
+            perform public.pm_log('twse_mi_index ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
+            got := true;
+            exit;
+          end if;
+        end if;
+      end loop;
+
+      if not got then
+        perform public.pm_log('twse_mi_index', 0, false, 'no trading day found in last 9 days');
       end if;
-    end loop;
-
-    if not got then
-      perform public.pm_log('twse_mi_index', 0, false, 'no trading day found in last 9 days');
-    end if;
-  exception when others then
-    perform public.pm_log('twse_mi_index', 0, false, sqlerrm);
-  end;
-
-  -- ---------- 上市備援：MI_INDEX 掛掉時才用（資料可能落後） ----------
-  if not got then
-    begin
-      payload := public.pm_fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')::jsonb;
-      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-      select 'tw', upper(btrim(e ->> 'Code')), btrim(e ->> 'Name'),
-             public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'), now()
-      from jsonb_array_elements(payload) e
-      where btrim(e ->> 'Code') ~ '^[0-9]{4,6}[A-Z]?$'
-        and public.pm_num(e ->> 'ClosingPrice') > 0
-      on conflict (market, symbol) do update
-        set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
-            as_of = excluded.as_of, updated_at = now();
-      get diagnostics n = row_count; total := total + n;
-      perform public.pm_log('twse_stock_day_all(備援)', n, true, null);
     exception when others then
-      perform public.pm_log('twse_stock_day_all(備援)', 0, false, sqlerrm);
+      perform public.pm_log('twse_mi_index', 0, false, sqlerrm);
     end;
+
+    -- 備援：只有 MI_INDEX 真的失敗才用（資料可能落後）
+    if not got then
+      begin
+        payload := public.pm_fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')::jsonb;
+        insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+        select 'tw', upper(btrim(e ->> 'Code')), btrim(e ->> 'Name'),
+               public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'), 'twse', now()
+        from jsonb_array_elements(payload) e
+        where btrim(e ->> 'Code') ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(e ->> 'ClosingPrice') > 0
+        on conflict (market, symbol) do update
+          set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+              as_of = excluded.as_of, src = excluded.src, updated_at = now();
+        get diagnostics n = row_count; total := total + n;
+        perform public.pm_log('twse_stock_day_all(備援)', n, true, null);
+      exception when others then
+        perform public.pm_log('twse_stock_day_all(備援)', 0, false, sqlerrm);
+      end;
+    end if;
   end if;
 
-  -- ---------- 上櫃 ----------
-  begin
-    payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')::jsonb;
-    insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-    select 'tw', upper(btrim(e ->> 'SecuritiesCompanyCode')), btrim(e ->> 'CompanyName'),
-           public.pm_num(e ->> 'Close'), public.pm_roc_date(e ->> 'Date'), now()
-    from jsonb_array_elements(payload) e
-    where btrim(e ->> 'SecuritiesCompanyCode') ~ '^[0-9]{4,6}[A-Z]?$'
-      and public.pm_num(e ->> 'Close') > 0
-    on conflict (market, symbol) do update
-      set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
-          as_of = excluded.as_of, updated_at = now();
-    get diagnostics n = row_count; total := total + n;
-    perform public.pm_log('tpex', n, true, null);
-  exception when others then
-    perform public.pm_log('tpex', 0, false, sqlerrm);
-  end;
+  -- ---------- 上櫃（4MB） ----------
+  -- 用「上市已經抓到哪一天」當基準：兩邊是同一批交易日。
+  -- 上櫃不落後於上市就代表沒有新東西可抓，不用再拉這 4MB。
+  select max(as_of) into have_twse from public.market_prices where market = 'tw' and src = 'twse';
+  if have_tpex is not null and have_twse is not null and have_tpex >= have_twse then
+    perform public.pm_log('tpex(略過，已有 ' || have_tpex || ')', 0, true, null);
+  else
+    begin
+      payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')::jsonb;
+      insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+      select 'tw', upper(btrim(e ->> 'SecuritiesCompanyCode')), btrim(e ->> 'CompanyName'),
+             public.pm_num(e ->> 'Close'), public.pm_roc_date(e ->> 'Date'), 'tpex', now()
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> 'SecuritiesCompanyCode') ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(e ->> 'Close') > 0
+      on conflict (market, symbol) do update
+        set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+            as_of = excluded.as_of, src = excluded.src, updated_at = now();
+      get diagnostics n = row_count; total := total + n;
+      perform public.pm_log('tpex', n, true, null);
+    exception when others then
+      perform public.pm_log('tpex', 0, false, sqlerrm);
+    end;
+  end if;
 
   return total;
 end $$;
@@ -432,10 +454,11 @@ begin
     from f
   )
   insert into public.snapshots (
-    user_id, snap_date, total_assets, liabilities, net_assets, stock_value, us_value,
+    user_id, snap_date, price_as_of, total_assets, liabilities, net_assets, stock_value, us_value,
     futures_margin, futures_notional, cash, leverage_asset, leverage_exposure, target_amount, note)
   -- 日期用台北時區：美股那班排程在 UTC 22:00 跑，等於台北隔天早上 06:00
   select user_id, (now() at time zone 'Asia/Taipei')::date,
+         (select max(as_of) from public.market_prices where market = 'tw'),
          round(total_assets, 2), round(liab, 2), round(net_assets, 2), round(stock_value, 2), round(us_value, 2),
          round(fut_equity, 2), round(fut_notional, 2), round(cash, 2),
          case when net_assets > 0 then round(total_assets / net_assets, 4) end,
@@ -444,7 +467,8 @@ begin
   from g
   where total_assets <> 0 or liab <> 0
   on conflict (user_id, snap_date) do update
-    set total_assets = excluded.total_assets, liabilities = excluded.liabilities,
+    set price_as_of = excluded.price_as_of,
+        total_assets = excluded.total_assets, liabilities = excluded.liabilities,
         net_assets = excluded.net_assets, stock_value = excluded.stock_value,
         us_value = excluded.us_value, futures_margin = excluded.futures_margin,
         futures_notional = excluded.futures_notional, cash = excluded.cash,
@@ -516,12 +540,17 @@ revoke all on function public.auto_snapshot() from public, anon, authenticated;
 do $$
 begin
   perform cron.unschedule(jobname) from cron.job
-   where jobname in ('asset-prices-tw', 'asset-prices-us');
+   where jobname in ('asset-prices-tw', 'asset-prices-tw2', 'asset-prices-tw3',
+                     'asset-prices-tw4', 'asset-prices-us');
 
-  perform cron.schedule('asset-prices-tw', '0 8 * * 1-5',
-    $c$select public.update_all_prices(false)$c$);
-  perform cron.schedule('asset-prices-us', '0 22 * * 1-5',
-    $c$select public.update_all_prices(true)$c$);
+  -- 台股：台北 14:30 / 16:00 / 18:00 / 21:00 各試一次。
+  -- 抓到當天資料後，後面幾次會被守則擋掉，不會重複打對方的 API。
+  -- 多跑幾次是為了避免「來源比排程晚發布」造成當天快照用到前一天的價格。
+  perform cron.schedule('asset-prices-tw',   '30 6 * * 1-5', $c$select public.update_all_prices(false)$c$);
+  perform cron.schedule('asset-prices-tw2',  '0 8 * * 1-5',  $c$select public.update_all_prices(false)$c$);
+  perform cron.schedule('asset-prices-tw3',  '0 10 * * 1-5', $c$select public.update_all_prices(false)$c$);
+  perform cron.schedule('asset-prices-tw4',  '0 13 * * 1-5', $c$select public.update_all_prices(false)$c$);
+  perform cron.schedule('asset-prices-us',   '0 22 * * 1-5', $c$select public.update_all_prices(true)$c$);
 end $$;
 
 -- ------------------------------------------------------------

@@ -598,6 +598,7 @@ async function saveSnapshot() {
   if (existing && existing.note !== 'auto' && !confirm(`今天（${date}）已有快照，要覆蓋嗎？`)) return;
   const payload = {
     user_id: state.user.id, snap_date: date,
+    price_as_of: statusOf('tw')?.as_of ?? null,
     total_assets: round2(c.totalAssets), liabilities: round2(c.liabilities), net_assets: round2(c.netAssets),
     stock_value: round2(c.stockValue), us_value: round2(c.usValue),
     futures_margin: round2(c.futEquity), futures_notional: round2(c.futGross), cash: round2(c.cash),
@@ -1179,13 +1180,15 @@ function renderHistory(el) {
       </div>
       ${snaps.length
         ? `<div class="table-wrap"><table>
-            <thead><tr><th>日期</th><th>淨資產</th><th>變化</th><th>總資產</th><th>負債</th><th>槓桿①</th><th>槓桿②</th><th>目標%</th><th></th></tr></thead>
+            <thead><tr><th>日期</th><th>行情日</th><th>淨資產</th><th>變化</th><th>總資產</th><th>負債</th><th>槓桿①</th><th>槓桿②</th><th>目標%</th><th></th></tr></thead>
             <tbody>${snaps.map((r, i) => {
               const prev = snaps[i + 1];
               const d = prev ? num(r.net_assets) - num(prev.net_assets) : null;
               const prog = num(r.target_amount) > 0 ? num(r.net_assets) / num(r.target_amount) : null;
               return `<tr>
                 <td>${esc(r.snap_date)}${r.note === 'auto' ? '<span class="badge">自動</span>' : ''}</td>
+                <td class="${r.price_as_of && r.price_as_of < r.snap_date ? 'loss' : 'muted'}">${
+                  r.price_as_of ? esc(r.price_as_of).slice(5) : '–'}</td>
                 <td>${fmt(r.net_assets)}</td><td class="${plClass(d)}">${signed(d)}</td>
                 <td>${fmt(r.total_assets)}</td><td>${fmt(r.liabilities)}</td>
                 <td>${fmtX(r.leverage_asset)}</td><td>${fmtX(r.leverage_exposure)}</td>
@@ -1195,7 +1198,8 @@ function renderHistory(el) {
             }).join('')}</tbody>
           </table></div>`
         : '<p class="muted">尚無快照。系統每個交易日會自動存一筆，也可以按「記錄今日」手動存。</p>'}
-      <p class="hint">每天一筆，表格可左右滑動。</p>
+      <p class="hint">每天一筆，表格可左右滑動。「行情日」是這筆快照用到的收盤價日期；
+    若比左邊的日期早（標紅），表示當時來源還沒發布最新收盤價。</p>
     </div>`;
 
   const labels = asc.map((s) => s.snap_date);
