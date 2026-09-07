@@ -164,6 +164,10 @@ create table if not exists public.trades (
 );
 alter table public.trades add column if not exists fut_kind text;   -- 'index' | 'stock'
 alter table public.trades add column if not exists fut_size numeric;
+-- 已實現損益：賣出（或回補空單）時，用當時的平均成本算出來的損益
+-- 買進為 null。美股記在 USD，其餘 TWD。當沖也是靠這個欄位呈現。
+alter table public.trades add column if not exists realized_pl  numeric;
+alter table public.trades add column if not exists realized_ccy text;
 
 -- ------------------------------------------------------------
 -- 快照：每天最多一筆，記錄當時算出的總數與槓桿

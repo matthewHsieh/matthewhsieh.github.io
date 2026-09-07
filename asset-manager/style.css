@@ -331,3 +331,27 @@ dialog input[readonly] { opacity: .7; }
 
 /* 資料日期落後的提醒 */
 .hint.warn-hint { color: var(--danger); }
+
+/* ---------- 買賣收益 ---------- */
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 4px; }
+.mini { background: var(--bg); border-radius: 10px; padding: 9px 10px; text-align: center; }
+.mini .label { font-size: 12px; color: var(--muted); }
+.mini .value { font-size: 16px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.chart-sub { margin-top: 14px; }
+.badge.day-badge { background: var(--primary); color: var(--on-primary); }
+
+/* 長條圖 */
+.bars { display: block; width: 100%; overflow: visible; }
+.bars .zero-line { stroke: var(--muted); stroke-width: 1; opacity: .55; }
+.bars .bar { cursor: pointer; outline: none; }
+.bars .bar.gain { fill: var(--gain); }
+.bars .bar.loss { fill: var(--loss); }
+.bars .bar:hover, .bars .bar:focus-visible { opacity: .78; }
+
+/* 只有一天紀錄時的折線圖替代顯示 */
+.single-point { padding: 6px 2px 2px; }
+.sp-row { display: flex; align-items: center; gap: 8px; padding: 7px 2px; font-variant-numeric: tabular-nums; }
+.sp-row + .sp-row { border-top: 1px solid var(--border); }
+.sp-label { flex: 1; font-size: 14px; }
+.sp-value { font-weight: 700; }
+.sp-note { font-size: 12px; margin: 8px 0 0; }

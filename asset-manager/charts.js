@@ -126,8 +126,18 @@ export function lineChart({ labels, dates, series, format, yZero = false, title 
   wrap.className = 'chart line-chart';
 
   const n = labels.length;
-  if (n < 2) {
-    wrap.innerHTML = `<p class="muted chart-empty">${n === 1 ? '只有一筆紀錄，再多幾天就會出現走勢。' : '還沒有紀錄，走勢圖會在有兩天以上的快照後出現。'}</p>`;
+  if (n === 0) {
+    wrap.innerHTML = '<p class="muted chart-empty">還沒有紀錄。系統每個交易日會自動存一筆，明天就會開始出現走勢。</p>';
+    return wrap;
+  }
+  if (n === 1) {
+    // 只有一天：畫出目前的數值，並說明走勢還要再等一天
+    wrap.innerHTML = `<div class="single-point">
+      ${series.map((s) => `<div class="sp-row"><span class="swatch" style="background:${s.color}"></span>
+        <span class="sp-label">${s.label}</span>
+        <span class="sp-value">${s.values[0] === null || !Number.isFinite(s.values[0]) ? '–' : format(s.values[0])}</span></div>`).join('')}
+      <p class="muted sp-note">${labels[0]}　目前只有一天的紀錄，明天起就會畫出走勢。</p>
+    </div>`;
     return wrap;
   }
 
@@ -257,4 +267,72 @@ function niceTicks(min, max, count) {
   const out = [];
   for (let t = Math.ceil(min / step) * step; t <= max; t += step) out.push(Number(t.toFixed(10)));
   return out;
+}
+
+// ------------------------------------------------------------
+// 長條圖：適合「單日」這種有正有負的數值
+//   顏色用漲跌語意（台灣慣例紅漲綠跌），不是分類色
+//   每根都可點，會顯示日期與金額
+// ------------------------------------------------------------
+export function barChart({ labels, values, format, title }) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chart bar-chart';
+  const pts = values.map((v) => (Number.isFinite(v) ? v : 0));
+  if (!pts.length) {
+    wrap.innerHTML = '<p class="muted chart-empty">還沒有已實現損益。賣出（或平倉）後就會出現。</p>';
+    return wrap;
+  }
+
+  const W = 340, H = 170, padL = 8, padR = 54, padT = 12, padB = 26;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  let max = Math.max(0, ...pts), min = Math.min(0, ...pts);
+  if (max === min) { max += 1; min -= 1; }
+  const pad = (max - min) * 0.12; max += pad; min -= pad;
+  const Y = (v) => padT + plotH - ((v - min) / (max - min)) * plotH;
+  const zeroY = Y(0);
+  const slot = plotW / pts.length;
+  const bw = Math.max(2, Math.min(26, slot * 0.62));
+
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'bars', role: 'img',
+    'aria-label': `${title || ''}，${labels[0]} 至 ${labels[labels.length - 1]}` });
+
+  for (const t of niceTicks(min, max, 3)) {
+    const y = Y(t);
+    if (y < padT - 1 || y > padT + plotH + 1) continue;
+    svg.appendChild(el('line', { x1: padL, y1: y, x2: padL + plotW, y2: y, class: 'grid' }));
+    svg.appendChild(el('text', { x: padL + plotW + 6, y: y + 4, class: 'axis-text' }, format(t, true)));
+  }
+  svg.appendChild(el('line', { x1: padL, y1: zeroY, x2: padL + plotW, y2: zeroY, class: 'zero-line' }));
+
+  const tip = document.createElement('div');
+  tip.className = 'chart-tip';
+  tip.hidden = true;
+
+  pts.forEach((v, i) => {
+    const x = padL + slot * i + (slot - bw) / 2;
+    const y = v >= 0 ? Y(v) : zeroY;
+    const h = Math.max(1.5, Math.abs(Y(v) - zeroY));
+    const r = el('rect', { x, y, width: bw, height: h, rx: Math.min(3, bw / 2),
+      class: v >= 0 ? 'bar gain' : 'bar loss', tabindex: '0',
+      'aria-label': `${labels[i]} ${format(v)}` });
+    const show = () => {
+      tip.hidden = false;
+      tip.innerHTML = `<div class="tip-date">${labels[i]}</div><div class="tip-row"><b class="${v > 0 ? 'gain' : v < 0 ? 'loss' : ''}">${format(v)}</b></div>`;
+      const wb = wrap.getBoundingClientRect();
+      tip.style.left = clamp(((x + bw / 2) / W) * wb.width - 55, 4, Math.max(4, wb.width - 118)) + 'px';
+    };
+    r.addEventListener('pointerenter', show);
+    r.addEventListener('pointerdown', show);
+    r.addEventListener('focus', show);
+    svg.appendChild(r);
+  });
+
+  svg.appendChild(el('text', { x: padL, y: H - 6, class: 'axis-text', 'text-anchor': 'start' }, labels[0]));
+  if (labels.length > 1) {
+    svg.appendChild(el('text', { x: padL + plotW, y: H - 6, class: 'axis-text', 'text-anchor': 'end' }, labels[labels.length - 1]));
+  }
+  wrap.addEventListener('pointerleave', () => (tip.hidden = true));
+  wrap.appendChild(svg);
+  wrap.appendChild(tip);
+  return wrap;
 }

@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
-import { donutChart, lineChart } from './charts.js';
+import { donutChart, lineChart, barChart } from './charts.js';
 
 // ============================================================
 // 初始化
@@ -188,6 +188,46 @@ function futPl(f) {
 const twKnown = (sym) => !!TW_STOCKS[norm(sym)];
 const autoPriceOk = (f) => (f.kind === 'stock' ? twKnown(f.symbol) : !!indexProduct(f.symbol));
 
+// ------------------------------------------------------------
+// 當沖：同一天、同一標的既有買也有賣
+// 直接用交易紀錄判斷，不另外存欄位，刪掉交易後判定也會跟著正確
+// ------------------------------------------------------------
+const tradeKey = (t) =>
+  `${t.trade_date}|${t.market}|${norm(t.symbol)}|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
+
+function dayTradeKeys(trades) {
+  const m = new Map();
+  for (const t of trades) {
+    const k = tradeKey(t);
+    const e = m.get(k) || { buy: 0, sell: 0 };
+    e[t.side] = num(e[t.side]) + num(t.quantity);
+    m.set(k, e);
+  }
+  return new Set([...m].filter(([, e]) => e.buy > 0 && e.sell > 0).map(([k]) => k));
+}
+
+// 已實現損益：美股用目前匯率換算成台幣
+const realizedTwd = (t) =>
+  isNum(t.realized_pl) ? num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1) : null;
+
+function realizedSummary() {
+  const dt = dayTradeKeys(state.trades);
+  const byDate = new Map();
+  let total = 0, day = 0, swing = 0, closes = 0;
+  for (const t of state.trades) {
+    const v = realizedTwd(t);
+    if (v === null) continue;
+    closes += 1;
+    total += v;
+    if (dt.has(tradeKey(t))) day += v; else swing += v;
+    byDate.set(t.trade_date, (byDate.get(t.trade_date) || 0) + v);
+  }
+  const dates = [...byDate.keys()].sort();
+  let cum = 0;
+  const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
+  return { total, day, swing, closes, series, dayKeys: dt };
+}
+
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
 // 依金額由大到小排，前 7 名各給一個顏色，其餘合併成「其他」
 const POS_COLORS = ['var(--pos-1)', 'var(--pos-2)', 'var(--pos-3)', 'var(--pos-4)', 'var(--pos-5)', 'var(--pos-6)', 'var(--pos-7)'];
@@ -346,7 +386,16 @@ function projectTrade(t, opts = {}) {
       : { ...base, side: net > 0 ? 'long' : 'short', lots: Math.abs(net),
           price: opts.reverse ? num(base.price) : num(t.price),
           cost: opts.reverse ? prevCost : newCost };
-    return { table: 'futures', pos, prevShares: prevNet, prevCost, after, prevNet, net, newCost: net === 0 ? null : newCost };
+
+    // 已實現損益：這一筆平掉了多少口，就用平掉的部分乘上與成本的價差
+    let realized = null;
+    if (!opts.reverse && prevNet !== 0 && Math.sign(dir) !== Math.sign(prevNet) && isNum(prevCost)) {
+      const closed = Math.min(qty, Math.abs(prevNet));
+      const perUnit = prevNet > 0 ? num(t.price) - prevCost : prevCost - num(t.price);
+      realized = perUnit * closed * num(base.size);
+    }
+    return { table: 'futures', pos, prevShares: prevNet, prevCost, after, prevNet, net,
+             newCost: net === 0 ? null : newCost, realized, realizedCcy: 'TWD' };
   }
 
   const isUs = t.market === 'us';
@@ -368,7 +417,14 @@ function projectTrade(t, opts = {}) {
     ? null
     : { ...base, shares: newShares, [priceKey]: opts.reverse ? num(base[priceKey]) : num(t.price), [costKey]: newCost };
   if (after && !after.name && t.name) after.name = t.name;
-  return { table: isUs ? 'us_stocks' : 'stocks', pos, prevShares, prevCost, after, newShares, newCost: gone ? null : newCost };
+
+  // 已實現損益：賣出的部分 ×（成交價 − 平均成本）
+  let realized = null;
+  if (!opts.reverse && dir < 0 && prevShares > 0 && isNum(prevCost)) {
+    realized = (num(t.price) - prevCost) * Math.min(qty, prevShares);
+  }
+  return { table: isUs ? 'us_stocks' : 'stocks', pos, prevShares, prevCost, after, newShares,
+           newCost: gone ? null : newCost, realized, realizedCcy: isUs ? 'USD' : 'TWD' };
 }
 
 function restoreProjection(t) {
@@ -431,6 +487,8 @@ async function saveTrade(v) {
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,
+      realized_pl: isNum(proj.realized) ? round2(proj.realized) : null,
+      realized_ccy: isNum(proj.realized) ? proj.realizedCcy : null,
     });
     if (error) throw error;
     await refresh('交易已記錄，部位已更新');
@@ -1153,22 +1211,39 @@ function renderFunds(el) {
 function renderHistory(el) {
   const snaps = state.snapshots;
   const trades = state.trades.slice(0, 200);
+  const rs = realizedSummary();
   const asc = [...snaps].reverse(); // 折線圖由舊到新
 
   el.innerHTML = `
     <div class="card" id="chart-assets"><div class="list-title">資產走勢</div></div>
     <div class="card" id="chart-lev"><div class="list-title">槓桿走勢</div></div>
+    <div class="card">
+      <div class="list-title">買賣收益（已實現）</div>
+      <div class="grid3">
+        <div class="mini"><div class="label">合計</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
+        <div class="mini"><div class="label">當沖</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
+        <div class="mini"><div class="label">波段</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
+      </div>
+      <div id="chart-cum"></div>
+      <div class="sub muted chart-sub">單日已實現損益</div>
+      <div id="chart-daily"></div>
+      <p class="hint">賣出（或平倉）時用當時的平均成本結算，買進不計。當沖＝同一天同一標的既有買也有賣。
+        未實現損益請看「持倉」頁。這裡不會自動調整你的現金餘額，現金請在「資金」頁自行維護。</p>
+    </div>
     ${tradeButton()}
     <div class="card list">
       <div class="list-title">歷史交易紀錄</div>
       ${trades.length
         ? trades.map((t) => `<button type="button" class="item" data-del-trade="${t.id}">
             <span class="item-main">
-              <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${esc(t.symbol)} ${esc(t.name || '')}</span>
+              <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${esc(t.symbol)} ${esc(t.name || '')}${
+                rs.dayKeys.has(tradeKey(t)) ? '<span class="badge day-badge">當沖</span>' : ''}</span>
               <span class="item-sub">${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                 t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
             </span>
-            <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span><span class="item-sub">@ ${fmtMax(t.price, 2)}</span></span>
+            <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
+              <span class="item-sub">@ ${fmtMax(t.price, 2)}${realizedTwd(t) === null ? '' :
+                `　<span class="${plClass(realizedTwd(t))}">${signed(realizedTwd(t))}</span>`}</span></span>
           </button>`).join('')
         : '<p class="muted">尚無交易。按上方「記一筆交易」開始。</p>'}
       ${trades.length ? '<p class="hint">點一筆可刪除並還原部位。要修改請刪除後重新記錄。</p>' : ''}
@@ -1219,6 +1294,19 @@ function renderHistory(el) {
       { label: '槓桿① 資產', color: 'var(--series-1)', values: asc.map((s) => (isNum(s.leverage_asset) ? Number(s.leverage_asset) : null)) },
       { label: '槓桿② 曝險', color: 'var(--series-2)', values: asc.map((s) => (isNum(s.leverage_exposure) ? Number(s.leverage_exposure) : null)) },
     ],
+  }));
+
+  $('#chart-cum', el).appendChild(lineChart({
+    labels: rs.series.map((r) => r.date),
+    dates: rs.series.map((r) => new Date(r.date + 'T00:00:00')),
+    title: '累計已實現損益', format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
+    yZero: true,
+    series: [{ label: '累計已實現損益', color: 'var(--series-1)', values: rs.series.map((r) => r.cum) }],
+  }));
+  $('#chart-daily', el).appendChild(barChart({
+    labels: rs.series.map((r) => r.date.slice(5)),
+    values: rs.series.map((r) => r.daily),
+    title: '單日已實現損益', format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
   }));
 
   $('#snap-btn2', el).onclick = saveSnapshot;
