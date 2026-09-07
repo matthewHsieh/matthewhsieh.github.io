@@ -26,6 +26,7 @@ const state = {
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
   priceInfo: null,
+  donutMode: (() => { try { return localStorage.getItem('donutMode') || 'assets'; } catch { return 'assets'; } })(),
 };
 
 // ============================================================
@@ -174,6 +175,50 @@ function attachLookup(input, kind, onPick) {
 function futNotional(f) {
   return num(f.lots) * num(f.price) * num(f.size);
 }
+// 期貨損益：多單 (現價 − 成本)、空單 (成本 − 現價)，再乘口數與規格
+// 沒填成本就回 null（跟股票一樣不顯示損益）
+function futPl(f) {
+  if (!isNum(f.cost)) return null;
+  const diff = f.side === 'short' ? num(f.cost) - num(f.price) : num(f.price) - num(f.cost);
+  return diff * num(f.lots) * num(f.size);
+}
+
+// 代號對得上行情來源，價格才會每天自動更新
+const twKnown = (sym) => !!TW_STOCKS[norm(sym)];
+const autoPriceOk = (f) => (f.kind === 'stock' ? twKnown(f.symbol) : !!indexProduct(f.symbol));
+
+// 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
+// 依金額由大到小排，前 7 名各給一個顏色，其餘合併成「其他」
+const POS_COLORS = ['var(--pos-1)', 'var(--pos-2)', 'var(--pos-3)', 'var(--pos-4)', 'var(--pos-5)', 'var(--pos-6)', 'var(--pos-7)'];
+const POS_MAX = POS_COLORS.length;
+
+function exposureSlices() {
+  const rate = num(state.settings.usd_twd);
+  const items = [];
+  for (const s of state.stocks) {
+    const v = num(s.shares) * num(s.price);
+    if (v > 0) items.push({ label: `${norm(s.symbol)} ${s.name || ''}`.trim(), sub: '台股', value: v });
+  }
+  for (const f of state.futures) {
+    const v = futNotional(f);
+    if (v > 0) items.push({
+      label: f.contract || futDisplayName(f.kind, f.symbol, f.size),
+      sub: (f.kind === 'stock' ? `個股期・${stockFutLabel(f.size)}型` : '指數期') + (f.side === 'short' ? '・空單' : ''),
+      value: v,
+    });
+  }
+  for (const u of state.us) {
+    const v = num(u.shares) * num(u.price_usd) * rate;
+    if (v > 0) items.push({ label: `${norm(u.symbol)} ${u.name || ''}`.trim(), sub: '複委託', value: v });
+  }
+  items.sort((a, b) => b.value - a.value);
+  const out = items.slice(0, POS_MAX).map((it, i) => ({ ...it, color: POS_COLORS[i] }));
+  const rest = items.slice(POS_MAX);
+  if (rest.length) {
+    out.push({ label: `其他 ${rest.length} 筆`, sub: '', value: sum(rest, (r) => r.value), color: 'var(--pos-other)' });
+  }
+  return out;
+}
 
 function compute() {
   const { settings, stocks, futures, us, balances } = state;
@@ -194,6 +239,8 @@ function compute() {
   const futNet = futLong - futShort;
   const futIndex = sum(futures.filter((f) => f.kind !== 'stock'), futNotional);
   const futStock = sum(futures.filter((f) => f.kind === 'stock'), futNotional);
+  const withCost = futures.filter((f) => isNum(f.cost));
+  const futProfit = withCost.length ? sum(withCost, futPl) : null;
 
   const toTwd = (b) => num(b.amount) * (b.currency === 'USD' ? rate : 1);
   const cash = sum(balances.filter((b) => b.kind === 'cash'), toTwd);
@@ -212,7 +259,7 @@ function compute() {
 
   return {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue,
-    futEquity, futLong, futShort, futGross, futNet, futIndex, futStock,
+    futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
   };
@@ -280,11 +327,24 @@ function projectTrade(t, opts = {}) {
     const prevNet = pos ? (pos.side === 'short' ? -num(pos.lots) : num(pos.lots)) : 0;
     const net = prevNet + dir * qty;
     const base = pos || newPositionRow(t);
+    const prevCost = pos && isNum(pos.cost) ? num(pos.cost) : null;
+
+    // 平均成本：開新倉或翻多空 → 用本次成交價；同方向加碼 → 加權平均；減碼 → 不變
+    let newCost = prevCost;
+    if (!opts.reverse && net !== 0) {
+      if (prevNet === 0 || Math.sign(net) !== Math.sign(prevNet)) {
+        newCost = num(t.price);
+      } else if (Math.abs(net) > Math.abs(prevNet)) {
+        const basis = prevCost ?? num(base.price);
+        newCost = (Math.abs(prevNet) * basis + qty * num(t.price)) / Math.abs(net);
+      }
+    }
     const after = net === 0
       ? null
       : { ...base, side: net > 0 ? 'long' : 'short', lots: Math.abs(net),
-          price: opts.reverse ? num(base.price) : num(t.price) };
-    return { table: 'futures', pos, prevShares: prevNet, prevCost: null, after, prevNet, net };
+          price: opts.reverse ? num(base.price) : num(t.price),
+          cost: opts.reverse ? prevCost : newCost };
+    return { table: 'futures', pos, prevShares: prevNet, prevCost, after, prevNet, net, newCost: net === 0 ? null : newCost };
   }
 
   const isUs = t.market === 'us';
@@ -313,7 +373,10 @@ function restoreProjection(t) {
   const pos = findPosition(t);
   const prev = num(t.prev_shares);
   if (t.market === 'futures') {
-    const after = prev === 0 ? null : { ...(pos || newPositionRow(t)), side: prev > 0 ? 'long' : 'short', lots: Math.abs(prev) };
+    const after = prev === 0
+      ? null
+      : { ...(pos || newPositionRow(t)), side: prev > 0 ? 'long' : 'short', lots: Math.abs(prev),
+          cost: isNum(t.prev_cost) ? num(t.prev_cost) : null };
     return { table: 'futures', pos, after };
   }
   const isUs = t.market === 'us';
@@ -633,19 +696,22 @@ function openFuturesForm(existing) {
       <label><input type="radio" name="side" value="short" ${v.side === 'short' ? 'checked' : ''}><span>空單</span></label>
     </div>
     <label>口數<input name="lots" type="number" step="any" inputmode="decimal" required min="0" value="${esc(num(v.lots))}"></label>
-    <label>價格（每日自動更新）<input name="price" type="number" step="any" inputmode="decimal" required value="${esc(num(v.price))}"></label>
+    <label>目前價格（每日自動更新）<input name="price" type="number" step="any" inputmode="decimal" required value="${esc(num(v.price))}"></label>
+    <label>平均成本（選填，填了就會算損益）<input name="cost" type="number" step="any" inputmode="decimal" value="${isNum(v.cost) ? esc(num(v.cost)) : ''}"></label>
     <div class="preview" data-preview></div>`;
 
   const read = (fd, form) => {
     const kind = fd.get('kind');
     const symbol = norm(fd.get('symbol'));
     const size = kind === 'stock' ? num(fd.get('size')) : (indexProduct(symbol)?.size ?? num(fd.get('mult')) ?? 200);
+    const rawCost = fd.get('cost');
     return {
       kind, symbol, size,
       contract: futDisplayName(kind, symbol, size),
       side: fd.get('side') || 'long',
       lots: num(fd.get('lots')),
       price: num(fd.get('price')),
+      cost: rawCost === '' || rawCost === null ? null : Number(rawCost),
     };
   };
 
@@ -672,9 +738,14 @@ function openFuturesForm(existing) {
           const nm = TW_STOCKS[val.symbol];
           resolved.textContent = nm ? `${val.symbol}　${nm}` : '（輸入股票代號）';
         }
-        preview.textContent = val.lots > 0 && val.price > 0
-          ? `名目 / 曝險 ＝ ${fmtMax(val.lots, 2)} 口 × ${fmtMax(val.price, 2)} × ${fmt(val.size)} ＝ ${fmt(val.lots * val.price * val.size)} 元`
-          : '填好口數與價格後會顯示名目金額';
+        if (val.lots > 0 && val.price > 0) {
+          const pl = futPl({ ...val });
+          preview.innerHTML =
+            `名目 / 曝險 ＝ ${fmtMax(val.lots, 2)} 口 × ${fmtMax(val.price, 2)} × ${fmt(val.size)} ＝ ${fmt(val.lots * val.price * val.size)} 元` +
+            (pl === null ? '<br>填平均成本就會算損益' : `<br>損益 ＝ <span class="${plClass(pl)}">${signed(pl)}</span> 元`);
+        } else {
+          preview.textContent = '填好口數與價格後會顯示名目金額';
+        }
       };
       attachLookup(form.symbol, () => (form.kind.value === 'stock' ? 'stockfut' : 'index'), (m) => {
         if (m.size) form.mult.value = m.size;
@@ -782,7 +853,7 @@ function openTradeForm(defaults = {}) {
           const notional = v.quantity * v.price * num(v.fut_size);
           preview.textContent =
             `${label}：${fmtNet(p.prevNet)} → ${fmtNet(p.net)}　本筆名目 ${fmt(notional)}` +
-            (p.after ? '' : '（部位歸零，將移除）');
+            (p.after ? `　均價 ${fmtMax(p.prevCost, 2)} → ${fmtMax(p.newCost, 2)}` : '（部位歸零，將移除）');
         } else {
           preview.textContent =
             `${label}：持有 ${fmtQty(v.market, p.prevShares)} → ${fmtQty(v.market, p.newShares)}，` +
@@ -908,8 +979,8 @@ function renderOverview(el) {
     <div class="grid2">
       ${stat('總資產', fmt(c.totalAssets))}
       ${stat('負債', fmt(c.liabilities))}
-      ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), '總資產 ÷ 淨資產')}
-      ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), '總曝險 ÷ 淨資產')}
+      ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), c.netAssets > 0 ? '總資產 ÷ 淨資產' : '淨資產不為正，無法計算')}
+      ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), c.netAssets > 0 ? '總曝險 ÷ 淨資產' : `曝險 ${fmtCompact(c.exposure)}，但淨資產不為正`)}
     </div>
     <div class="card">
       <div class="row-between"><span class="list-title">目標金額</span><span>${c.target > 0 ? fmt(c.target) : '<span class="muted">未設定</span>'}</span></div>
@@ -919,7 +990,16 @@ function renderOverview(el) {
         <span class="muted">${c.target > 0 ? (c.netAssets >= c.target ? '已達標 🎉' : '還差 ' + fmt(c.target - c.netAssets)) : '到「設定」輸入目標'}</span>
       </div>
     </div>
-    <div class="card" id="donut-card"><div class="list-title">資產組成</div></div>
+    <div class="card" id="donut-card">
+      <div class="row-between">
+        <span class="list-title">組成</span>
+        <div class="seg-toggle" id="donut-toggle">
+          <button type="button" data-donut="assets">資產組成</button>
+          <button type="button" data-donut="exposure">曝險明細</button>
+        </div>
+      </div>
+      <div id="donut-slot"></div>
+    </div>
     <div class="card list">
       <div class="list-title">曝險</div>
       ${line('台股市值', c.stockValue)}
@@ -934,18 +1014,35 @@ function renderOverview(el) {
     <button type="button" class="block" id="snap-btn">📌 記錄今日快照</button>
     <p class="hint">${priceStamp()}。收盤價、結算價與匯率每天自動更新，不用手動改。匯率 ${fmt(c.rate, 3)}。</p>`;
 
-  $('#donut-card', el).appendChild(donutChart({
-    slices: [
-      { label: '台股', value: c.stockValue, color: 'var(--series-1)' },
-      { label: '複委託', value: c.usValue, color: 'var(--series-2)' },
-      { label: '期貨權益', value: c.futEquity, color: 'var(--series-3)' },
-      { label: '現金', value: c.cash, color: 'var(--series-4)' },
-    ],
-    total: c.totalAssets,
-    centerLabel: '總資產',
-    centerValue: fmtCompact(c.totalAssets),
-    format: fmt,
+  const slot = $('#donut-slot', el);
+  const drawDonut = () => {
+    $$('#donut-toggle button', el).forEach((b) => b.classList.toggle('active', b.dataset.donut === state.donutMode));
+    slot.innerHTML = '';
+    if (state.donutMode === 'exposure') {
+      const slices = exposureSlices();
+      const total = sum(slices, (s) => s.value);
+      slot.appendChild(donutChart({
+        slices, total, centerLabel: '總曝險', centerValue: fmtCompact(total), format: fmt,
+      }));
+    } else {
+      slot.appendChild(donutChart({
+        slices: [
+          { label: '台股', value: c.stockValue, color: 'var(--series-1)' },
+          { label: '複委託', value: c.usValue, color: 'var(--series-2)' },
+          { label: '期貨權益', value: c.futEquity, color: 'var(--series-3)' },
+          { label: '現金', value: c.cash, color: 'var(--series-4)' },
+        ],
+        total: c.totalAssets, centerLabel: '總資產', centerValue: fmtCompact(c.totalAssets), format: fmt,
+      }));
+    }
+  };
+  $$('#donut-toggle button', el).forEach((b) => (b.onclick = () => {
+    state.donutMode = b.dataset.donut;
+    try { localStorage.setItem('donutMode', state.donutMode); } catch {}
+    drawDonut();
   }));
+  drawDonut();
+
   $('#snap-btn', el).onclick = saveSnapshot;
   bindListActions(el);
 }
@@ -956,18 +1053,23 @@ function renderHoldings(el) {
     const v = num(s.shares) * num(s.price);
     const pl = isNum(s.cost) ? v - num(s.shares) * num(s.cost) : null;
     return itemRow('stock', s.id,
-      `${esc(s.symbol)} ${esc(s.name || '')}`,
+      `${esc(s.symbol)} ${esc(s.name || '')}${twKnown(s.symbol) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
       `${fmtQty('tw', s.shares)} × ${fmtMax(s.price, 2)}${isNum(s.cost) ? `　均價 ${fmtMax(s.cost, 2)}` : ''}`,
       fmt(v),
       pl === null ? '' : `<span class="${plClass(pl)}">${signed(pl)}</span>`);
   });
   const futRows = state.futures.map((f) => {
     const isStock = f.kind === 'stock';
+    const pl = futPl(f);
     return itemRow('future', f.id,
-      `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}<span class="badge">${f.side === 'short' ? '空' : '多'}</span>`,
-      `${fmtMax(f.lots, 2)} 口 × ${fmtMax(f.price, 2)} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}`,
+      `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}<span class="badge">${f.side === 'short' ? '空' : '多'}</span>${
+        autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
+      `${fmtMax(f.lots, 2)} 口 × ${fmtMax(f.price, 2)} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}${
+        isNum(f.cost) ? `　均價 ${fmtMax(f.cost, 2)}` : ''}`,
       `名目 ${fmt(futNotional(f))}`,
-      isStock ? `個股期・${stockFutLabel(f.size)}型` : '指數期');
+      pl === null
+        ? `${isStock ? `個股期・${stockFutLabel(f.size)}型` : '指數期'}<span class="muted">・未填成本</span>`
+        : `<span class="${plClass(pl)}">${signed(pl)}</span>`);
   });
   const usRows = state.us.map((s) => {
     const v = num(s.shares) * num(s.price_usd);
@@ -988,7 +1090,9 @@ function renderHoldings(el) {
     tradeButton() +
     section('台股', 'stock', stockRows, `市值 ${fmt(c.stockValue)}　<span class="${plClass(stockPl)}">${signed(stockPl)}</span>`) +
     section('期貨部位（指數 + 個股）', 'future', futRows,
-      `名目合計 ${fmt(c.futGross)}　<span class="muted">多 ${fmt(c.futLong)} / 空 ${fmt(c.futShort)}</span>`) +
+      `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
+        ? '<span class="muted">填了平均成本才會顯示損益</span>'
+        : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}`) +
     section('期貨帳戶權益數', 'balance', equityRows, `合計 ${fmt(c.futEquity)}`, { kind: 'futures_equity', name: '期貨帳戶' }) +
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +
@@ -1120,6 +1224,7 @@ function renderSettings(el) {
         <dt>槓桿②（曝險槓桿）</dt><dd>（台股 ＋ 複委託 ＋ 期貨名目）÷ 淨資產，指數期貨與個股期貨都算</dd>
         <dt>指數期貨名目</dt><dd>口數 × 結算價 × 每點價值（大台 200、小台 50、微台 10）</dd>
         <dt>個股期貨名目</dt><dd>口數 × 標的股價 × 等同股數（大型 2,000 股 ＝ 2 張、小型 100 股）</dd>
+        <dt>期貨損益</dt><dd>多單（現價 − 平均成本）、空單（平均成本 − 現價），再乘口數與規格。沒填平均成本就不顯示損益。</dd>
       </dl>
       <p class="hint">台股名稱清單 ${TW_ENTRIES.length} 檔。價格來源：證交所、櫃買中心、期交所、Yahoo Finance。</p>
     </div>`;

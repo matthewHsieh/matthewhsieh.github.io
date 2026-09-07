@@ -72,7 +72,7 @@ export function donutChart({ slices, total, centerLabel, centerValue, format }) 
   legend.innerHTML = data
     .map((s, i) => `<div class="legend-row" data-i="${i}">
         <span class="swatch" style="background:${s.color}"></span>
-        <span class="legend-label">${s.label}</span>
+        <span class="legend-label">${s.label}${s.sub ? `<span class="legend-sub">${s.sub}</span>` : ''}</span>
         <span class="legend-value">${format(s.value)}</span>
         <span class="legend-pct">${((s.value / total) * 100).toFixed(1)}%</span>
       </div>`)

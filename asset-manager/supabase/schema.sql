@@ -54,6 +54,7 @@ create table if not exists public.futures (
   side       text not null default 'long' check (side in ('long','short')),
   lots       numeric not null default 1,         -- 口數
   price      numeric not null default 0,         -- 結算價 / 標的股價（每日自動更新）
+  cost       numeric,                            -- 平均成本（選填，填了才算損益）
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -62,6 +63,7 @@ create table if not exists public.futures (
 alter table public.futures add column if not exists kind   text;
 alter table public.futures add column if not exists symbol text;
 alter table public.futures add column if not exists size   numeric;
+alter table public.futures add column if not exists cost   numeric;
 
 do $$
 begin

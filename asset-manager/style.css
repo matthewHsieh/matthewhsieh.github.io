@@ -296,3 +296,35 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
 
 /* 對話框內唯讀欄位 */
 dialog input[readonly] { opacity: .7; }
+
+/* ============================================================
+   曝險明細圓餅圖：每一筆部位一塊
+   固定 7 色順序（藍→橘→綠松→黃→洋紅→綠→紅），第 8 塊以後併成「其他」用灰色。
+   相鄰配色與環狀收尾都經過色盲模擬驗證；每一塊在下方圖例都有文字標籤與金額。
+   ============================================================ */
+:root {
+  --pos-1: #2a78d6; --pos-2: #eb6834; --pos-3: #1baf7a; --pos-4: #eda100;
+  --pos-5: #e87ba4; --pos-6: #008300; --pos-7: #e34948; --pos-other: #9ca3af;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pos-1: #3987e5; --pos-2: #d95926; --pos-3: #199e70; --pos-4: #c98500;
+    --pos-5: #d55181; --pos-6: #008300; --pos-7: #e66767; --pos-other: #6b7280;
+  }
+}
+
+/* 圓餅圖切換 */
+.seg-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.seg-toggle button {
+  border: none; border-radius: 0; background: none; padding: 6px 11px;
+  font-size: 13px; color: var(--muted);
+}
+.seg-toggle button + button { border-left: 1px solid var(--border); }
+.seg-toggle button.active { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+
+/* 圖例的第二行小字（台股 / 個股期・大型 / 複委託） */
+.legend-label { display: flex; flex-direction: column; line-height: 1.25; }
+.legend-sub { font-size: 11px; color: var(--muted); }
+
+/* 提醒用的小標籤 */
+.badge.warn-badge { background: var(--danger); color: #fff; }
