@@ -26,6 +26,7 @@ const state = {
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
   priceInfo: null,
+  priceStatus: [],
   donutMode: (() => { try { return localStorage.getItem('donutMode') || 'assets'; } catch { return 'assets'; } })(),
 };
 
@@ -515,7 +516,7 @@ async function loadAll() {
     sb.from('balances').select('*').order('kind').order('created_at'),
     sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
     sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
-    sb.from('market_prices').select('market,as_of,updated_at').order('updated_at', { ascending: false }).limit(1),
+    sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
   const [st, stocks, futures, us, balances, snaps, trades, prices] = results;
@@ -526,7 +527,8 @@ async function loadAll() {
   state.balances = balances.data ?? [];
   state.snapshots = snaps.data ?? [];
   state.trades = trades.data ?? [];
-  state.priceInfo = prices.data?.[0] ?? null;
+  state.priceStatus = prices.data ?? [];
+  state.priceInfo = [...state.priceStatus].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0] ?? null;
 }
 
 async function refresh(msg) {
@@ -963,11 +965,28 @@ function bindListActions(el) {
   $$('[data-trade]', el).forEach((b) => (b.onclick = () => logTrade()));
 }
 
+const MARKET_NAME = { tw: '台股', fut: '指數期貨', us: '美股', fx: '匯率' };
+const statusOf = (m) => state.priceStatus.find((p) => p.market === m);
+// 各市場最新的資料日期；台股是主要基準
+const newestAsOf = () => state.priceStatus.map((p) => p.as_of).filter(Boolean).sort().pop() || null;
+
 function priceStamp() {
   const p = state.priceInfo;
   if (!p) return '報價尚未更新，按右上角 ↻ 抓一次';
   const d = new Date(p.updated_at);
-  return `報價更新於 ${d.toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+  const tw = statusOf('tw');
+  return `報價抓取於 ${d.toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` +
+         (tw?.as_of ? `，台股收盤價為 ${tw.as_of}` : '');
+}
+
+// 資料日期比最新的還舊 → 提醒使用者
+function stalenessNote() {
+  const newest = newestAsOf();
+  if (!newest) return '';
+  const lagging = state.priceStatus.filter((p) => p.as_of && p.as_of < newest);
+  if (!lagging.length) return '';
+  const list = lagging.map((p) => `${MARKET_NAME[p.market] || p.market}停在 ${p.as_of}`).join('、');
+  return `<p class="hint warn-hint">⚠ ${list}（來源尚未發布，不是設定錯誤）。目前最新資料日為 ${newest}。</p>`;
 }
 
 function renderOverview(el) {
@@ -1020,7 +1039,8 @@ function renderOverview(el) {
     </div>
     ${tradeButton()}
     <button type="button" class="block" id="snap-btn">📌 記錄今日快照</button>
-    <p class="hint">${priceStamp()}。收盤價、結算價與匯率每天自動更新，不用手動改。匯率 ${fmt(c.rate, 3)}。</p>`;
+    <p class="hint">${priceStamp()}。收盤價、結算價與匯率每天自動更新，不用手動改。匯率 ${fmt(c.rate, 3)}。</p>
+    ${stalenessNote()}`;
 
   const slot = $('#donut-slot', el);
   const drawDonut = () => {
@@ -1215,6 +1235,16 @@ function renderSettings(el) {
     <div class="card">
       <div class="list-title">行情更新</div>
       <p class="muted sub">${priceStamp()}</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>市場</th><th>資料日期</th><th>檔數</th></tr></thead>
+        <tbody>${['tw', 'fut', 'us', 'fx'].map((m) => {
+          const p = statusOf(m);
+          const stale = p?.as_of && newestAsOf() && p.as_of < newestAsOf();
+          return `<tr><td>${MARKET_NAME[m]}</td>
+            <td class="${stale ? 'loss' : ''}">${p?.as_of ?? '–'}${stale ? ' ⚠' : ''}</td>
+            <td>${p ? fmt(p.symbols) : '–'}</td></tr>`;
+        }).join('')}</tbody>
+      </table></div>
       <button type="button" class="block" id="force-price">立即重新抓取報價</button>
       <p class="hint">每個交易日 16:00（台股 / 期貨 / 匯率）與隔日 06:00（美股）自動更新，並自動存一筆快照。手機沒開也會跑。</p>
     </div>

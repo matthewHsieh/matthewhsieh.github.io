@@ -328,3 +328,6 @@ dialog input[readonly] { opacity: .7; }
 
 /* 提醒用的小標籤 */
 .badge.warn-badge { background: var(--danger); color: #fff; }
+
+/* 資料日期落後的提醒 */
+.hint.warn-hint { color: var(--danger); }

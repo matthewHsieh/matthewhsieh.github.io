@@ -82,32 +82,84 @@ $$;
 
 -- ------------------------------------------------------------
 -- 台股收盤價（上市 + 上櫃）
+--   上市：用證交所「每日收盤行情」MI_INDEX，要帶日期。
+--         （原本用的 STOCK_DAY_ALL 會落後好幾天，2026-09-08 實測仍停在 09-04）
+--         日期以台北時區為準，從最近一天往回找，遇到假日自動退一天。
+--   上櫃：櫃買中心的端點永遠回最新交易日，不用帶日期。
 -- ------------------------------------------------------------
 create or replace function public.refresh_tw_prices()
 returns integer language plpgsql security definer set search_path = public, extensions as $$
-declare n integer := 0; total integer := 0; payload jsonb;
+declare
+  n integer := 0; total integer := 0;
+  payload jsonb; tbl jsonb;
+  d date; i integer; got boolean := false;
 begin
-  perform set_config('statement_timeout', '120s', true);
+  perform set_config('statement_timeout', '180s', true);
 
-  -- 上市
+  -- ---------- 上市：往回找最近一個有資料的交易日 ----------
   begin
-    payload := public.pm_fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')::jsonb;
-    insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-    select 'tw', upper(btrim(e ->> 'Code')), btrim(e ->> 'Name'),
-           public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'), now()
-    from jsonb_array_elements(payload) e
-    where btrim(e ->> 'Code') ~ '^[0-9]{4,6}[A-Z]?$'
-      and public.pm_num(e ->> 'ClosingPrice') > 0
-    on conflict (market, symbol) do update
-      set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
-          as_of = excluded.as_of, updated_at = now();
-    get diagnostics n = row_count; total := total + n;
-    perform public.pm_log('twse', n, true, null);
+    d := (now() at time zone 'Asia/Taipei')::date;
+    for i in 0..8 loop
+      begin
+        payload := public.pm_fetch(
+          'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date='
+          || to_char(d - i, 'YYYYMMDD') || '&type=ALLBUT0999&response=json')::jsonb;
+      exception when others then
+        payload := null;
+      end;
+
+      if payload is not null and payload ->> 'stat' = 'OK' then
+        select t into tbl
+        from jsonb_array_elements(payload -> 'tables') t
+        where t ->> 'title' like '%每日收盤行情%'
+        limit 1;
+
+        if tbl is not null and jsonb_array_length(coalesce(tbl -> 'data', '[]'::jsonb)) > 0 then
+          insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
+          select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1),
+                 public.pm_num(r ->> 8), d - i, now()
+          from jsonb_array_elements(tbl -> 'data') r
+          where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$'
+            and public.pm_num(r ->> 8) > 0
+          on conflict (market, symbol) do update
+            set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+                as_of = excluded.as_of, updated_at = now();
+          get diagnostics n = row_count; total := total + n;
+          perform public.pm_log('twse_mi_index ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
+          got := true;
+          exit;
+        end if;
+      end if;
+    end loop;
+
+    if not got then
+      perform public.pm_log('twse_mi_index', 0, false, 'no trading day found in last 9 days');
+    end if;
   exception when others then
-    perform public.pm_log('twse', 0, false, sqlerrm);
+    perform public.pm_log('twse_mi_index', 0, false, sqlerrm);
   end;
 
-  -- 上櫃
+  -- ---------- 上市備援：MI_INDEX 掛掉時才用（資料可能落後） ----------
+  if not got then
+    begin
+      payload := public.pm_fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')::jsonb;
+      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
+      select 'tw', upper(btrim(e ->> 'Code')), btrim(e ->> 'Name'),
+             public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'), now()
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> 'Code') ~ '^[0-9]{4,6}[A-Z]?$'
+        and public.pm_num(e ->> 'ClosingPrice') > 0
+      on conflict (market, symbol) do update
+        set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+            as_of = excluded.as_of, updated_at = now();
+      get diagnostics n = row_count; total := total + n;
+      perform public.pm_log('twse_stock_day_all(備援)', n, true, null);
+    exception when others then
+      perform public.pm_log('twse_stock_day_all(備援)', 0, false, sqlerrm);
+    end;
+  end if;
+
+  -- ---------- 上櫃 ----------
   begin
     payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')::jsonb;
     insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
@@ -129,36 +181,70 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
--- 指數期貨結算價（同一商品有多個月份，取成交量最大的那個＝近月）
+-- 指數期貨結算價
+--   期交所這個端點會在 JSON 與 CSV 之間變換格式，兩種都要能吃。
+--   同一商品有多個月份，取成交量最大的那個＝近月。
+--   注意：期交所的發布本身就有延遲，as_of 會誠實記錄資料日期。
 -- ------------------------------------------------------------
 create or replace function public.refresh_futures_prices()
 returns integer language plpgsql security definer set search_path = public, extensions as $$
-declare n integer := 0; payload jsonb;
+declare n integer := 0; body text; payload jsonb;
 begin
   perform set_config('statement_timeout', '120s', true);
   begin
-    payload := public.pm_fetch('https://openapi.taifex.com.tw/v1/DailyMarketReportFut')::jsonb;
+    body := public.pm_fetch('https://openapi.taifex.com.tw/v1/DailyMarketReportFut');
 
-    with rows as (
-      select upper(btrim(e ->> 'Contract'))                                    as symbol,
-             coalesce(public.pm_num(e ->> 'SettlementPrice'),
-                      public.pm_num(e ->> 'Last'))                             as price,
-             coalesce(public.pm_num(e ->> 'Volume'), 0)                        as volume,
-             to_date(regexp_replace(e ->> 'Date', '[^0-9]', '', 'g'), 'YYYYMMDD') as as_of
-      from jsonb_array_elements(payload) e
-      where btrim(e ->> 'TradingSession') = '一般'
-    ), best as (
-      select distinct on (symbol) symbol, price, as_of
-      from rows where price > 0
-      order by symbol, volume desc, price
-    )
-    insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-    select 'fut', symbol, null, price, as_of, now() from best
-    on conflict (market, symbol) do update
-      set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+    begin
+      payload := body::jsonb;                      -- JSON 格式
+    exception when others then
+      payload := null;                             -- 不是 JSON，改走 CSV
+    end;
 
-    get diagnostics n = row_count;
-    perform public.pm_log('taifex_fut', n, true, null);
+    if payload is not null then
+      with rows as (
+        select upper(btrim(e ->> 'Contract')) as symbol,
+               coalesce(public.pm_num(e ->> 'SettlementPrice'), public.pm_num(e ->> 'Last')) as price,
+               coalesce(public.pm_num(e ->> 'Volume'), 0) as volume,
+               to_date(regexp_replace(e ->> 'Date', '[^0-9]', '', 'g'), 'YYYYMMDD') as as_of
+        from jsonb_array_elements(payload) e
+        where btrim(e ->> 'TradingSession') = '一般'
+      ), best as (
+        select distinct on (symbol) symbol, price, as_of from rows where price > 0
+        order by symbol, volume desc, price
+      )
+      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
+      select 'fut', symbol, null, price, as_of, now() from best
+      on conflict (market, symbol) do update
+        set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+      get diagnostics n = row_count;
+      perform public.pm_log('taifex_fut(json)', n, true, null);
+    else
+      -- CSV：日期,契約代號,到期月份,開盤,最高,最低,最後成交價,漲跌,漲跌%,成交量,結算價,...,交易時段
+      with lines as (
+        select l, row_number() over () as rn
+        from regexp_split_to_table(replace(body, chr(65279), ''), E'
+?
+') l
+      ), parsed as (
+        select string_to_array(l, ',') as a from lines where rn > 1 and btrim(l) <> ''
+      ), rows as (
+        select upper(btrim(a[2])) as symbol,
+               coalesce(public.pm_num(a[11]), public.pm_num(a[7])) as price,
+               coalesce(public.pm_num(a[10]), 0) as volume,
+               to_date(regexp_replace(a[1], '[^0-9]', '', 'g'), 'YYYYMMDD') as as_of
+        from parsed
+        where array_length(a, 1) >= 18 and btrim(a[18]) = '一般'
+      ), best as (
+        select distinct on (symbol) symbol, price, as_of from rows where price > 0
+        order by symbol, volume desc, price
+      )
+      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
+      select 'fut', symbol, null, price, as_of, now() from best
+      on conflict (market, symbol) do update
+        set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+      get diagnostics n = row_count;
+      perform public.pm_log('taifex_fut(csv)', n, true, null);
+    end if;
   exception when others then
     perform public.pm_log('taifex_fut', 0, false, sqlerrm);
   end;
@@ -166,12 +252,31 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
--- 美金匯率（期交所每日匯率，取最新一天）
+-- 美金匯率
+--   主要用 Yahoo 的 TWD=X（即時），期交所那份會落後好幾天，只當備援。
 -- ------------------------------------------------------------
 create or replace function public.refresh_fx()
 returns numeric language plpgsql security definer set search_path = public, extensions as $$
-declare rate numeric; d date; payload jsonb;
+declare rate numeric; d date; body text; payload jsonb;
 begin
+  -- Yahoo
+  begin
+    body := public.pm_fetch('https://query1.finance.yahoo.com/v8/finance/chart/TWD=X?interval=1d&range=5d');
+    rate := public.pm_num(body::jsonb #>> '{chart,result,0,meta,regularMarketPrice}');
+    d := to_timestamp((body::jsonb #>> '{chart,result,0,meta,regularMarketTime}')::bigint)::date;
+    if rate between 10 and 100 then
+      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
+      values ('fx', 'USDTWD', '美元兌新台幣', rate, coalesce(d, current_date), now())
+      on conflict (market, symbol) do update
+        set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+      perform public.pm_log('yahoo_fx', 1, true, null);
+      return rate;
+    end if;
+  exception when others then
+    perform public.pm_log('yahoo_fx', 0, false, sqlerrm);
+  end;
+
+  -- 備援：期交所每日匯率（取最新一天）
   begin
     payload := public.pm_fetch('https://openapi.taifex.com.tw/v1/DailyForeignExchangeRates')::jsonb;
     select public.pm_num(e ->> 'USD/NTD'),
@@ -186,12 +291,12 @@ begin
       values ('fx', 'USDTWD', '美元兌新台幣', rate, d, now())
       on conflict (market, symbol) do update
         set price = excluded.price, as_of = excluded.as_of, updated_at = now();
-      perform public.pm_log('taifex_fx', 1, true, null);
+      perform public.pm_log('taifex_fx(備援)', 1, true, null);
     else
-      perform public.pm_log('taifex_fx', 0, false, 'no USD/NTD row');
+      perform public.pm_log('taifex_fx(備援)', 0, false, 'no USD/NTD row');
     end if;
   exception when others then
-    perform public.pm_log('taifex_fx', 0, false, sqlerrm);
+    perform public.pm_log('taifex_fx(備援)', 0, false, sqlerrm);
   end;
   return rate;
 end $$;
@@ -329,7 +434,8 @@ begin
   insert into public.snapshots (
     user_id, snap_date, total_assets, liabilities, net_assets, stock_value, us_value,
     futures_margin, futures_notional, cash, leverage_asset, leverage_exposure, target_amount, note)
-  select user_id, current_date,
+  -- 日期用台北時區：美股那班排程在 UTC 22:00 跑，等於台北隔天早上 06:00
+  select user_id, (now() at time zone 'Asia/Taipei')::date,
          round(total_assets, 2), round(liab, 2), round(net_assets, 2), round(stock_value, 2), round(us_value, 2),
          round(fut_equity, 2), round(fut_notional, 2), round(cash, 2),
          case when net_assets > 0 then round(total_assets / net_assets, 4) end,
@@ -431,3 +537,17 @@ end $$;
 
 revoke all on function public.sync_my_positions() from public, anon;
 grant execute on function public.sync_my_positions() to authenticated;
+
+-- ------------------------------------------------------------
+-- 各市場的行情日期（App 用來顯示「資料是哪一天的」）
+-- ------------------------------------------------------------
+create or replace view public.price_status
+with (security_invoker = true) as
+select market,
+       max(as_of)      as as_of,
+       max(updated_at) as updated_at,
+       count(*)        as symbols
+from public.market_prices
+group by market;
+
+grant select on public.price_status to authenticated;
