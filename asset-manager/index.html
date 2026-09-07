@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>資產管理</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- 登入 / 註冊 -->
+<section id="auth-view" class="auth" hidden>
+  <div class="auth-card">
+    <h1>資產管理</h1>
+    <p id="config-warning" class="warn" hidden>
+      尚未設定 <code>config.js</code> 裡的 Supabase URL 與 anon key，請先照 README 完成設定。
+    </p>
+    <form id="auth-form">
+      <label>Email
+        <input name="email" type="email" required autocomplete="email" inputmode="email" placeholder="you@example.com">
+      </label>
+      <label>密碼
+        <input name="password" type="password" required minlength="6" autocomplete="current-password" placeholder="至少 6 碼">
+      </label>
+      <button type="submit" class="primary block" id="auth-submit">登入</button>
+    </form>
+    <p class="auth-switch">
+      <span id="auth-switch-text">還沒有帳號？</span>
+      <button type="button" class="link" id="auth-toggle">註冊</button>
+      <span class="muted"> · </span>
+      <button type="button" class="link" id="auth-forgot">忘記密碼</button>
+    </p>
+    <p id="auth-msg" class="msg"></p>
+  </div>
+</section>
+
+<!-- 主畫面 -->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <span id="topbar-title">總覽</span>
+    <button type="button" id="refresh-btn" class="icon" title="重新整理" aria-label="重新整理">↻</button>
+  </header>
+
+  <main id="main">
+    <section class="tab-panel" data-tab="overview"></section>
+    <section class="tab-panel" data-tab="holdings" hidden></section>
+    <section class="tab-panel" data-tab="funds" hidden></section>
+    <section class="tab-panel" data-tab="history" hidden></section>
+    <section class="tab-panel" data-tab="settings" hidden></section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button type="button" data-tab="overview" class="active">總覽</button>
+    <button type="button" data-tab="holdings">持倉</button>
+    <button type="button" data-tab="funds">資金</button>
+    <button type="button" data-tab="history">紀錄</button>
+    <button type="button" data-tab="settings">設定</button>
+  </nav>
+</div>
+
+<!-- 新增 / 編輯 對話框 -->
+<dialog id="form-dialog">
+  <form id="form-dialog-form" novalidate="false">
+    <h2></h2>
+    <div class="fields"></div>
+    <div class="dialog-actions">
+      <button type="button" id="form-delete" class="danger">刪除</button>
+      <span class="spacer"></span>
+      <button type="button" id="form-cancel">取消</button>
+      <button type="submit" class="primary">儲存</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" hidden></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

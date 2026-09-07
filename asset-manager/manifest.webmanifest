@@ -1,0 +1,15 @@
+{
+  "name": "資產管理",
+  "short_name": "資產",
+  "description": "股票、期貨、複委託、負債、淨資產與槓桿追蹤",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
