@@ -167,7 +167,7 @@ function attachLookup(input, kind, onPick) {
 //   總資產 = 台股市值 + 複委託市值 + 期貨帳戶權益數 + 現金
 //   淨資產 = 總資產 − 負債
 //   槓桿① 資產槓桿 = 總資產 / 淨資產
-//   槓桿② 曝險槓桿 = 總曝險 / 淨資產
+//   槓桿② 曝險槓桿 = 總曝險 / 總資產
 //   總曝險 = 台股市值 + 複委託市值 + 期貨名目（指數期貨 ＋ 個股期貨，多空都算）
 //   期貨名目 = 口數 × 價格 × size
 //     指數期貨 size = 每點價值；個股期貨 size = 等同股數（大 2000 / 小 100）
@@ -252,7 +252,8 @@ function compute() {
   const exposure = stockValue + usValue + futGross;
 
   const leverageAsset = netAssets > 0 ? totalAssets / netAssets : NaN;
-  const leverageExposure = netAssets > 0 ? exposure / netAssets : NaN;
+  // 曝險槓桿以「總資產」為分母：淨資產為負時仍算得出來
+  const leverageExposure = totalAssets > 0 ? exposure / totalAssets : NaN;
 
   const target = num(settings.target_amount);
   const progress = target > 0 ? netAssets / target : NaN;
@@ -555,6 +556,11 @@ async function refreshPrices() {
   }
 }
 
+// 改完部位（尤其是改代號）就把已快取的行情套上去，不用等隔天排程
+async function applyCachedPrices() {
+  try { await sb.rpc('sync_my_positions'); } catch (e) { console.warn('sync_my_positions 失敗', e); }
+}
+
 async function editItem(kind, id, extraDefaults = {}) {
   const ent = ENTITIES[kind];
   const existing = id ? state[ent.key].find((x) => x.id === id) : null;
@@ -575,6 +581,7 @@ async function editItem(kind, id, extraDefaults = {}) {
       if (id) payload.id = id;
       const { error } = await sb.from(ent.table).upsert(payload);
       if (error) throw error;
+      if (ent.table !== 'balances') await applyCachedPrices();
       await refresh('已儲存');
     }
   } catch (e) {
@@ -779,6 +786,7 @@ async function editFutures(id) {
       if (id) payload.id = id;
       const { error } = await sb.from('futures').upsert(payload);
       if (error) throw error;
+      await applyCachedPrices();
       await refresh('已儲存');
     }
   } catch (e) {
@@ -980,7 +988,7 @@ function renderOverview(el) {
       ${stat('總資產', fmt(c.totalAssets))}
       ${stat('負債', fmt(c.liabilities))}
       ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), c.netAssets > 0 ? '總資產 ÷ 淨資產' : '淨資產不為正，無法計算')}
-      ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), c.netAssets > 0 ? '總曝險 ÷ 淨資產' : `曝險 ${fmtCompact(c.exposure)}，但淨資產不為正`)}
+      ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), '總曝險 ÷ 總資產')}
     </div>
     <div class="card">
       <div class="row-between"><span class="list-title">目標金額</span><span>${c.target > 0 ? fmt(c.target) : '<span class="muted">未設定</span>'}</span></div>
@@ -1221,7 +1229,7 @@ function renderSettings(el) {
         <dt>總資產</dt><dd>台股市值 ＋ 複委託市值（換算 TWD）＋ 期貨帳戶權益數 ＋ 現金/存款</dd>
         <dt>淨資產</dt><dd>總資產 － 負債</dd>
         <dt>槓桿①（資產槓桿）</dt><dd>總資產 ÷ 淨資產</dd>
-        <dt>槓桿②（曝險槓桿）</dt><dd>（台股 ＋ 複委託 ＋ 期貨名目）÷ 淨資產，指數期貨與個股期貨都算</dd>
+        <dt>槓桿②（曝險槓桿）</dt><dd>（台股 ＋ 複委託 ＋ 期貨名目）÷ <b>總資產</b>，指數期貨與個股期貨都算</dd>
         <dt>指數期貨名目</dt><dd>口數 × 結算價 × 每點價值（大台 200、小台 50、微台 10）</dd>
         <dt>個股期貨名目</dt><dd>口數 × 標的股價 × 等同股數（大型 2,000 股 ＝ 2 張、小型 100 股）</dd>
         <dt>期貨損益</dt><dd>多單（現價 − 平均成本）、空單（平均成本 − 現價），再乘口數與規格。沒填平均成本就不顯示損益。</dd>

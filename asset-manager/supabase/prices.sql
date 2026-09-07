@@ -288,6 +288,8 @@ end $$;
 -- ------------------------------------------------------------
 -- 每天自動存一筆快照（折線圖的資料來源）
 -- 公式與 App 的 compute() 一致
+--   槓桿① = 總資產 / 淨資產（淨資產須為正）
+--   槓桿② = 總曝險 / 總資產
 -- ------------------------------------------------------------
 create or replace function public.auto_snapshot()
 returns integer language plpgsql security definer set search_path = public as $$
@@ -331,7 +333,7 @@ begin
          round(total_assets, 2), round(liab, 2), round(net_assets, 2), round(stock_value, 2), round(us_value, 2),
          round(fut_equity, 2), round(fut_notional, 2), round(cash, 2),
          case when net_assets > 0 then round(total_assets / net_assets, 4) end,
-         case when net_assets > 0 then round(exposure / net_assets, 4) end,
+         case when total_assets > 0 then round(exposure / total_assets, 4) end,
          round(target, 2), 'auto'
   from g
   where total_assets <> 0 or liab <> 0
@@ -415,3 +417,17 @@ begin
   perform cron.schedule('asset-prices-us', '0 22 * * 1-5',
     $c$select public.update_all_prices(true)$c$);
 end $$;
+
+-- ------------------------------------------------------------
+-- 只同步、不外連：改完部位後馬上套用已快取的行情
+-- （例如把代號從「台玻」改成 1802，價格要立刻跟上）
+-- ------------------------------------------------------------
+create or replace function public.sync_my_positions()
+returns integer language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  return public.sync_positions(auth.uid());
+end $$;
+
+revoke all on function public.sync_my_positions() from public, anon;
+grant execute on function public.sync_my_positions() to authenticated;
