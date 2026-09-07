@@ -175,3 +175,124 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
   background: #111; color: #fff;
   padding: 10px 16px; border-radius: 99px; font-size: 14px; max-width: 90vw;
 }
+
+/* ---------- 代號建議清單 ---------- */
+.suggest {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  margin: -4px 0 10px; background: var(--card);
+}
+.suggest button {
+  border: none; border-radius: 0; text-align: left;
+  padding: 10px 12px; background: none; border-top: 1px solid var(--border);
+}
+.suggest button:first-child { border-top: none; }
+.suggest button:active { background: var(--bg); }
+.suggest b { font-weight: 700; margin-right: 8px; font-variant-numeric: tabular-nums; }
+
+/* ---------- 記一筆交易 ---------- */
+.seg { display: flex; gap: 8px; margin: 10px 0; }
+.seg label { flex: 1; margin: 0; position: relative; }
+.seg input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.seg span {
+  display: block; text-align: center; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px; font-weight: 700; color: var(--text);
+}
+.seg label:nth-child(1) input:checked + span { background: var(--gain); border-color: var(--gain); color: #fff; }
+.seg label:nth-child(2) input:checked + span { background: var(--loss); border-color: var(--loss); color: #fff; }
+.qty-row { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+.resolved { font-size: 14px; margin: -4px 0 6px; min-height: 1.3em; }
+.preview {
+  font-size: 14px; padding: 10px 12px; border-radius: 10px; margin-top: 8px; line-height: 1.5;
+  background: var(--bg); border: 1px solid var(--border);
+}
+.preview.err { color: var(--danger); border-color: var(--danger); }
+.trade-side {
+  display: inline-block; min-width: 1.6em; text-align: center; border-radius: 6px;
+  padding: 1px 4px; margin-right: 6px; color: #fff; font-size: 12px; vertical-align: middle;
+}
+.trade-side.buy { background: var(--gain); }
+.trade-side.sell { background: var(--loss); }
+
+/* ============================================================
+   圖表配色（已用色盲模擬驗證：相鄰色塊在一般視覺與紅綠色盲下皆可分辨）
+   固定槽位：1 台股藍 / 2 複委託橘 / 3 期貨權益紫 / 4 現金綠松
+   顏色跟著「項目」走，不隨金額大小改變
+   ============================================================ */
+:root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #4a3aa7;
+  --series-4: #1baf7a;
+  --grid: #e5e7eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #9085e9;
+    --series-4: #199e70;
+    --grid: #283548;
+  }
+}
+
+.chart { position: relative; margin-top: 10px; }
+.chart-empty { text-align: center; padding: 22px 8px; font-size: 14px; }
+
+/* ---------- 甜甜圈 ---------- */
+.donut { display: block; width: 100%; max-width: 240px; margin: 4px auto 2px; }
+.donut-seg {
+  stroke: var(--card); stroke-width: 2;      /* 色塊之間留 2px 間隙 */
+  transition: opacity .15s; cursor: pointer; outline: none;
+}
+.donut-seg.dim { opacity: .32; }
+.donut-seg:focus-visible { stroke: var(--text); stroke-width: 2.5; }
+.donut-center-label { fill: var(--muted); font-size: 12px; }
+.donut-center-value { fill: var(--text); font-size: 19px; font-weight: 700; }
+
+/* ---------- 圖例（同時是數值表） ---------- */
+.legend { margin-top: 8px; }
+.legend-row {
+  display: grid; grid-template-columns: 12px 1fr auto auto;
+  align-items: center; gap: 8px; padding: 7px 4px; border-radius: 8px;
+  font-size: 14px; font-variant-numeric: tabular-nums; cursor: default;
+}
+.legend-row + .legend-row { border-top: 1px solid var(--border); }
+.legend-row.active { background: var(--bg); }
+.legend .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.legend-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend-value { font-weight: 600; }
+.legend-pct { color: var(--muted); min-width: 3.6em; text-align: right; }
+.legend-inline {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 2px 0 6px;
+}
+.legend-inline .legend-row {
+  display: inline-flex; grid-template-columns: none; gap: 6px;
+  padding: 0; border: none; font-size: 13px; color: var(--muted);
+}
+
+/* ---------- 折線圖 ---------- */
+.line { display: block; width: 100%; overflow: visible; }
+.line .grid { stroke: var(--grid); stroke-width: 1; }
+.line .axis-text { fill: var(--muted); font-size: 10px; }
+.line .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.chart-tip {
+  position: absolute; top: 4px; z-index: 3; pointer-events: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 7px 10px; font-size: 12px; min-width: 124px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .16);
+}
+.chart-tip .tip-date { color: var(--muted); margin-bottom: 3px; }
+.chart-tip .tip-row {
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; line-height: 1.7;
+}
+.chart-tip .tip-row b { margin-left: auto; }
+.chart-tip .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* ---------- 重新整理鈕轉圈 ---------- */
+@keyframes spin { to { transform: rotate(360deg); } }
+.icon.spin { animation: spin .8s linear infinite; }
+
+/* 對話框內唯讀欄位 */
+dialog input[readonly] { opacity: .7; }
