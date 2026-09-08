@@ -29,6 +29,7 @@ const state = {
   ivHistory: [],
   themeTrend: [],
   themeMembers: [],
+  themeInfo: [],
   openTheme: null,
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
@@ -952,10 +953,11 @@ async function loadAll() {
     sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
     sb.rpc('theme_trend', { p_months: 1 }),
     sb.rpc('theme_members', {}),
+    sb.from('theme_info').select('*'),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -968,6 +970,7 @@ async function loadAll() {
   state.ivHistory = ivh.data ?? [];
   state.themeTrend = trend.data ?? [];
   state.themeMembers = members.data ?? [];
+  state.themeInfo = tinfo.data ?? [];
   state.optExpiries = (fwds.data ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
@@ -2187,6 +2190,8 @@ function renderThemes(el) {
     </div>
     ${trend.map((t) => {
       const mine = myThemes.has(t.theme);
+      const info = state.themeInfo.find((i) => i.theme === t.theme);
+      const partial = info && String(info.note || '').startsWith('⚠');
       return `<div class="card theme-card${mine ? ' mine' : ''}" data-theme="${esc(t.theme)}">
         <div class="row-between">
           <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
@@ -2194,14 +2199,23 @@ function renderThemes(el) {
         </div>
         <div class="row-between sub muted">
           <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億</span>
-          <span>${fmt(t.members)} 檔・點開看成分股</span>
+          <span>${fmt(t.members)} 檔・實際營收年增</span>
+        </div>
+        <div class="row-between sub forecast">
+          <span>預測年化成長 ${info && isNum(info.cagr)
+            ? `<b>${(num(info.cagr) * 100).toFixed(1)}%</b>${isNum(info.cagr_low)
+                ? ` <span class="muted">(${(num(info.cagr_low) * 100).toFixed(0)}–${(num(info.cagr_high) * 100).toFixed(0)}%)</span>` : ''}`
+            : '<span class="muted">未查證</span>'}${partial ? '<span class="badge warn-badge">整體市場</span>' : ''}</span>
+          <span class="muted">${info?.horizon ? esc(info.horizon) : ''}</span>
         </div>
         <div class="theme-body" hidden></div>
       </div>`;
     }).join('')}
-    <p class="hint">資料來源：證交所與櫃買中心的每月營收公告，每月 10 日前後更新。
-      族群分類是人工維護的，要增減成分股跟我說。
-      營收成長不等於股價會漲，但產業景氣轉折通常先反映在營收。</p>`;
+    <p class="hint">實際年增來自證交所與櫃買中心的每月營收公告，每月 10 日前後更新。
+      預測年化成長是各研究機構的市場預測，沒有免費 API，由人工整理，查證日期 2026-09-08。
+      <b>標「整體市場」的要特別小心</b>：那個 CAGR 涵蓋的是整個產業，
+      但 AI 相關的細分市場成長遠高於此，用整體數字會嚴重低估。
+      營收成長不等於股價會漲，這頁看的是產業景氣的轉折。</p>`;
 
   $$('.theme-card', el).forEach((card) => {
     card.onclick = () => {
@@ -2209,13 +2223,19 @@ function renderThemes(el) {
       if (!body.hidden) { body.hidden = true; return; }
       $$('.theme-body', el).forEach((b) => (b.hidden = true));
       const rows = state.themeMembers.filter((m) => m.theme === card.dataset.theme);
-      body.innerHTML = rows.length
+      const info = state.themeInfo.find((i) => i.theme === card.dataset.theme);
+      const head = info
+        ? `<div class="forecast-note">
+             <div>${esc(info.note || '')}</div>
+             <div class="muted">預測來源：${esc(info.source || '未註明')}${info.checked_on ? `　查證於 ${esc(info.checked_on)}` : ''}</div>
+           </div>` : '';
+      body.innerHTML = head + (rows.length
         ? rows.map((m) => `<div class="row-between line">
             <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>
             <span>${fmt(num(m.amount) / 100000, 1)} 億　<span class="${plClass(num(m.yoy))}">${
               isNum(m.yoy) ? signed(num(m.yoy) * 100, 1) + '%' : '–'}</span></span>
           </div>`).join('')
-        : '<p class="muted">沒有成分股資料。</p>';
+        : '<p class="muted">沒有成分股資料。</p>');
       body.hidden = false;
     };
   });
