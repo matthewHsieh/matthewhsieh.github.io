@@ -373,3 +373,9 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 /* 預測年化成長 */
 .theme-card .forecast { margin-top: 4px; padding-top: 5px; border-top: 1px dashed var(--border); }
 .forecast-note { font-size: 13px; line-height: 1.55; padding: 6px 2px 10px; }
+
+/* 小眾領域 */
+.theme-card .niche { margin-top: 2px; }
+.theme-card .niche > span:first-child { color: var(--text); }
+.niche-cagr { color: var(--gain); font-size: 15px; }
+.forecast-note .niche-note { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }

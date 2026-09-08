@@ -2191,30 +2191,42 @@ function renderThemes(el) {
     ${trend.map((t) => {
       const mine = myThemes.has(t.theme);
       const info = state.themeInfo.find((i) => i.theme === t.theme);
-      const partial = info && String(info.note || '').startsWith('⚠');
+      // 整體與小眾差一倍以上，代表頭條數字會嚴重誤導
+      const partial = info && isNum(info.cagr) && isNum(info.niche_cagr)
+        && num(info.niche_cagr) > num(info.cagr) * 2;
       return `<div class="card theme-card${mine ? ' mine' : ''}" data-theme="${esc(t.theme)}">
         <div class="row-between">
-          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
+          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}${
+            partial ? '<span class="badge warn-badge">看小眾</span>' : ''}</span>
           <span class="theme-yoy ${plClass(num(t.yoy))}">${signed(num(t.yoy) * 100, 1)}%</span>
         </div>
         <div class="row-between sub muted">
           <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億</span>
           <span>${fmt(t.members)} 檔・實際營收年增</span>
         </div>
-        <div class="row-between sub forecast">
-          <span>預測年化成長 ${info && isNum(info.cagr)
-            ? `<b>${(num(info.cagr) * 100).toFixed(1)}%</b>${isNum(info.cagr_low)
-                ? ` <span class="muted">(${(num(info.cagr_low) * 100).toFixed(0)}–${(num(info.cagr_high) * 100).toFixed(0)}%)</span>` : ''}`
-            : '<span class="muted">未查證</span>'}${partial ? '<span class="badge warn-badge">整體市場</span>' : ''}</span>
-          <span class="muted">${info?.horizon ? esc(info.horizon) : ''}</span>
+        <div class="forecast">
+          <div class="row-between sub">
+            <span class="muted">整體市場預測</span>
+            <span>${info && isNum(info.cagr)
+              ? `${(num(info.cagr) * 100).toFixed(1)}%${isNum(info.cagr_low) && num(info.cagr_low) !== num(info.cagr_high)
+                  ? ` <span class="muted">(${(num(info.cagr_low) * 100).toFixed(0)}–${(num(info.cagr_high) * 100).toFixed(0)}%)</span>` : ''}`
+              : '<span class="muted">未查證</span>'}</span>
+          </div>
+          ${info?.niche ? `<div class="row-between sub niche">
+            <span>${esc(info.niche)}</span>
+            <span class="${isNum(info.niche_cagr) ? 'niche-cagr' : 'muted'}">${isNum(info.niche_cagr)
+              ? `<b>${(num(info.niche_cagr) * 100).toFixed(1)}%</b>${isNum(info.niche_low) && num(info.niche_low) !== num(info.niche_high)
+                  ? ` <span class="muted">(${(num(info.niche_low) * 100).toFixed(0)}–${(num(info.niche_high) * 100).toFixed(0)}%)</span>` : ''}`
+              : '未查證'}</span>
+          </div>` : ''}
         </div>
         <div class="theme-body" hidden></div>
       </div>`;
     }).join('')}
     <p class="hint">實際年增來自證交所與櫃買中心的每月營收公告，每月 10 日前後更新。
-      預測年化成長是各研究機構的市場預測，沒有免費 API，由人工整理，查證日期 2026-09-08。
-      <b>標「整體市場」的要特別小心</b>：那個 CAGR 涵蓋的是整個產業，
-      但 AI 相關的細分市場成長遠高於此，用整體數字會嚴重低估。
+      預測值是各研究機構的市場預測，沒有免費 API，由人工整理，查證日期 2026-09-08。
+      <b>整體市場的 CAGR 幾乎都不是你要的那個數字</b>，因為它含大量與 AI 無關的成熟需求。
+      真正的成長在小眾領域，標「看小眾」的代表兩者差一倍以上，只看整體會嚴重低估。
       營收成長不等於股價會漲，這頁看的是產業景氣的轉折。</p>`;
 
   $$('.theme-card', el).forEach((card) => {
@@ -2226,7 +2238,8 @@ function renderThemes(el) {
       const info = state.themeInfo.find((i) => i.theme === card.dataset.theme);
       const head = info
         ? `<div class="forecast-note">
-             <div>${esc(info.note || '')}</div>
+             ${info.note ? `<div><b>整體市場：</b>${esc(info.note)}</div>` : ''}
+             ${info.niche_note ? `<div class="niche-note"><b>${esc(info.niche || '小眾領域')}：</b>${esc(info.niche_note)}</div>` : ''}
              <div class="muted">預測來源：${esc(info.source || '未註明')}${info.checked_on ? `　查證於 ${esc(info.checked_on)}` : ''}</div>
            </div>` : '';
       body.innerHTML = head + (rows.length
