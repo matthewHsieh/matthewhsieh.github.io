@@ -262,6 +262,8 @@ create policy "read iv history" on public.warrant_iv_history for select to authe
 
 -- 交易紀錄要能記權證
 alter table public.trades add column if not exists war_code text;
+-- 當沖：買賣自成一組結算，完全不動長期部位的股數與均價
+alter table public.trades add column if not exists is_day_trade boolean default false;
 
 -- ------------------------------------------------------------
 -- 交易紀錄：記一筆買/賣，App 會自動更新對應的部位

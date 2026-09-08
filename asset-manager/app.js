@@ -266,14 +266,18 @@ const tradeKey = (t) =>
     : `${t.trade_date}|${t.market}|${norm(t.symbol)}|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
 
 function dayTradeKeys(trades) {
+  const set = new Set();
   const m = new Map();
   for (const t of trades) {
     const k = tradeKey(t);
+    if (t.is_day_trade) set.add(k);          // 明確標記的優先
     const e = m.get(k) || { buy: 0, sell: 0 };
     e[t.side] = num(e[t.side]) + num(t.quantity);
     m.set(k, e);
   }
-  return new Set([...m].filter(([, e]) => e.buy > 0 && e.sell > 0).map(([k]) => k));
+  // 沒標記但同一天同標的有買也有賣，仍視為當沖（相容舊紀錄）
+  for (const [k, e] of m) if (e.buy > 0 && e.sell > 0) set.add(k);
+  return set;
 }
 
 // ------------------------------------------------------------
@@ -561,8 +565,42 @@ function fmtQty(market, q) {
 }
 const fmtNet = (net) => (net === 0 ? '無部位' : `${net > 0 ? '多' : '空'} ${fmtMax(Math.abs(net), 2)} 口`);
 
+// 當沖：同一天的買與賣自己配對結算，完全不碰長期部位的股數與均價。
+// 這是必要的，否則當沖一檔你本來就持有的股票，會把長期部位的均價拉歪，
+// 已實現損益也會變成「賣價 − 混合後均價」而不是「賣價 − 當沖買價」。
+function projectDayTrade(t) {
+  const qty = num(t.quantity);
+  if (!(qty > 0)) return { error: '數量必須大於 0' };
+
+  const legs = state.trades.filter(
+    (x) => x.is_day_trade && x.trade_date === t.trade_date && tradeKey(x) === tradeKey(t));
+  const opp = legs.filter((x) => x.side !== t.side);
+  const own = legs.filter((x) => x.side === t.side);
+  const oppQty = sum(opp, (x) => x.quantity);
+  const ownQty = sum(own, (x) => x.quantity);
+  const openQty = Math.max(0, oppQty - ownQty);      // 還沒被沖掉的反向數量
+  const matched = Math.min(qty, openQty);
+
+  let realized = null;
+  if (matched > 0 && oppQty > 0) {
+    const oppAvg = sum(opp, (x) => num(x.quantity) * num(x.price)) / oppQty;
+    const perUnit = t.side === 'sell' ? num(t.price) - oppAvg : oppAvg - num(t.price);
+    const mult = t.market === 'futures' ? num(t.fut_size)
+               : t.market === 'option' ? OPT_SIZE
+               : t.market === 'warrant' ? WAR_UNITS : 1;
+    realized = perUnit * matched * mult;
+  }
+  return {
+    table: null, pos: null, after: null,        // 不動任何部位
+    prevShares: null, prevCost: null,
+    dayTrade: true, matched, openQty,
+    realized, realizedCcy: t.market === 'us' ? 'USD' : 'TWD',
+  };
+}
+
 // opts.reverse：刪除交易時反向調整，不動均價與現價
 function projectTrade(t, opts = {}) {
+  if (t.is_day_trade && !opts.reverse) return projectDayTrade(t);
   const qty = num(t.quantity);
   if (!(qty > 0)) return { error: '數量必須大於 0' };
   if (t.market === 'option') {
@@ -712,6 +750,7 @@ function changed(pos, after) {
 }
 
 async function writePosition({ table, pos, after }) {
+  if (!table) return false;          // 當沖不動任何部位
   if (after) {
     if (!changed(pos, after)) return false;
     const payload = { ...after, user_id: state.user.id };
@@ -740,6 +779,7 @@ async function saveTrade(v) {
       market: v.market, fut_kind: v.fut_kind ?? null, fut_size: v.fut_size ?? null,
       opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
       war_code: v.market === 'warrant' ? v.symbol : null,
+      is_day_trade: !!v.is_day_trade,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,
@@ -760,6 +800,11 @@ async function deleteTrade(id) {
   const t = state.trades.find((x) => x.id === id);
   if (!t) return;
   if (!confirm(`刪除這筆交易並還原部位？\n${tradeLabel(t)}`)) return;
+  if (t.is_day_trade) {
+    const { error } = await sb.from('trades').delete().eq('id', id);
+    if (error) return fail(error);
+    return refresh('已刪除當沖紀錄');
+  }
   const latest = state.trades.find((x) => {
     if (x.market !== t.market) return false;
     if (t.market === 'option') {
@@ -1394,12 +1439,13 @@ function readTradeForm(fd) {
   let quantity = num(fd.get('quantity'));
   if (tk === 'tw' && fd.get('unit') === 'lot') quantity *= 1000;
 
+  const isDayTrade = fd.get('is_day_trade') === 'on';
   if (tk === 'option') {
     const expiry = String(fd.get('opt_expiry') || '').trim();
     const strike = num(fd.get('opt_strike'));
     const cp = fd.get('opt_cp') === 'put' ? 'put' : 'call';
     return {
-      kindKey: tk, market: 'option', fut_kind: null, fut_size: null,
+      kindKey: tk, market: 'option', fut_kind: null, fut_size: null, is_day_trade: isDayTrade,
       opt_expiry: expiry, opt_strike: strike, opt_cp: cp,
       side: fd.get('side') || 'buy',
       trade_date: fd.get('trade_date') || todayISO(),
@@ -1418,6 +1464,7 @@ function readTradeForm(fd) {
   return {
     kindKey: tk,
     market: meta.market,
+    is_day_trade: isDayTrade,
     fut_kind: meta.fut_kind ?? null,
     fut_size: tk === 'fut_stock' ? num(fd.get('fut_size')) || 2000
             : tk === 'fut_index' ? (indexProduct(symbol)?.size ?? 200) : null,
@@ -1438,6 +1485,8 @@ function openTradeForm(defaults = {}) {
       <label><input type="radio" name="side" value="buy" checked><span>買進</span></label>
       <label><input type="radio" name="side" value="sell"><span>賣出</span></label>
     </div>
+    <label class="check"><input type="checkbox" name="is_day_trade" ${defaults.is_day_trade ? 'checked' : ''}>
+      <span>當沖（買賣自成一組，不動長期部位）</span></label>
     <label>日期<input name="trade_date" type="date" value="${todayISO()}" required></label>
     <label data-row="symbol"><span data-l="symbol">代號</span><input name="symbol" type="text" autocomplete="off" autocapitalize="characters" value="${esc(defaults.symbol || '')}"></label>
     <div class="resolved muted" data-resolved></div>
@@ -1476,6 +1525,16 @@ function openTradeForm(defaults = {}) {
         preview.hidden = false;
         preview.classList.toggle('err', !!p.error);
         if (p.error) { preview.textContent = p.error; return; }
+        if (p.dayTrade) {
+          const cc = tradeCost(v, true);
+          preview.innerHTML =
+            (p.matched > 0
+              ? `當沖沖銷 ${fmtQty(v.market, p.matched)}，已實現 <span class="${plClass(p.realized)}">${signed(p.realized)}</span> 元`
+              : `建立當沖部位 ${fmtQty(v.market, v.quantity)}，等反向那一筆再結算`) +
+            `<br><span class="muted">不影響長期持倉的股數與均價</span>` +
+            `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0 ? `　交易稅 ${fmtMax(cc.tax, 0)}（當沖減半）` : ''}</span>`;
+          return;
+        }
         const label = v.market === 'option'
           ? `TXO ${v.opt_expiry} ${strikeText(v.opt_strike)} ${cpLabel(v.opt_cp)}`
           : `${v.symbol}${v.name ? ' ' + v.name : ''}`;
@@ -1928,7 +1987,7 @@ function renderHistory(el) {
             <span class="item-main">
               <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
                 t.market === 'option' ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}` : `${esc(t.symbol)} ${esc(t.name || '')}`}${
-                rs.dayKeys.has(tradeKey(t)) ? '<span class="badge day-badge">當沖</span>' : ''}</span>
+                t.is_day_trade || rs.dayKeys.has(tradeKey(t)) ? '<span class="badge day-badge">當沖</span>' : ''}</span>
               <span class="item-sub">${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                 t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
             </span>
