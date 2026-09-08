@@ -366,64 +366,84 @@ const costTwd = (t, isDay) => {
 const realizedTwd = (t) =>
   isNum(t.realized_pl) ? num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1) : null;
 
-// 當沖損益直接由配對重算，不依賴當初存下來的值。
-// 這樣即使當初因為代號打成中文而沒配對到，現在也會算出來。
-function dayTradeRealized(trades) {
-  const groups = new Map();
-  for (const t of trades) {
-    if (!t.is_day_trade) continue;
+// 當沖用「先進先出」配對，一趟來回算一組。
+// 不能把整天的買賣平均在一起：同一檔一天來回兩趟，一趟賺一趟賠，
+// 平均後只看得到淨數，看不出哪一趟做錯。
+// 每一組的損益掛在「平倉的那一筆」上。
+const dayMult = (t) =>
+  t.market === 'futures' ? num(t.fut_size)
+  : t.market === 'option' ? OPT_SIZE
+  : t.market === 'warrant' ? WAR_UNITS : 1;
+
+function matchDayTrades(trades, extra) {
+  const byKey = new Map();
+  const push = (t) => {
     const k = tradeKey(t);
-    if (!groups.has(k)) groups.set(k, { buy: [], sell: [], sample: t });
-    groups.get(k)[t.side].push(t);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(t);
+  };
+  for (const t of trades) if (t.is_day_trade) push(t);
+  if (extra) push(extra);
+
+  const perTrade = new Map();   // trade.id -> 這一筆平掉的那一組
+  const openLeft = new Map();   // key -> 還沒沖銷掉的數量
+  for (const [k, list] of byKey) {
+    // 用純字串比較，不要用 localeCompare：它會把符號排在數字前面
+    list.sort((a, b) => {
+      const x = String(a.created_at ?? '￿'), y = String(b.created_at ?? '￿');
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    const queue = [];           // 尚未沖銷的開倉腿，先進先出
+    for (const t of list) {
+      let left = num(t.quantity);
+      const mult = dayMult(t);
+      let pl = 0, matched = 0, basis = 0;
+      while (left > 1e-9 && queue.length && queue[0].side !== t.side) {
+        const head = queue[0];
+        const take = Math.min(left, head.qty);
+        const per = t.side === 'sell' ? num(t.price) - head.price : head.price - num(t.price);
+        pl += per * take * mult;
+        basis += head.price * take;
+        matched += take;
+        head.qty -= take;
+        left -= take;
+        if (head.qty <= 1e-9) queue.shift();
+      }
+      if (matched > 0) {
+        perTrade.set(t.id ?? '__new__', {
+          pl, qty: matched, openAvg: basis / matched,
+          ccy: t.market === 'us' ? 'USD' : 'TWD',
+        });
+      }
+      if (left > 1e-9) queue.push({ side: t.side, qty: left, price: num(t.price) });
+    }
+    openLeft.set(k, sum(queue, (x) => x.qty));
   }
-  const out = new Map();
-  for (const [k, g] of groups) {
-    const bq = sum(g.buy, (x) => x.quantity), sq = sum(g.sell, (x) => x.quantity);
-    const matched = Math.min(bq, sq);
-    if (!(matched > 0)) continue;
-    const bAvg = sum(g.buy, (x) => num(x.quantity) * num(x.price)) / bq;
-    const sAvg = sum(g.sell, (x) => num(x.quantity) * num(x.price)) / sq;
-    const t0 = g.sample;
-    const mult = t0.market === 'futures' ? num(t0.fut_size)
-               : t0.market === 'option' ? OPT_SIZE
-               : t0.market === 'warrant' ? WAR_UNITS : 1;
-    const ccy = t0.market === 'us' ? 'USD' : 'TWD';
-    out.set(k, { value: (sAvg - bAvg) * matched * mult, ccy, matched, open: Math.abs(bq - sq) });
-  }
-  return out;
+  return { perTrade, openLeft };
 }
 
 function realizedSummary() {
-  const dt = dayTradeKeys(state.trades);
-  const dayPl = dayTradeRealized(state.trades);
+  const { perTrade, openLeft } = matchDayTrades(state.trades);
   const byDate = new Map();
   const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
+  const twd = (v, ccy) => v * (ccy === 'USD' ? num(state.settings.usd_twd) : 1);
   let gross = 0, dayNet = 0, swingNet = 0, closes = 0, cost = 0;
 
-  // 當沖：每一組配對算一次損益，掛在該組最後一筆的日期
-  const dayCounted = new Set();
   for (const t of state.trades) {
-    const k = tradeKey(t);
-    if (!t.is_day_trade || dayCounted.has(k)) continue;
-    const r = dayPl.get(k);
-    if (!r) continue;
-    dayCounted.add(k);
-    const v = r.value * (r.ccy === 'USD' ? num(state.settings.usd_twd) : 1);
-    gross += v; dayNet += v; closes += 1;
-    add(t.trade_date, v);
-  }
-
-  // 非當沖：用當初存下來的已實現損益
-  for (const t of state.trades) {
-    if (t.is_day_trade) continue;
-    const v = realizedTwd(t);
-    if (v === null) continue;
-    closes += 1; gross += v; swingNet += v;
-    add(t.trade_date, v);
-  }
-
-  // 成本：每一筆都算，買進也有手續費
-  for (const t of state.trades) {
+    // 損益：當沖看 FIFO 配對結果，其餘看當初存下來的值
+    let v = null;
+    if (t.is_day_trade) {
+      const m = perTrade.get(t.id);
+      if (m) v = twd(m.pl, m.ccy);
+    } else {
+      v = realizedTwd(t);
+    }
+    if (v !== null) {
+      closes += 1; gross += v;
+      if (t.is_day_trade) dayNet += v; else swingNet += v;
+      add(t.trade_date, v);
+    }
+    // 成本：每一筆都算，買進也有手續費
     const c = costTwd(t, !!t.is_day_trade);
     cost += c;
     add(t.trade_date, -c);
@@ -433,8 +453,8 @@ function realizedSummary() {
   const dates = [...byDate.keys()].sort();
   let cum = 0;
   const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
-  // day / swing 都是扣過成本的淨額，加起來等於 total
-  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, closes, series, dayKeys: dt, dayPl };
+  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, closes, series,
+           dayKeys: dayTradeKeys(state.trades), perTrade, openLeft };
 }
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -625,30 +645,19 @@ const fmtNet = (net) => (net === 0 ? '無部位' : `${net > 0 ? '多' : '空'} $
 function projectDayTrade(t) {
   const qty = num(t.quantity);
   if (!(qty > 0)) return { error: '數量必須大於 0' };
-
-  const legs = state.trades.filter(
-    (x) => x.is_day_trade && x.trade_date === t.trade_date && tradeKey(x) === tradeKey(t));
-  const opp = legs.filter((x) => x.side !== t.side);
-  const own = legs.filter((x) => x.side === t.side);
-  const oppQty = sum(opp, (x) => x.quantity);
-  const ownQty = sum(own, (x) => x.quantity);
-  const openQty = Math.max(0, oppQty - ownQty);      // 還沒被沖掉的反向數量
-  const matched = Math.min(qty, openQty);
-
-  let realized = null;
-  if (matched > 0 && oppQty > 0) {
-    const oppAvg = sum(opp, (x) => num(x.quantity) * num(x.price)) / oppQty;
-    const perUnit = t.side === 'sell' ? num(t.price) - oppAvg : oppAvg - num(t.price);
-    const mult = t.market === 'futures' ? num(t.fut_size)
-               : t.market === 'option' ? OPT_SIZE
-               : t.market === 'warrant' ? WAR_UNITS : 1;
-    realized = perUnit * matched * mult;
-  }
+  // 把這一筆接在既有的當沖腿後面，用同一套先進先出邏輯試算
+  const hypothetical = { ...t, id: '__new__', created_at: '￿' };   // 一定排在最後
+  const { perTrade, openLeft } = matchDayTrades(state.trades, hypothetical);
+  const m = perTrade.get('__new__');
   return {
-    table: null, pos: null, after: null,        // 不動任何部位
+    table: null, pos: null, after: null,          // 不動任何部位
     prevShares: null, prevCost: null,
-    dayTrade: true, matched, openQty,
-    realized, realizedCcy: t.market === 'us' ? 'USD' : 'TWD',
+    dayTrade: true,
+    matched: m ? m.qty : 0,
+    openAvg: m ? m.openAvg : null,
+    openQty: openLeft.get(tradeKey(t)) ?? 0,
+    realized: m ? m.pl : null,
+    realizedCcy: t.market === 'us' ? 'USD' : 'TWD',
   };
 }
 
@@ -1586,7 +1595,8 @@ function openTradeForm(defaults = {}) {
           const cc = tradeCost(v, true);
           preview.innerHTML =
             (p.matched > 0
-              ? `當沖沖銷 ${fmtQty(v.market, p.matched)}，已實現 <span class="${plClass(p.realized)}">${signed(p.realized)}</span> 元`
+              ? `沖銷 ${fmtQty(v.market, p.matched)}，配到 ${fmtMax(p.openAvg, 2)} → ${fmtMax(v.price, 2)}，` +
+                `這一趟 <span class="${plClass(p.realized)}">${signed(p.realized)}</span> 元`
               : `建立當沖部位 ${fmtQty(v.market, v.quantity)}，等反向那一筆再結算`) +
             `<br><span class="muted">不影響長期持倉的股數與均價</span>` +
             `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0
@@ -2047,15 +2057,18 @@ function renderHistory(el) {
               <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
                 t.market === 'option' ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}` : `${esc(t.symbol)} ${esc(t.name || '')}`}${
                 t.is_day_trade ? '<span class="badge day-badge">當沖</span>' : ''}</span>
-              <span class="item-sub">${t.is_day_trade && rs.dayPl.get(tradeKey(t))
-                ? `當沖組損益 <span class="${plClass(rs.dayPl.get(tradeKey(t)).value)}">${signed(rs.dayPl.get(tradeKey(t)).value)}</span>・` : ''}${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
+              <span class="item-sub">${(() => {
+                const m = t.is_day_trade ? rs.perTrade.get(t.id) : null;
+                return m ? `沖銷 ${fmtQty(t.market, m.qty)} @ ${fmtMax(m.openAvg, 2)} → ${fmtMax(t.price, 2)}・` : '';
+              })()}${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                 t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
             </span>
             <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
               <span class="item-sub">@ ${fmtMax(t.price, 2)}</span>
               <span class="item-sub">${(() => {
                 const c = costTwd(t, !!t.is_day_trade);
-                const r = t.is_day_trade ? null : realizedTwd(t);
+                const m = t.is_day_trade ? rs.perTrade.get(t.id) : null;
+                const r = m ? m.pl * (m.ccy === 'USD' ? num(state.settings.usd_twd) : 1) : realizedTwd(t);
                 const net = (r ?? 0) - c;
                 return `<span class="${plClass(net)}">${signed(net)}</span>` +
                        `<span class="muted"> 　成本 ${fmt(c)}</span>`;
