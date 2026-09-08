@@ -293,7 +293,7 @@ const TAX = {
   option: 0.001,
 };
 const DEFAULT_FEES = {
-  fee_stock_rate: 0.001425, fee_stock_disc: 1, fee_day_disc: 0.3, fee_min: 20,
+  fee_stock_rate: 0.001425, fee_stock_disc: 0.3, fee_min: 20,
   fee_warrant_disc: 1,
   fee_fut_per_lot: 30,   // 期貨每口，買賣各收一次
   fee_opt_per_lot: 25,   // 選擇權每口，買賣各收一次
@@ -311,8 +311,9 @@ function tradeCost(t, isDay) {
 
   if (t.market === 'tw') {
     const amount = qty * px;
-    const disc = isDay ? feeCfg('fee_day_disc') : feeCfg('fee_stock_disc');
-    const fee = Math.max(feeCfg('fee_min'), amount * feeCfg('fee_stock_rate') * disc);
+    // 手續費折數是跟券商談的，不分當沖或波段
+    const fee = Math.max(feeCfg('fee_min'), amount * feeCfg('fee_stock_rate') * feeCfg('fee_stock_disc'));
+    // 當沖影響的只有政府的證交稅：減半
     const tax = t.side === 'sell' ? amount * (isDay ? TAX.stockDay : TAX.stock) : 0;
     return { fee, tax, total: fee + tax, ccy: 'TWD' };
   }
@@ -2020,10 +2021,8 @@ function renderSettings(el) {
       <p class="sub muted">稅率是法定的、不能改。手續費因券商與折數而異，填你實際的。</p>
       <label>台股手續費率（標準 0.001425）
         <input name="fee_stock_rate" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_stock_rate'))}"></label>
-      <label>台股一般折數（1 = 不打折，0.6 = 六折）
+      <label>券商手續費折數（1 = 不打折，0.3 = 三折）
         <input name="fee_stock_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_stock_disc'))}"></label>
-      <label>台股當沖折數
-        <input name="fee_day_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_day_disc'))}"></label>
       <label>每筆最低手續費（元）
         <input name="fee_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_min'))}"></label>
       <label>權證手續費折數
@@ -2037,15 +2036,15 @@ function renderSettings(el) {
       <label>複委託每筆最低（USD）
         <input name="fee_us_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_us_min'))}"></label>
       <button type="submit" class="primary block">儲存費率</button>
-      <p class="hint">期貨與選擇權是每口固定金額，<b>買進收一次、賣出再收一次</b>，
-        所以一口來回是填的兩倍。複委託也是買賣各收一次。
+      <p class="hint">折數是跟券商談的，<b>當沖和波段都一樣</b>；當沖影響的只有政府的證交稅（減半）。
+        期貨與選擇權是每口固定金額，<b>買進收一次、賣出再收一次</b>，所以一口來回是填的兩倍。複委託也是買賣各收一次。
         ${feeCfg('fee_us_min') > 0 ? '' : '若複委託有每筆最低收費，記得填。'}
         ${feeCfg('fee_us_rate') > 0 ? '' : '<br>⚠ 複委託費率還沒設定，美股交易的成本目前不計入。'}</p>
     </form>
     <div class="card">
       <div class="list-title">法定稅率（不可改）</div>
       <div class="row-between line"><span>台股賣出</span><span>0.300%</span></div>
-      <div class="row-between line"><span>台股當沖賣出</span><span>0.150%</span></div>
+      <div class="row-between line"><span>台股當沖賣出</span><span>0.150%（政府減半）</span></div>
       <div class="row-between line"><span>權證賣出</span><span>0.100%</span></div>
       <div class="row-between line"><span>期貨（買賣各一次）</span><span>0.002%</span></div>
       <div class="row-between line"><span>選擇權（買賣各一次）</span><span>0.100%</span></div>
