@@ -682,6 +682,234 @@ begin
   return total;
 end $fn$;
 
+-- ============================================================
+-- 歷史月底收盤價（族群年化報酬用）
+--   上市：證交所 MI_INDEX 帶日期
+--   上櫃：櫃買 afterTrading/otc 帶日期
+--   只存月底，一年 12 筆，抓三年也才 36 次請求
+-- ============================================================
+create table if not exists public.price_history (
+  market  text not null,
+  symbol  text not null,
+  as_of   date not null,
+  close   numeric not null,
+  name    text,
+  primary key (market, symbol, as_of)
+);
+alter table public.price_history enable row level security;
+drop policy if exists "read history" on public.price_history;
+create policy "read history" on public.price_history for select to authenticated using (true);
+create index if not exists price_history_sym_idx on public.price_history(symbol, as_of);
+
+-- 抓某一天的上市 + 上櫃收盤。回傳筆數；那天沒開盤回 0。
+create or replace function public.fetch_history_day(p_date date)
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; total integer := 0; payload jsonb; tbl jsonb;
+begin
+  perform set_config('statement_timeout', '120s', true);
+
+  -- 上市
+  begin
+    payload := public.pm_fetch(
+      'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date='
+      || to_char(p_date, 'YYYYMMDD') || '&type=ALLBUT0999&response=json')::jsonb;
+    if payload ->> 'stat' = 'OK' then
+      select t into tbl from jsonb_array_elements(payload -> 'tables') t
+      where t ->> 'title' like '%每日收盤行情%' limit 1;
+      if tbl is not null then
+        insert into public.price_history (market, symbol, as_of, close, name)
+        select 'tw', upper(btrim(r ->> 0)), p_date, public.pm_num(r ->> 8), btrim(r ->> 1)
+        from jsonb_array_elements(tbl -> 'data') r
+        where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(r ->> 8) > 0
+        on conflict (market, symbol, as_of) do update set close = excluded.close;
+        get diagnostics n = row_count; total := total + n;
+      end if;
+    end if;
+  exception when others then
+    perform public.pm_log('hist_twse ' || p_date, 0, false, sqlerrm);
+  end;
+
+  -- 上櫃的歷史端點在資料庫端會 SSL 失敗，改由每月存檔累積（見 snapshot_month_end）
+
+  perform public.pm_log('hist ' || p_date, total, total > 0, null);
+  return total;
+end $fn$;
+
+-- 每月存檔：把當月最新的收盤價寫進歷史。
+-- 每天跑，同月份會被覆蓋，月份一過就等於凍結成該月最後一個交易日的收盤。
+-- 上櫃沒有可用的歷史端點，就是靠這個機制長出歷史。
+create or replace function public.snapshot_month_end()
+returns integer language plpgsql security definer set search_path = public as $fn$
+declare d date; n integer;
+begin
+  select max(as_of) into d from public.market_prices where market = 'tw';
+  if d is null then return 0; end if;
+
+  delete from public.price_history
+   where as_of >= date_trunc('month', d)::date and as_of <= d
+     and as_of <> d;
+
+  insert into public.price_history (market, symbol, as_of, close, name)
+  select 'tw', symbol, d, price, name
+  from public.market_prices where market = 'tw' and price > 0
+  on conflict (market, symbol, as_of) do update
+    set close = excluded.close, name = coalesce(excluded.name, price_history.name);
+  get diagnostics n = row_count;
+  return n;
+end $fn$;
+
+-- ------------------------------------------------------------
+-- 族群分類（人工維護，可隨時增修）
+-- ------------------------------------------------------------
+create table if not exists public.themes (
+  theme  text not null,
+  symbol text not null,
+  note   text,
+  sort   integer default 0,
+  primary key (theme, symbol)
+);
+alter table public.themes enable row level security;
+drop policy if exists "read themes" on public.themes;
+create policy "read themes" on public.themes for select to authenticated using (true);
+
+-- ============================================================
+-- 產業趨勢：用月營收年增率衡量族群景氣
+--   台灣強制上市櫃每月公告營收，是全球少見的高頻基本面資料。
+--   把族群成分股的營收加總再比去年同期，就是這個產業的真實成長率，
+--   比看股價漲跌更接近「產業趨勢」本身。
+--   每筆公告都含「當月、上月、去年當月」，所以一次抓就能寫進三個月份，
+--   歷史會隨著每月公告自然累積。
+-- ============================================================
+create table if not exists public.revenue (
+  symbol     text not null,
+  ym         text not null,          -- 資料年月，民國格式如 11507
+  name       text,
+  industry   text,
+  amount     numeric not null,       -- 當月營收
+  updated_at timestamptz not null default now(),
+  primary key (symbol, ym)
+);
+alter table public.revenue enable row level security;
+drop policy if exists "read revenue" on public.revenue;
+create policy "read revenue" on public.revenue for select to authenticated using (true);
+create index if not exists revenue_ym_idx on public.revenue(ym);
+
+-- 民國年月 11507 → 前一個月 / 去年同月
+create or replace function public.pm_ym_add(p_ym text, p_months integer)
+returns text language sql immutable as $fn$
+  select to_char(
+    (to_date(((substr(p_ym,1,3))::int + 1911)::text || right(p_ym,2) || '01','YYYYMMDD')
+     + (p_months || ' months')::interval), 'YYYYMM')::text
+$fn$;
+
+create or replace function public.pm_ym_roc(p_ad text)
+returns text language sql immutable as $fn$
+  select ((substr(p_ad,1,4))::int - 1911)::text || substr(p_ad,5,2)
+$fn$;
+
+create or replace function public.refresh_revenue()
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; total integer := 0; payload jsonb; src text;
+begin
+  perform set_config('statement_timeout', '180s', true);
+  foreach src in array array[
+    'https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
+    'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O'
+  ] loop
+    begin
+      payload := public.pm_fetch(src)::jsonb;
+      -- 當月
+      insert into public.revenue (symbol, ym, name, industry, amount, updated_at)
+      select upper(btrim(e ->> '公司代號')), btrim(e ->> '資料年月'),
+             btrim(e ->> '公司名稱'), btrim(e ->> '產業別'),
+             public.pm_num(e ->> '營業收入-當月營收'), now()
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> '公司代號') ~ '^[0-9]{4,6}[A-Z]?$'
+        and public.pm_num(e ->> '營業收入-當月營收') is not null
+      on conflict (symbol, ym) do update
+        set amount = excluded.amount, name = excluded.name,
+            industry = excluded.industry, updated_at = now();
+      get diagnostics n = row_count; total := total + n;
+
+      -- 上月與去年同月：同一筆公告就有，順手補進歷史
+      insert into public.revenue (symbol, ym, name, industry, amount, updated_at)
+      select upper(btrim(e ->> '公司代號')),
+             public.pm_ym_roc(public.pm_ym_add(btrim(e ->> '資料年月'), -1)),
+             btrim(e ->> '公司名稱'), btrim(e ->> '產業別'),
+             public.pm_num(e ->> '營業收入-上月營收'), now()
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> '公司代號') ~ '^[0-9]{4,6}[A-Z]?$'
+        and public.pm_num(e ->> '營業收入-上月營收') > 0
+      on conflict (symbol, ym) do nothing;
+
+      insert into public.revenue (symbol, ym, name, industry, amount, updated_at)
+      select upper(btrim(e ->> '公司代號')),
+             public.pm_ym_roc(public.pm_ym_add(btrim(e ->> '資料年月'), -12)),
+             btrim(e ->> '公司名稱'), btrim(e ->> '產業別'),
+             public.pm_num(e ->> '營業收入-去年當月營收'), now()
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> '公司代號') ~ '^[0-9]{4,6}[A-Z]?$'
+        and public.pm_num(e ->> '營業收入-去年當月營收') > 0
+      on conflict (symbol, ym) do nothing;
+
+      perform public.pm_log('revenue ' || right(src, 12), n, true, null);
+    exception when others then
+      perform public.pm_log('revenue ' || right(src, 12), 0, false, sqlerrm);
+    end;
+  end loop;
+  return total;
+end $fn$;
+
+-- ------------------------------------------------------------
+-- 族群趨勢：把成分股營收加總後比去年同期
+--   回傳最近 12 個月，每個月一列，可直接畫折線
+-- ------------------------------------------------------------
+create or replace function public.theme_trend(p_months integer default 12)
+returns table (theme text, ym text, amount numeric, yoy numeric, members integer)
+language sql stable security definer set search_path = public as $fn$
+  -- 先把所有月份都聚合起來，才有去年同月可以比；最後才截取要顯示的區間
+  with agg as (
+    select t.theme, r.ym,
+           sum(r.amount) as amount,
+           count(r.symbol)::int as members
+    from public.themes t
+    join public.revenue r on r.symbol = t.symbol
+    group by t.theme, r.ym
+  ),
+  months as (
+    select distinct ym from public.revenue order by ym desc limit p_months
+  )
+  select a.theme, a.ym, a.amount,
+         case when b.amount > 0 then a.amount / b.amount - 1 end as yoy,
+         a.members
+  from agg a
+  join months m on m.ym = a.ym
+  left join agg b on b.theme = a.theme
+                 and b.ym = public.pm_ym_roc(public.pm_ym_add(a.ym, -12))
+  order by a.theme, a.ym;
+$fn$;
+
+-- 族群裡每一檔的最新營收年增，用來看是誰在拉動
+create or replace function public.theme_members(p_ym text default null)
+returns table (theme text, symbol text, name text, ym text,
+               amount numeric, last_year numeric, yoy numeric)
+language sql stable security definer set search_path = public as $fn$
+  with target as (
+    select coalesce(p_ym, (select max(ym) from public.revenue)) as ym
+  )
+  select t.theme, t.symbol, r.name, r.ym, r.amount, ly.amount,
+         case when ly.amount > 0 then r.amount / ly.amount - 1 end
+  from public.themes t
+  cross join target g
+  join public.revenue r on r.symbol = t.symbol and r.ym = g.ym
+  left join public.revenue ly on ly.symbol = t.symbol
+        and ly.ym = public.pm_ym_roc(public.pm_ym_add(g.ym, -12))
+  order by t.theme, t.sort, coalesce(r.amount, 0) desc;
+$fn$;
+
+grant execute on function public.theme_trend(integer) to authenticated;
+grant execute on function public.theme_members(text) to authenticated;
+
 -- ------------------------------------------------------------
 -- 把行情寫回持倉
 --   只在價格真的不同時才 UPDATE：不會新增、不會刪除任何項目
@@ -939,6 +1167,7 @@ begin
   perform public.refresh_fx();
   if p_include_us then perform public.refresh_us_prices(); end if;
   perform public.sync_positions(null);
+  perform public.snapshot_month_end();
   perform public.auto_snapshot();
 end $$;
 

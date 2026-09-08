@@ -359,3 +359,13 @@ dialog input[readonly] { opacity: .7; }
 /* 當沖勾選 */
 label.check { display: flex; align-items: center; gap: 9px; margin: 12px 0; color: var(--text); font-size: 15px; }
 label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-color: var(--primary); }
+
+/* ---------- 族群趨勢 ---------- */
+.theme-card { cursor: pointer; }
+.theme-card:active { opacity: .75; }
+.theme-card.mine { border-color: var(--primary); }
+.theme-yoy { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.theme-body { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 4px; }
+.theme-body .line { font-size: 14px; }
+/* 六個分頁要塞得下 */
+.bottom-nav button { font-size: 12px; padding: 0 2px; }

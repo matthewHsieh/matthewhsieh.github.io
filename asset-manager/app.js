@@ -27,6 +27,9 @@ const state = {
   optExpiries: [],
   warrants: [],
   ivHistory: [],
+  themeTrend: [],
+  themeMembers: [],
+  openTheme: null,
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
   priceInfo: null,
@@ -947,10 +950,12 @@ async function loadAll() {
     sb.from('warrants').select('*').order('created_at'),
     sb.from('warrant_iv_history').select('code,as_of,iv').gte('as_of', ivSince()).order('as_of'),
     sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
+    sb.rpc('theme_trend', { p_months: 1 }),
+    sb.rpc('theme_members', {}),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -961,6 +966,8 @@ async function loadAll() {
   state.options = opts.data ?? [];
   state.warrants = wars.data ?? [];
   state.ivHistory = ivh.data ?? [];
+  state.themeTrend = trend.data ?? [];
+  state.themeMembers = members.data ?? [];
   state.optExpiries = (fwds.data ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
@@ -1726,7 +1733,7 @@ async function logTrade(defaults) {
 // ============================================================
 // 畫面
 // ============================================================
-const TITLES = { overview: '總覽', holdings: '持倉', funds: '資金', history: '紀錄', settings: '設定' };
+const TITLES = { overview: '總覽', holdings: '持倉', funds: '資金', themes: '族群', history: '紀錄', settings: '設定' };
 
 const stat = (label, value, extra = '') =>
   `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div>${extra ? `<div class="sub muted">${extra}</div>` : ''}</div>`;
@@ -2144,6 +2151,76 @@ function renderHistory(el) {
   bindListActions(el);
 }
 
+// ------------------------------------------------------------
+// 族群趨勢
+//   用月營收年增率衡量產業景氣，不是看股價漲跌。
+//   台灣強制上市櫃每月公告營收，這是全球少見的高頻基本面資料。
+// ------------------------------------------------------------
+const heldSymbols = () => new Set([
+  ...state.stocks.map((x) => norm(x.symbol)),
+  ...state.futures.filter((f) => f.kind === 'stock').map((f) => norm(f.symbol)),
+  ...state.warrants.map((w) => norm(w.underlying)),
+]);
+
+const rocYm = (ym) => {
+  const y = Number(String(ym).slice(0, 3)) + 1911;
+  return `${y}/${String(ym).slice(3)}`;
+};
+
+function renderThemes(el) {
+  const trend = [...state.themeTrend].filter((t) => isNum(t.yoy)).sort((a, b) => num(b.yoy) - num(a.yoy));
+  const held = heldSymbols();
+  const ym = state.themeTrend[0]?.ym;
+
+  if (!trend.length) {
+    el.innerHTML = `<div class="card"><p class="muted">還沒有營收資料。按右上角 ↻ 更新，或等下次自動更新。</p></div>`;
+    return;
+  }
+
+  const myThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="list-title">產業營收年增率</div>
+      <p class="sub muted">${ym ? rocYm(ym) + ' 月營收' : ''}，同族群成分股加總後比去年同月。
+        這是產業本身的成長，不是股價漲跌。</p>
+    </div>
+    ${trend.map((t) => {
+      const mine = myThemes.has(t.theme);
+      return `<div class="card theme-card${mine ? ' mine' : ''}" data-theme="${esc(t.theme)}">
+        <div class="row-between">
+          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
+          <span class="theme-yoy ${plClass(num(t.yoy))}">${signed(num(t.yoy) * 100, 1)}%</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億</span>
+          <span>${fmt(t.members)} 檔・點開看成分股</span>
+        </div>
+        <div class="theme-body" hidden></div>
+      </div>`;
+    }).join('')}
+    <p class="hint">資料來源：證交所與櫃買中心的每月營收公告，每月 10 日前後更新。
+      族群分類是人工維護的，要增減成分股跟我說。
+      營收成長不等於股價會漲，但產業景氣轉折通常先反映在營收。</p>`;
+
+  $$('.theme-card', el).forEach((card) => {
+    card.onclick = () => {
+      const body = $('.theme-body', card);
+      if (!body.hidden) { body.hidden = true; return; }
+      $$('.theme-body', el).forEach((b) => (b.hidden = true));
+      const rows = state.themeMembers.filter((m) => m.theme === card.dataset.theme);
+      body.innerHTML = rows.length
+        ? rows.map((m) => `<div class="row-between line">
+            <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>
+            <span>${fmt(num(m.amount) / 100000, 1)} 億　<span class="${plClass(num(m.yoy))}">${
+              isNum(m.yoy) ? signed(num(m.yoy) * 100, 1) + '%' : '–'}</span></span>
+          </div>`).join('')
+        : '<p class="muted">沒有成分股資料。</p>';
+      body.hidden = false;
+    };
+  });
+}
+
 function renderSettings(el) {
   const st = state.settings;
   el.innerHTML = `
@@ -2276,7 +2353,7 @@ function renderSettings(el) {
   };
 }
 
-const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, history: renderHistory, settings: renderSettings };
+const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, themes: renderThemes, history: renderHistory, settings: renderSettings };
 
 function render() {
   if (!state.user) return;
