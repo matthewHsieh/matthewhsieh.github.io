@@ -23,6 +23,8 @@ const state = {
   futures: [],
   us: [],
   balances: [],
+  options: [],
+  optExpiries: [],
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
   priceInfo: null,
@@ -48,6 +50,7 @@ const sum = (arr, f) => arr.reduce((acc, x) => acc + num(f(x)), 0);
 const round2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
 const norm = (s) => String(s ?? '').trim().toUpperCase();
 const sameSymbol = (a, b) => norm(a) === norm(b);
+const btrimEq = (a, b) => String(a ?? '').trim() === String(b ?? '').trim();
 const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -88,6 +91,34 @@ const INDEX_FUTURES = [
   { symbol: 'ZFF', name: '小型金融期貨', size: 250 },
 ];
 const indexProduct = (sym) => INDEX_FUTURES.find((p) => p.symbol === norm(sym));
+
+// 台指選擇權：每點 50 元
+const OPT_SIZE = 50;
+const cpLabel = (cp) => (cp === 'put' ? '賣權' : '買權');
+const strikeText = (k) => String(num(k));
+const optLabel = (o) =>
+  `TXO ${esc(o.expiry)} ${strikeText(o.strike)} ${cpLabel(o.cp)}`;
+
+// 權利金市值：買方為正（資產），賣方為負（負債）
+const optValue = (o) => num(o.lots) * num(o.price) * num(o.size ?? OPT_SIZE) * (o.side === 'short' ? -1 : 1);
+// delta 曝險（帶方向）：賣方要反號
+const optDeltaExp = (o) =>
+  isNum(o.delta) && isNum(o.forward)
+    ? num(o.lots) * num(o.delta) * num(o.forward) * num(o.size ?? OPT_SIZE) * (o.side === 'short' ? -1 : 1)
+    : null;
+// 未實現損益
+const optPl = (o) =>
+  isNum(o.cost)
+    ? (num(o.price) - num(o.cost)) * num(o.lots) * num(o.size ?? OPT_SIZE) * (o.side === 'short' ? -1 : 1)
+    : null;
+// 最大風險：買方最多賠光權利金；賣方賣權賠到履約價歸零；賣方買權沒有上限
+function optMaxRisk(o) {
+  const size = num(o.size ?? OPT_SIZE), lots = num(o.lots);
+  const basis = isNum(o.cost) ? num(o.cost) : num(o.price);
+  if (o.side !== 'short') return { value: lots * basis * size, unlimited: false };
+  if (o.cp === 'put') return { value: Math.max(0, num(o.strike) - basis) * lots * size, unlimited: false };
+  return { value: null, unlimited: true };
+}
 
 // 個股期貨規格：曝險等同的現股股數
 const STOCK_FUT_SIZES = [
@@ -193,7 +224,9 @@ const autoPriceOk = (f) => (f.kind === 'stock' ? twKnown(f.symbol) : !!indexProd
 // 直接用交易紀錄判斷，不另外存欄位，刪掉交易後判定也會跟著正確
 // ------------------------------------------------------------
 const tradeKey = (t) =>
-  `${t.trade_date}|${t.market}|${norm(t.symbol)}|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
+  t.market === 'option'
+    ? `${t.trade_date}|option|${String(t.opt_expiry ?? '').trim()}|${num(t.opt_strike)}|${t.opt_cp ?? ''}`
+    : `${t.trade_date}|${t.market}|${norm(t.symbol)}|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
 
 function dayTradeKeys(trades) {
   const m = new Map();
@@ -252,6 +285,14 @@ function exposureSlices() {
     const v = num(u.shares) * num(u.price_usd) * rate;
     if (v > 0) items.push({ label: `${norm(u.symbol)} ${u.name || ''}`.trim(), sub: '複委託', value: v });
   }
+  for (const o of state.options) {
+    const v = Math.abs(optDeltaExp(o) ?? 0);
+    if (v > 0) items.push({
+      label: optLabel(o),
+      sub: `選擇權・${o.side === 'short' ? '賣方' : '買方'}（delta 曝險）`,
+      value: v,
+    });
+  }
   items.sort((a, b) => b.value - a.value);
   const out = items.slice(0, POS_MAX).map((it, i) => ({ ...it, color: POS_COLORS[i] }));
   const rest = items.slice(POS_MAX);
@@ -283,14 +324,26 @@ function compute() {
   const withCost = futures.filter((f) => isNum(f.cost));
   const futProfit = withCost.length ? sum(withCost, futPl) : null;
 
+  // 選擇權
+  const opts = state.options;
+  const optMarket = sum(opts, optValue);                       // 權利金市值（買方正、賣方負）
+  const optExposure = opts.reduce((a, o) => a + Math.abs(optDeltaExp(o) ?? 0), 0);  // 曝險取絕對值加總
+  const optNetDelta = opts.reduce((a, o) => a + (optDeltaExp(o) ?? 0), 0);          // 淨方向部位
+  const optWithPl = opts.filter((o) => isNum(o.cost));
+  const optProfit = optWithPl.length ? sum(optWithPl, optPl) : null;
+  const optRisks = opts.map(optMaxRisk);
+  const optRiskUnlimited = optRisks.some((r) => r.unlimited);
+  const optMaxLoss = optRisks.reduce((a, r) => a + (r.value ?? 0), 0);
+  const optNoDelta = opts.some((o) => !isNum(o.delta));
+
   const toTwd = (b) => num(b.amount) * (b.currency === 'USD' ? rate : 1);
   const cash = sum(balances.filter((b) => b.kind === 'cash'), toTwd);
   const futEquity = sum(balances.filter((b) => b.kind === 'futures_equity'), toTwd);
   const liabilities = sum(balances.filter((b) => b.kind === 'liability'), toTwd);
 
-  const totalAssets = stockValue + usValue + futEquity + cash;
+  const totalAssets = stockValue + usValue + futEquity + cash + optMarket;
   const netAssets = totalAssets - liabilities;
-  const exposure = stockValue + usValue + futGross;
+  const exposure = stockValue + usValue + futGross + optExposure;
 
   const leverageAsset = netAssets > 0 ? totalAssets / netAssets : NaN;
   // 曝險槓桿以「總資產」為分母：淨資產為負時仍算得出來
@@ -302,6 +355,7 @@ function compute() {
   return {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
+    optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optRiskUnlimited, optNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
   };
@@ -316,12 +370,17 @@ const TRADE_KINDS = {
   tw:        { label: '台股',     market: 'tw' },
   fut_index: { label: '指數期貨', market: 'futures', fut_kind: 'index' },
   fut_stock: { label: '個股期貨', market: 'futures', fut_kind: 'stock' },
+  option:    { label: '台指選擇權', market: 'option' },
   us:        { label: '複委託',   market: 'us' },
 };
 const tradeKindOf = (t) =>
   t.market === 'futures' ? (t.fut_kind === 'stock' ? 'fut_stock' : 'fut_index') : t.market;
 
 function findPosition(t) {
+  if (t.market === 'option') {
+    return state.options.find((o) =>
+      btrimEq(o.expiry, t.opt_expiry) && num(o.strike) === num(t.opt_strike) && o.cp === t.opt_cp);
+  }
   if (t.market === 'tw') return state.stocks.find((s) => sameSymbol(s.symbol, t.symbol));
   if (t.market === 'us') return state.us.find((s) => sameSymbol(s.symbol, t.symbol));
   const kind = t.fut_kind || 'index';
@@ -339,6 +398,10 @@ function futDisplayName(kind, symbol, size) {
 }
 
 function newPositionRow(t) {
+  if (t.market === 'option') {
+    return { contract: 'TXO', expiry: String(t.opt_expiry).trim(), strike: num(t.opt_strike),
+             cp: t.opt_cp, size: OPT_SIZE, price: num(t.price) };
+  }
   if (t.market === 'futures') {
     const kind = t.fut_kind || 'index';
     const size = kind === 'stock' ? num(t.fut_size) || 2000 : indexProduct(t.symbol)?.size ?? 200;
@@ -351,7 +414,7 @@ function newPositionRow(t) {
 
 function fmtQty(market, q) {
   q = num(q);
-  if (market === 'futures') return `${fmtMax(q, 2)} 口`;
+  if (market === 'futures' || market === 'option') return `${fmtMax(q, 2)} 口`;
   if (market === 'tw') return q !== 0 && q % 1000 === 0 ? `${fmt(q / 1000)} 張` : `${fmt(q)} 股`;
   return `${fmtMax(q, 4)} 股`;
 }
@@ -361,9 +424,46 @@ const fmtNet = (net) => (net === 0 ? '無部位' : `${net > 0 ? '多' : '空'} $
 function projectTrade(t, opts = {}) {
   const qty = num(t.quantity);
   if (!(qty > 0)) return { error: '數量必須大於 0' };
-  if (!String(t.symbol ?? '').trim()) return { error: '請輸入代號或商品' };
+  if (t.market === 'option') {
+    if (!String(t.opt_expiry ?? '').trim() || !(num(t.opt_strike) > 0)) {
+      return { error: '請選擇到期與履約價' };
+    }
+  } else if (!String(t.symbol ?? '').trim()) {
+    return { error: '請輸入代號或商品' };
+  }
   const dir = t.side === 'buy' ? 1 : -1;
   const pos = findPosition(t);
+
+  if (t.market === 'option') {
+    const prevNet = pos ? (pos.side === 'short' ? -num(pos.lots) : num(pos.lots)) : 0;
+    const net = prevNet + dir * qty;
+    const base = pos || newPositionRow(t);
+    const prevCost = pos && isNum(pos.cost) ? num(pos.cost) : null;
+
+    let newCost = prevCost;
+    if (!opts.reverse && net !== 0) {
+      if (prevNet === 0 || Math.sign(net) !== Math.sign(prevNet)) newCost = num(t.price);
+      else if (Math.abs(net) > Math.abs(prevNet)) {
+        const basis = prevCost ?? num(base.price);
+        newCost = (Math.abs(prevNet) * basis + qty * num(t.price)) / Math.abs(net);
+      }
+    }
+    const after = net === 0
+      ? null
+      : { ...base, side: net > 0 ? 'long' : 'short', lots: Math.abs(net),
+          price: opts.reverse ? num(base.price) : num(t.price),
+          cost: opts.reverse ? prevCost : newCost };
+
+    // 已實現：平掉的口數 ×（權利金價差）× 50，賣方方向相反
+    let realized = null;
+    if (!opts.reverse && prevNet !== 0 && Math.sign(dir) !== Math.sign(prevNet) && isNum(prevCost)) {
+      const closed = Math.min(qty, Math.abs(prevNet));
+      const perUnit = prevNet > 0 ? num(t.price) - prevCost : prevCost - num(t.price);
+      realized = perUnit * closed * OPT_SIZE;
+    }
+    return { table: 'options', pos, prevShares: prevNet, prevCost, after, prevNet, net,
+             newCost: net === 0 ? null : newCost, realized, realizedCcy: 'TWD' };
+  }
 
   if (t.market === 'futures') {
     const prevNet = pos ? (pos.side === 'short' ? -num(pos.lots) : num(pos.lots)) : 0;
@@ -430,6 +530,13 @@ function projectTrade(t, opts = {}) {
 function restoreProjection(t) {
   const pos = findPosition(t);
   const prev = num(t.prev_shares);
+  if (t.market === 'option') {
+    const after = prev === 0
+      ? null
+      : { ...(pos || newPositionRow(t)), side: prev > 0 ? 'long' : 'short', lots: Math.abs(prev),
+          cost: isNum(t.prev_cost) ? num(t.prev_cost) : null };
+    return { table: 'options', pos, after };
+  }
   if (t.market === 'futures') {
     const after = prev === 0
       ? null
@@ -484,6 +591,7 @@ async function saveTrade(v) {
     const { error } = await sb.from('trades').insert({
       user_id: state.user.id,
       market: v.market, fut_kind: v.fut_kind ?? null, fut_size: v.fut_size ?? null,
+      opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,
@@ -504,9 +612,14 @@ async function deleteTrade(id) {
   const t = state.trades.find((x) => x.id === id);
   if (!t) return;
   if (!confirm(`刪除這筆交易並還原部位？\n${tradeLabel(t)}`)) return;
-  const latest = state.trades.find(
-    (x) => x.market === t.market && sameSymbol(x.symbol, t.symbol) &&
-           (t.market !== 'futures' || (x.fut_kind === t.fut_kind && num(x.fut_size) === num(t.fut_size))));
+  const latest = state.trades.find((x) => {
+    if (x.market !== t.market) return false;
+    if (t.market === 'option') {
+      return btrimEq(x.opt_expiry, t.opt_expiry) && num(x.opt_strike) === num(t.opt_strike) && x.opt_cp === t.opt_cp;
+    }
+    if (!sameSymbol(x.symbol, t.symbol)) return false;
+    return t.market !== 'futures' || (x.fut_kind === t.fut_kind && num(x.fut_size) === num(t.fut_size));
+  });
   const proj = latest?.id === t.id
     ? restoreProjection(t)
     : projectTrade({ ...t, side: t.side === 'buy' ? 'sell' : 'buy' }, { reverse: true });
@@ -574,10 +687,12 @@ async function loadAll() {
     sb.from('balances').select('*').order('kind').order('created_at'),
     sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
     sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
+    sb.from('options').select('*').order('expiry').order('strike'),
+    sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, fwds, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -585,6 +700,10 @@ async function loadAll() {
   state.balances = balances.data ?? [];
   state.snapshots = snaps.data ?? [];
   state.trades = trades.data ?? [];
+  state.options = opts.data ?? [];
+  state.optExpiries = (fwds.data ?? [])
+    .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
+    .sort((a, b) => a.expiry.localeCompare(b.expiry));
   state.priceStatus = prices.data ?? [];
   state.priceInfo = [...state.priceStatus].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0] ?? null;
 }
@@ -833,6 +952,102 @@ function openFuturesForm(existing) {
   });
 }
 
+function openOptionsForm(existing) {
+  const v = existing || { expiry: state.optExpiries[0]?.expiry ?? '', strike: '', cp: 'call', side: 'long', lots: 1, cost: '' };
+  const expOpts = state.optExpiries.length
+    ? state.optExpiries.map((e) =>
+        `<option value="${esc(e.expiry)}" ${String(v.expiry) === e.expiry ? 'selected' : ''}>${esc(e.expiry)}（遠期 ${fmt(e.forward)}）</option>`).join('')
+    : `<option value="${esc(v.expiry)}">${esc(v.expiry || '尚未載入到期別')}</option>`;
+
+  const html = `
+    <label>到期<select name="expiry">${expOpts}</select></label>
+    <label>履約價<input name="strike" type="number" step="any" inputmode="decimal" required value="${esc(v.strike)}" placeholder="47000"></label>
+    <label>買權 / 賣權<select name="cp">
+      <option value="call" ${v.cp !== 'put' ? 'selected' : ''}>買權 Call</option>
+      <option value="put" ${v.cp === 'put' ? 'selected' : ''}>賣權 Put</option>
+    </select></label>
+    <div class="seg">
+      <label><input type="radio" name="side" value="long" ${v.side !== 'short' ? 'checked' : ''}><span>買方</span></label>
+      <label><input type="radio" name="side" value="short" ${v.side === 'short' ? 'checked' : ''}><span>賣方</span></label>
+    </div>
+    <label>口數<input name="lots" type="number" step="any" inputmode="decimal" required min="0" value="${esc(num(v.lots))}"></label>
+    <label>平均成本（點，選填）<input name="cost" type="number" step="any" inputmode="decimal" value="${isNum(v.cost) ? esc(num(v.cost)) : ''}"></label>
+    <div class="preview" data-preview></div>`;
+
+  const read = (fd) => ({
+    contract: 'TXO',
+    expiry: String(fd.get('expiry') || '').trim(),
+    strike: num(fd.get('strike')),
+    cp: fd.get('cp') === 'put' ? 'put' : 'call',
+    side: fd.get('side') || 'long',
+    lots: num(fd.get('lots')),
+    size: OPT_SIZE,
+    cost: fd.get('cost') === '' || fd.get('cost') === null ? null : Number(fd.get('cost')),
+  });
+
+  return openDialog({
+    title: existing ? '編輯選擇權部位' : '新增選擇權部位',
+    html, allowDelete: !!existing,
+    onMount: (form) => {
+      const preview = $('[data-preview]', form);
+      const update = () => {
+        const val = read(new FormData(form));
+        const fwd = state.optExpiries.find((e) => e.expiry === val.expiry)?.forward;
+        const cur = existing && existing.expiry === val.expiry && num(existing.strike) === val.strike && existing.cp === val.cp
+          ? num(existing.price) : null;
+        const lines = [];
+        if (fwd) lines.push(`${val.expiry} 隱含遠期指數 ${fmt(fwd)}`);
+        if (cur !== null) {
+          const o = { ...val, price: cur, delta: existing.delta, forward: existing.forward };
+          lines.push(`權利金 ${fmtMax(cur, 2)} 點 → 市值 ${fmt(optValue(o))} 元`);
+          const de = optDeltaExp(o);
+          if (de !== null) lines.push(`delta ${fmtMax(existing.delta, 3)}　delta 曝險 ${fmt(Math.abs(de))} 元`);
+          const pl = optPl(o);
+          if (pl !== null) lines.push(`未實現損益 ${signed(pl)} 元`);
+        } else {
+          lines.push('權利金與 delta 存檔後會自動帶入');
+        }
+        const risk = optMaxRisk({ ...val, price: cur ?? 0 });
+        lines.push(risk.unlimited ? '⚠ 賣出買權：最大風險無上限' : `最大風險 ${fmt(risk.value)} 元`);
+        preview.innerHTML = lines.join('<br>');
+        preview.classList.toggle('err', risk.unlimited);
+      };
+      form.addEventListener('input', update);
+      form.addEventListener('change', update);
+      update();
+    },
+    collect: (fd) => {
+      const val = read(fd);
+      if (!val.expiry) { toast('請選擇到期', 2500); return undefined; }
+      if (!(val.strike > 0)) { toast('請輸入履約價', 2500); return undefined; }
+      if (!(val.lots > 0)) { toast('口數必須大於 0', 2500); return undefined; }
+      return val;
+    },
+  });
+}
+
+async function editOption(id) {
+  const existing = id ? state.options.find((o) => o.id === id) : null;
+  const res = await openOptionsForm(existing);
+  if (!res) return;
+  try {
+    if (res.action === 'delete') {
+      const { error } = await sb.from('options').delete().eq('id', id);
+      if (error) throw error;
+      await refresh('已刪除');
+    } else {
+      const payload = { ...res.values, user_id: state.user.id };
+      if (id) payload.id = id;
+      const { error } = await sb.from('options').upsert(payload);
+      if (error) throw error;
+      await applyCachedPrices();
+      await refresh('已儲存');
+    }
+  } catch (e) {
+    fail(e);
+  }
+}
+
 async function editFutures(id) {
   const existing = id ? state.futures.find((f) => f.id === id) : null;
   const res = await openFuturesForm(existing);
@@ -861,6 +1076,24 @@ function readTradeForm(fd) {
   const meta = TRADE_KINDS[tk] || TRADE_KINDS.tw;
   let quantity = num(fd.get('quantity'));
   if (tk === 'tw' && fd.get('unit') === 'lot') quantity *= 1000;
+
+  if (tk === 'option') {
+    const expiry = String(fd.get('opt_expiry') || '').trim();
+    const strike = num(fd.get('opt_strike'));
+    const cp = fd.get('opt_cp') === 'put' ? 'put' : 'call';
+    return {
+      kindKey: tk, market: 'option', fut_kind: null, fut_size: null,
+      opt_expiry: expiry, opt_strike: strike, opt_cp: cp,
+      side: fd.get('side') || 'buy',
+      trade_date: fd.get('trade_date') || todayISO(),
+      symbol: 'TXO',
+      name: `${expiry} ${strikeText(strike)} ${cpLabel(cp)}`,
+      quantity,
+      price: num(fd.get('price')),
+      note: String(fd.get('note') || '').trim() || null,
+    };
+  }
+
   const symbol = norm(fd.get('symbol'));
   let name = String(fd.get('name') || '').trim() || null;
   if ((tk === 'tw' || tk === 'fut_stock') && !name && TW_STOCKS[symbol]) name = TW_STOCKS[symbol];
@@ -889,9 +1122,18 @@ function openTradeForm(defaults = {}) {
       <label><input type="radio" name="side" value="sell"><span>賣出</span></label>
     </div>
     <label>日期<input name="trade_date" type="date" value="${todayISO()}" required></label>
-    <label><span data-l="symbol">代號</span><input name="symbol" type="text" required autocomplete="off" autocapitalize="characters" value="${esc(defaults.symbol || '')}"></label>
+    <label data-row="symbol"><span data-l="symbol">代號</span><input name="symbol" type="text" autocomplete="off" autocapitalize="characters" value="${esc(defaults.symbol || '')}"></label>
     <div class="resolved muted" data-resolved></div>
     <input type="hidden" name="name">
+    <div data-row="opt" hidden>
+      <label>到期<select name="opt_expiry">${state.optExpiries.length
+        ? state.optExpiries.map((e) => `<option value="${esc(e.expiry)}">${esc(e.expiry)}（遠期 ${fmt(e.forward)}）</option>`).join('')
+        : '<option value="">尚未載入到期別，按右上角 ↻</option>'}</select></label>
+      <label>履約價<input name="opt_strike" type="number" step="any" inputmode="decimal" placeholder="47000"></label>
+      <label>買權 / 賣權<select name="opt_cp">
+        <option value="call">買權 Call</option><option value="put">賣權 Put</option>
+      </select></label>
+    </div>
     <label data-row="futsize">個股期貨規格<select name="fut_size">${STOCK_FUT_SIZES
       .map((s) => `<option value="${s.size}" ${num(defaults.fut_size) === s.size ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
     <div class="qty-row">
@@ -917,8 +1159,15 @@ function openTradeForm(defaults = {}) {
         preview.hidden = false;
         preview.classList.toggle('err', !!p.error);
         if (p.error) { preview.textContent = p.error; return; }
-        const label = `${v.symbol}${v.name ? ' ' + v.name : ''}`;
-        if (v.market === 'futures') {
+        const label = v.market === 'option'
+          ? `TXO ${v.opt_expiry} ${strikeText(v.opt_strike)} ${cpLabel(v.opt_cp)}`
+          : `${v.symbol}${v.name ? ' ' + v.name : ''}`;
+        if (v.market === 'option') {
+          const notional = v.quantity * v.price * OPT_SIZE;
+          preview.textContent =
+            `${label}：${fmtNet(p.prevNet)} → ${fmtNet(p.net)}　權利金 ${fmt(notional)} 元` +
+            (p.after ? `　均價 ${fmtMax(p.prevCost, 2)} → ${fmtMax(p.newCost, 2)} 點` : '（部位歸零，將移除）');
+        } else if (v.market === 'futures') {
           const notional = v.quantity * v.price * num(v.fut_size);
           preview.textContent =
             `${label}：${fmtNet(p.prevNet)} → ${fmtNet(p.net)}　本筆名目 ${fmt(notional)}` +
@@ -931,9 +1180,25 @@ function openTradeForm(defaults = {}) {
         }
       };
 
+      const rowSymbol = $('[data-row=symbol]', form);
+      const rowOpt = $('[data-row=opt]', form);
+
       const setKind = () => {
         const k = form.kind.value;
+        const isOpt = k === 'option';
         const isStockFut = k === 'fut_stock', isIdxFut = k === 'fut_index';
+        rowOpt.hidden = !isOpt;
+        rowSymbol.hidden = isOpt;
+        resolved.hidden = isOpt;
+        form.symbol.required = !isOpt;
+        if (isOpt) {
+          $('[data-l=price]', form).textContent = '權利金（點）';
+          form.unit.innerHTML = '<option value="share">口</option>';
+          form.unit.disabled = true;
+          form.name.value = '';
+          updatePreview();
+          return;
+        }
         rowFutSize.hidden = !isStockFut;
         $('[data-l=symbol]', form).textContent =
           isIdxFut ? '商品' : isStockFut ? '標的股票代號' : '代號';
@@ -960,6 +1225,7 @@ function openTradeForm(defaults = {}) {
         });
       form.symbol.addEventListener('input', () => {
         const k = form.kind.value;
+        if (k === 'option') return;
         const lk = k === 'fut_index' ? LOOKUPS.index : k === 'us' ? null : LOOKUPS.tw;
         if (lk && !lk.exact(norm(form.symbol.value))) {
           form.name.value = '';
@@ -973,6 +1239,10 @@ function openTradeForm(defaults = {}) {
     },
     collect: (fd) => {
       const values = readTradeForm(fd);
+      if (values.market === 'option') {
+        if (!values.opt_expiry) { toast('請選擇到期', 2500); return undefined; }
+        if (!(values.opt_strike > 0)) { toast('請輸入履約價', 2500); return undefined; }
+      }
       const p = projectTrade(values);
       if (p.error) { toast(p.error, 3500); return undefined; }
       if (!(values.price > 0)) { toast('請輸入價格', 2500); return undefined; }
@@ -1017,10 +1287,13 @@ function bindListActions(el) {
   $$('[data-add]', el).forEach((b) => (b.onclick = () => {
     const d = JSON.parse(b.dataset.defaults || '{}');
     if (b.dataset.add === 'future') editFutures(null);
+    else if (b.dataset.add === 'option') editOption(null);
     else editItem(b.dataset.add, null, d);
   }));
   $$('[data-edit]', el).forEach((b) => (b.onclick = () =>
-    (b.dataset.edit === 'future' ? editFutures(b.dataset.id) : editItem(b.dataset.edit, b.dataset.id))));
+    b.dataset.edit === 'future' ? editFutures(b.dataset.id)
+    : b.dataset.edit === 'option' ? editOption(b.dataset.id)
+    : editItem(b.dataset.edit, b.dataset.id)));
   $$('[data-trade]', el).forEach((b) => (b.onclick = () => logTrade()));
 }
 
@@ -1092,10 +1365,21 @@ function renderOverview(el) {
       ${line('複委託市值', c.usValue)}
       ${line('指數期貨名目', c.futIndex)}
       ${line('個股期貨名目', c.futStock)}
+      ${line('選擇權 delta 曝險', c.optExposure)}
       ${line('期貨名目・多單', c.futLong)}
       ${line('期貨名目・空單', c.futShort)}
       ${line('總曝險', c.exposure)}
     </div>
+    ${state.options.length ? `<div class="card list">
+      <div class="list-title">選擇權風險</div>
+      ${line('權利金市值（買方正、賣方負）', c.optMarket)}
+      ${line('delta 曝險（絕對值加總）', c.optExposure)}
+      ${line('淨方向部位（多為正）', c.optNetDelta)}
+      <div class="row-between line"><span>最大風險</span><span class="${c.optRiskUnlimited ? 'loss' : ''}">${
+        c.optRiskUnlimited ? '無上限（有賣出買權）' : fmt(c.optMaxLoss)}</span></div>
+      <p class="hint">delta 曝險是線性近似，大幅波動時實際曝險會比這個數字放大（gamma），賣方尤其明顯。
+        所以最大風險另外列出，不併進槓桿。${c.optNoDelta ? '<br>⚠ 有部位還沒算出 delta，按右上角 ↻ 或等下次自動更新。' : ''}</p>
+    </div>` : ''}
     ${tradeButton()}
     <button type="button" class="block" id="snap-btn">📌 記錄今日快照</button>
     <p class="hint">${priceStamp()}。收盤價、結算價與匯率每天自動更新，不用手動改。匯率 ${fmt(c.rate, 3)}。</p>
@@ -1167,6 +1451,21 @@ function renderHoldings(el) {
       `US$ ${fmt(v, 2)}`,
       pl === null ? `≈ ${fmt(v * c.rate)}` : `<span class="${plClass(pl)}">${signed(pl, 2)}</span> ≈ ${fmt(v * c.rate)}`);
   });
+  const optRows = state.options.map((o) => {
+    const de = optDeltaExp(o);
+    const pl = optPl(o);
+    const risk = optMaxRisk(o);
+    return itemRow('option', o.id,
+      `${optLabel(o)}<span class="badge">${o.side === 'short' ? '賣方' : '買方'}</span>${
+        risk.unlimited ? '<span class="badge warn-badge">風險無上限</span>' : ''}`,
+      `${fmtMax(o.lots, 2)} 口 × ${fmtMax(o.price, 2)} 點 × 50${isNum(o.cost) ? `　成本 ${fmtMax(o.cost, 2)}` : ''}${
+        isNum(o.delta) ? `　delta ${fmtMax(o.delta, 3)}` : '　<span class="muted">delta 計算中</span>'}`,
+      `市值 ${fmt(optValue(o))}`,
+      pl === null
+        ? (de === null ? '曝險待算' : `曝險 ${fmt(Math.abs(de))}`)
+        : `<span class="${plClass(pl)}">${signed(pl)}</span>`);
+  });
+
   const equityRows = state.balances.filter((b) => b.kind === 'futures_equity').map((b) =>
     itemRow('balance', b.id, esc(b.name), esc(b.note || ''),
       `${fmt(b.amount, b.currency === 'USD' ? 2 : 0)} ${b.currency}`, '計入總資產'));
@@ -1180,11 +1479,18 @@ function renderHoldings(el) {
       `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
         ? '<span class="muted">填了平均成本才會顯示損益</span>'
         : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}`) +
+    section('台指選擇權', 'option', optRows,
+      `權利金市值 ${fmt(c.optMarket)}　delta 曝險 ${fmt(c.optExposure)}　${
+        c.optRiskUnlimited ? '<span class="loss">最大風險無上限</span>'
+        : `最大風險 ${fmt(c.optMaxLoss)}`}${
+        c.optProfit === null ? '' : `　<span class="${plClass(c.optProfit)}">${signed(c.optProfit)}</span>`}`) +
     section('期貨帳戶權益數', 'balance', equityRows, `合計 ${fmt(c.futEquity)}`, { kind: 'futures_equity', name: '期貨帳戶' }) +
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +
     `<p class="hint">「記一筆交易」會自動加減部位、重算均價；部位沒變動就不會動資料，賣光才移除。
-      期貨的<b>權益數</b>計入總資產，<b>名目金額</b>計入曝險。個股期貨以標的股價計價：大型 = 2 張（2,000 股）、小型 = 100 股。</p>`;
+      期貨的<b>權益數</b>計入總資產，<b>名目金額</b>計入曝險。個股期貨以標的股價計價：大型 = 2 張（2,000 股）、小型 = 100 股。
+      選擇權的<b>權利金市值</b>計入總資產（買方為正、賣方為負），<b>delta 曝險</b>計入槓桿；
+      delta 由期交所結算價每天自動反推，不用手動填。</p>`;
   bindListActions(el);
 }
 
@@ -1236,7 +1542,8 @@ function renderHistory(el) {
       ${trades.length
         ? trades.map((t) => `<button type="button" class="item" data-del-trade="${t.id}">
             <span class="item-main">
-              <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${esc(t.symbol)} ${esc(t.name || '')}${
+              <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
+                t.market === 'option' ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}` : `${esc(t.symbol)} ${esc(t.name || '')}`}${
                 rs.dayKeys.has(tradeKey(t)) ? '<span class="badge day-badge">當沖</span>' : ''}</span>
               <span class="item-sub">${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                 t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
@@ -1354,6 +1661,11 @@ function renderSettings(el) {
         <dt>槓桿②（曝險槓桿）</dt><dd>（台股 ＋ 複委託 ＋ 期貨名目）÷ <b>總資產</b>，指數期貨與個股期貨都算</dd>
         <dt>指數期貨名目</dt><dd>口數 × 結算價 × 每點價值（大台 200、小台 50、微台 10）</dd>
         <dt>個股期貨名目</dt><dd>口數 × 標的股價 × 等同股數（大型 2,000 股 ＝ 2 張、小型 100 股）</dd>
+        <dt>選擇權（TXO，每點 50 元）</dt>
+        <dd>權利金市值 = 口數 × 權利金 × 50，買方為正、賣方為負，計入總資產。<br>
+            delta 曝險 = 口數 × delta × 隱含遠期指數 × 50，計入槓桿②。<br>
+            最大風險：買方 = 權利金；賣方賣權 =（履約價 − 權利金）× 口數 × 50；賣方買權無上限。<br>
+            delta 由期交所每日結算價用 Black-76 反推，每天自動更新。</dd>
         <dt>期貨損益</dt><dd>多單（現價 − 平均成本）、空單（平均成本 − 現價），再乘口數與規格。沒填平均成本就不顯示損益。</dd>
       </dl>
       <p class="hint">台股名稱清單 ${TW_ENTRIES.length} 檔。價格來源：證交所、櫃買中心、期交所、Yahoo Finance。</p>

@@ -145,6 +145,44 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
+-- 台指選擇權部位（TXO，每點 50 元）
+--   expiry 直接存期交所的到期代碼：202609 / 202609W2 / 202609F2 ...
+--   price  = 目前權利金（點），每日自動更新
+--   delta / forward 由伺服器每天用 Black-76 反推，不用手動輸入
+--   資產面看權利金市值（買方為正、賣方為負）
+--   曝險看 delta 曝險；最大風險另外算，不混進槓桿
+-- ------------------------------------------------------------
+create table if not exists public.options (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  contract   text not null default 'TXO',
+  expiry     text not null,
+  strike     numeric not null,
+  cp         text not null check (cp in ('call','put')),
+  side       text not null default 'long' check (side in ('long','short')),
+  lots       numeric not null default 1,
+  price      numeric not null default 0,        -- 目前權利金（點），自動更新
+  cost       numeric,                           -- 平均成本（點）
+  size       numeric not null default 50,       -- 每點 50 元
+  delta      numeric,                           -- 自動計算
+  forward    numeric,                           -- 計算時用的隱含遠期指數
+  iv_sqrt_t  numeric,                           -- 解出來的 σ√T，方便檢查
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- 交易紀錄要能記選擇權
+-- 放寬 market 允許值（只加不減，既有列不會被擋掉）
+do $tm$ begin
+  alter table public.trades drop constraint if exists trades_market_check;
+  alter table public.trades add constraint trades_market_check
+    check (market in ('tw','futures','us','option'));
+end $tm$;
+alter table public.trades add column if not exists opt_expiry text;
+alter table public.trades add column if not exists opt_strike numeric;
+alter table public.trades add column if not exists opt_cp     text;
+
+-- ------------------------------------------------------------
 -- 交易紀錄：記一筆買/賣，App 會自動更新對應的部位
 -- ------------------------------------------------------------
 create table if not exists public.trades (
@@ -177,6 +215,8 @@ create table if not exists public.snapshots (
   user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
   snap_date         date not null default current_date,
   price_as_of       date,         -- 這筆是用哪一天的行情算的（來源可能比當天晚發布）
+  option_value      numeric,      -- 選擇權權利金市值（買方正、賣方負）
+  option_exposure   numeric,      -- 選擇權 delta 曝險（絕對值加總）
   total_assets      numeric,
   liabilities       numeric,
   net_assets        numeric,
@@ -199,7 +239,7 @@ create table if not exists public.snapshots (
 do $$
 declare t text;
 begin
-  foreach t in array array['settings','stocks','futures','us_stocks','balances'] loop
+  foreach t in array array['settings','stocks','futures','us_stocks','balances','options'] loop
     execute format('drop trigger if exists set_updated_at on public.%I', t);
     execute format('create trigger set_updated_at before update on public.%I for each row execute function public.set_updated_at()', t);
   end loop;
@@ -212,7 +252,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['settings','stocks','futures','us_stocks','balances','snapshots','trades'] loop
+  foreach t in array array['settings','stocks','futures','us_stocks','balances','snapshots','trades','options'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists "own rows" on public.%I', t);
     execute format(
@@ -226,5 +266,8 @@ create index if not exists futures_user_idx   on public.futures(user_id);
 create index if not exists us_stocks_user_idx on public.us_stocks(user_id);
 create index if not exists balances_user_idx  on public.balances(user_id);
 alter table public.snapshots add column if not exists price_as_of date;
+alter table public.snapshots add column if not exists option_value numeric;
+alter table public.snapshots add column if not exists option_exposure numeric;
 create index if not exists snapshots_user_idx on public.snapshots(user_id, snap_date desc);
 create index if not exists trades_user_idx    on public.trades(user_id, trade_date desc, created_at desc);
+create index if not exists options_user_idx   on public.options(user_id);

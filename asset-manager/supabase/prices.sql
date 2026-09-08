@@ -15,7 +15,7 @@ create extension if not exists pg_cron;
 -- 行情快取（全站共用，登入者可讀，只有排程/RPC 能寫）
 -- ------------------------------------------------------------
 create table if not exists public.market_prices (
-  market     text not null check (market in ('tw','us','fut','fx')),
+  market     text not null check (market in ('tw','us','fut','fx','opt')),
   symbol     text not null,
   name       text,
   price      numeric not null,
@@ -25,6 +25,11 @@ create table if not exists public.market_prices (
   primary key (market, symbol)
 );
 alter table public.market_prices add column if not exists src text;
+do $mp$ begin
+  alter table public.market_prices drop constraint if exists market_prices_market_check;
+  alter table public.market_prices add constraint market_prices_market_check
+    check (market in ('tw','us','fut','fx','opt'));
+end $mp$;
 
 alter table public.market_prices enable row level security;
 drop policy if exists "read prices" on public.market_prices;
@@ -353,6 +358,147 @@ begin
   return n;
 end $$;
 
+-- ============================================================
+-- 台指選擇權（TXO）
+--   結算價來自期交所每日選擇權行情（實測比期貨那份還新）。
+--   delta 用 Black-76 反推：不折現時理論價只取決於 F、K 與 x = sigma*sqrt(T)，
+--   所以由市場權利金直接解出 x，不需要分別知道到期日與波動率。
+--   遠期指數 F 由選擇權鏈自己的買賣權平價反推（F = K + C - P，取價平那組），
+--   與權利金同一天同一市場，不受期貨行情落後影響。
+-- ============================================================
+
+-- 選擇權在 market_prices 裡的 key（履約價統一格式，避免 46500 與 46500.00 對不起來）
+create or replace function public.pm_optkey(p_expiry text, p_strike numeric, p_cp text)
+returns text language sql immutable as $fn$
+  select 'TXO|' || btrim(p_expiry) || '|' || rtrim(trim(to_char(p_strike, 'FM9999999990.999')), '.') || '|' || btrim(p_cp);
+$fn$;
+
+-- 標準常態累積分配（Abramowitz-Stegun 7.1.26，誤差 < 1e-7）
+create or replace function public.pm_ncdf(x double precision)
+returns double precision language plpgsql immutable as $fn$
+declare ax double precision; t double precision; d double precision; pp double precision;
+begin
+  ax := abs(x);
+  t  := 1.0 / (1.0 + 0.2316419 * ax);
+  d  := 0.3989422804014327 * exp(-ax * ax / 2.0);
+  pp := d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  if x >= 0 then return 1.0 - pp; else return pp; end if;
+end $fn$;
+
+-- Black-76 理論價（不折現），x = sigma*sqrt(T)
+create or replace function public.pm_bs76(f double precision, k double precision, x double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare d1 double precision; d2 double precision;
+begin
+  if f is null or k is null or f <= 0 or k <= 0 then return null; end if;
+  if x is null or x <= 0 then
+    return greatest(0, case when is_call then f - k else k - f end);
+  end if;
+  d1 := (ln(f / k) + x * x / 2.0) / x;
+  d2 := d1 - x;
+  if is_call then return f * public.pm_ncdf(d1) - k * public.pm_ncdf(d2);
+  else            return k * public.pm_ncdf(-d2) - f * public.pm_ncdf(-d1); end if;
+end $fn$;
+
+-- 由市場權利金用二分法解出 x
+create or replace function public.pm_solve_x(f double precision, k double precision,
+                                             premium double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare lo double precision := 1e-6; hi double precision := 5.0; mid double precision;
+        intrinsic double precision; i integer;
+begin
+  if f is null or k is null or premium is null or f <= 0 or k <= 0 then return null; end if;
+  intrinsic := greatest(0, case when is_call then f - k else k - f end);
+  if premium <= intrinsic + 1e-9 then return 0; end if;
+  if public.pm_bs76(f, k, hi, is_call) < premium then return hi; end if;
+  for i in 1..80 loop
+    mid := (lo + hi) / 2.0;
+    if public.pm_bs76(f, k, mid, is_call) < premium then lo := mid; else hi := mid; end if;
+  end loop;
+  return (lo + hi) / 2.0;
+end $fn$;
+
+create or replace function public.pm_delta(f double precision, k double precision,
+                                           x double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare d1 double precision;
+begin
+  if f is null or k is null or f <= 0 or k <= 0 then return null; end if;
+  if x is null or x <= 0 then
+    if is_call then return case when f > k then 1 else 0 end;
+    else            return case when f < k then -1 else 0 end; end if;
+  end if;
+  d1 := (ln(f / k) + x * x / 2.0) / x;
+  if is_call then return public.pm_ncdf(d1); else return public.pm_ncdf(d1) - 1.0; end if;
+end $fn$;
+
+-- 抓每日選擇權結算價，並反推每個到期的隱含遠期指數
+create or replace function public.refresh_option_prices()
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; body text; payload jsonb;
+begin
+  perform set_config('statement_timeout', '180s', true);
+  begin
+    body := public.pm_fetch('https://openapi.taifex.com.tw/v1/DailyMarketReportOpt');
+    begin payload := body::jsonb; exception when others then payload := null; end;
+
+    create temp table if not exists _opt (expiry text, strike numeric, cp text, prem numeric, as_of date);
+    delete from _opt;
+
+    if payload is not null then
+      insert into _opt
+      select btrim(e ->> 'ContractMonth(Week)'), public.pm_num(e ->> 'StrikePrice'),
+             case when (e ->> 'CallPut') like '%買%' then 'call' else 'put' end,
+             public.pm_num(e ->> 'SettlementPrice'),
+             to_date(regexp_replace(e ->> 'Date', '[^0-9]', '', 'g'), 'YYYYMMDD')
+      from jsonb_array_elements(payload) e
+      where btrim(e ->> 'Contract') = 'TXO' and btrim(e ->> 'TradingSession') = '一般'
+        and public.pm_num(e ->> 'SettlementPrice') is not null;
+    else
+      insert into _opt
+      select btrim(a[3]), public.pm_num(a[4]),
+             case when a[5] like '%買%' then 'call' else 'put' end,
+             public.pm_num(a[11]),
+             to_date(regexp_replace(a[1], '[^0-9]', '', 'g'), 'YYYYMMDD')
+      from (
+        select string_to_array(l, ',') as a
+        from (select l, row_number() over () rn
+              from regexp_split_to_table(replace(body, chr(65279), ''), E'\r?\n') l) x
+        where rn > 1 and btrim(l) <> ''
+      ) y
+      where array_length(a, 1) >= 18 and btrim(a[2]) = 'TXO' and btrim(a[18]) = '一般'
+        and public.pm_num(a[11]) is not null;
+    end if;
+
+    insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+    select 'opt', public.pm_optkey(expiry, strike, cp),
+           'TXO ' || expiry || ' ' || rtrim(trim(to_char(strike, 'FM9999999990.999')), '.') || ' ' || cp,
+           prem, as_of, 'taifex_opt', now()
+    from _opt where prem >= 0
+    on conflict (market, symbol) do update
+      set price = excluded.price, as_of = excluded.as_of, src = excluded.src, updated_at = now();
+    get diagnostics n = row_count;
+
+    insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+    select 'opt', 'FWD|' || expiry, 'TXO ' || expiry || ' 隱含遠期', f, as_of, 'taifex_opt', now()
+    from (
+      select distinct on (c.expiry) c.expiry, c.strike + c.prem - p.prem as f, c.as_of
+      from _opt c join _opt p on p.expiry = c.expiry and p.strike = c.strike and p.cp = 'put'
+      where c.cp = 'call'
+      order by c.expiry, abs(c.prem - p.prem)
+    ) z
+    where f > 0
+    on conflict (market, symbol) do update
+      set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+
+    drop table if exists _opt;
+    perform public.pm_log('taifex_opt' || case when payload is null then '(csv)' else '(json)' end, n, true, null);
+  exception when others then
+    perform public.pm_log('taifex_opt', 0, false, sqlerrm);
+  end;
+  return n;
+end $fn$;
+
 -- ------------------------------------------------------------
 -- 把行情寫回持倉
 --   只在價格真的不同時才 UPDATE：不會新增、不會刪除任何項目
@@ -400,6 +546,31 @@ begin
      and f.price is distinct from mp.price;
   get diagnostics c = row_count; n := n + c;
 
+  -- 選擇權：更新權利金，並用 Black-76 反推 delta
+  with px as (
+    select o.id,
+           mp.price as prem,
+           fw.price as fwd,
+           public.pm_solve_x(fw.price::float8, o.strike::float8, mp.price::float8, o.cp = 'call') as x
+    from public.options o
+    join public.market_prices mp
+      on mp.market = 'opt' and mp.symbol = public.pm_optkey(o.expiry, o.strike, o.cp)
+    join public.market_prices fw
+      on fw.market = 'opt' and fw.symbol = 'FWD|' || btrim(o.expiry)
+    where (p_user is null or o.user_id = p_user)
+  )
+  update public.options o
+     set price     = px.prem,
+         forward   = px.fwd,
+         iv_sqrt_t = px.x,
+         delta     = public.pm_delta(px.fwd::float8, o.strike::float8, px.x, o.cp = 'call')
+    from px
+   where px.id = o.id
+     and (o.price is distinct from px.prem
+          or o.forward is distinct from px.fwd
+          or o.delta is null);
+  get diagnostics c = row_count; n := n + c;
+
   -- 匯率
   update public.settings st
      set usd_twd = mp.price
@@ -428,6 +599,10 @@ begin
            coalesce((select sum(x.shares * x.price) from public.stocks x where x.user_id = u.id), 0) as stock_value,
            coalesce((select sum(x.shares * x.price_usd) from public.us_stocks x where x.user_id = u.id), 0) as us_usd,
            coalesce((select sum(x.lots * x.price * x.size) from public.futures x where x.user_id = u.id), 0) as fut_notional,
+           coalesce((select sum(x.lots * x.price * x.size * case when x.side = 'short' then -1 else 1 end)
+                     from public.options x where x.user_id = u.id), 0) as opt_value,
+           coalesce((select sum(abs(x.lots * coalesce(x.delta, 0) * coalesce(x.forward, 0) * x.size))
+                     from public.options x where x.user_id = u.id), 0) as opt_exposure,
            coalesce((select st.usd_twd from public.settings st where st.user_id = u.id), 32) as rate,
            coalesce((select st.target_amount from public.settings st where st.user_id = u.id), 0) as target
     from u
@@ -445,22 +620,24 @@ begin
   f as (
     select b.*,
            b.us_usd * b.rate as us_value,
-           b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash as total_assets
+           b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash + b.opt_value as total_assets
     from b
   ),
   g as (
     select f.*, f.total_assets - f.liab as net_assets,
-           f.stock_value + f.us_value + f.fut_notional as exposure
+           f.stock_value + f.us_value + f.fut_notional + f.opt_exposure as exposure
     from f
   )
   insert into public.snapshots (
     user_id, snap_date, price_as_of, total_assets, liabilities, net_assets, stock_value, us_value,
-    futures_margin, futures_notional, cash, leverage_asset, leverage_exposure, target_amount, note)
+    futures_margin, futures_notional, cash, option_value, option_exposure,
+    leverage_asset, leverage_exposure, target_amount, note)
   -- 日期用台北時區：美股那班排程在 UTC 22:00 跑，等於台北隔天早上 06:00
   select user_id, (now() at time zone 'Asia/Taipei')::date,
          (select max(as_of) from public.market_prices where market = 'tw'),
          round(total_assets, 2), round(liab, 2), round(net_assets, 2), round(stock_value, 2), round(us_value, 2),
          round(fut_equity, 2), round(fut_notional, 2), round(cash, 2),
+         round(opt_value, 2), round(opt_exposure, 2),
          case when net_assets > 0 then round(total_assets / net_assets, 4) end,
          case when total_assets > 0 then round(exposure / total_assets, 4) end,
          round(target, 2), 'auto'
@@ -472,6 +649,7 @@ begin
         net_assets = excluded.net_assets, stock_value = excluded.stock_value,
         us_value = excluded.us_value, futures_margin = excluded.futures_margin,
         futures_notional = excluded.futures_notional, cash = excluded.cash,
+        option_value = excluded.option_value, option_exposure = excluded.option_exposure,
         leverage_asset = excluded.leverage_asset, leverage_exposure = excluded.leverage_exposure,
         target_amount = excluded.target_amount
     where public.snapshots.note = 'auto';   -- 手動存的快照不覆蓋
@@ -489,6 +667,7 @@ returns void language plpgsql security definer set search_path = public as $$
 begin
   perform public.refresh_tw_prices();
   perform public.refresh_futures_prices();
+  perform public.refresh_option_prices();
   perform public.refresh_fx();
   if p_include_us then perform public.refresh_us_prices(); end if;
   perform public.sync_positions(null);
@@ -512,6 +691,7 @@ begin
   if p_force or last_at is null or last_at < now() - interval '10 minutes' then
     perform public.refresh_tw_prices();
     perform public.refresh_futures_prices();
+    perform public.refresh_option_prices();
     perform public.refresh_fx();
     perform public.refresh_us_prices();
     fetched := true;
