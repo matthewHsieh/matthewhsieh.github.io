@@ -24,6 +24,17 @@ create table if not exists public.settings (
   updated_at    timestamptz not null default now()
 );
 
+-- 交易成本設定（稅率是法定的寫在程式裡，手續費因人而異所以可設定）
+alter table public.settings add column if not exists fee_stock_rate    numeric default 0.001425; -- 台股手續費率
+alter table public.settings add column if not exists fee_stock_disc    numeric default 1.0;      -- 一般折數
+alter table public.settings add column if not exists fee_day_disc      numeric default 0.3;      -- 當沖折數
+alter table public.settings add column if not exists fee_min           numeric default 20;       -- 每筆最低手續費
+alter table public.settings add column if not exists fee_warrant_disc  numeric default 1.0;      -- 權證折數
+alter table public.settings add column if not exists fee_fut_per_lot   numeric default 30;       -- 期貨每口每邊
+alter table public.settings add column if not exists fee_opt_per_lot   numeric default 25;       -- 選擇權每口每邊
+alter table public.settings add column if not exists fee_us_rate       numeric default 0;        -- 複委託費率
+alter table public.settings add column if not exists fee_us_min        numeric default 0;        -- 複委託最低（USD）
+
 -- ------------------------------------------------------------
 -- 台股持倉
 -- ------------------------------------------------------------

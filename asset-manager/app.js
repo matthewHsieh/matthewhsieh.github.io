@@ -276,6 +276,76 @@ function dayTradeKeys(trades) {
   return new Set([...m].filter(([, e]) => e.buy > 0 && e.sell > 0).map(([k]) => k));
 }
 
+// ------------------------------------------------------------
+// 交易成本
+//   稅率是法定的，寫死在這裡（查證日期 2026-09-08）：
+//     台股賣出 0.3%；當沖賣出 0.15%（已延長至 2027-12-31）
+//     權證賣出 0.1%
+//     股價類期貨（含台指期、個股期貨）契約金額 0.002%，買賣各一次
+//     選擇權 權利金 0.1%，買賣各一次
+//   手續費因人而異，放在「設定」可以改。
+// ------------------------------------------------------------
+const TAX = {
+  stock: 0.003,
+  stockDay: 0.0015,
+  warrant: 0.001,
+  futures: 0.00002,
+  option: 0.001,
+};
+const DEFAULT_FEES = {
+  fee_stock_rate: 0.001425, fee_stock_disc: 1, fee_day_disc: 0.3, fee_min: 20,
+  fee_warrant_disc: 1, fee_fut_per_lot: 30, fee_opt_per_lot: 25, fee_us_rate: 0, fee_us_min: 0,
+};
+const feeCfg = (k) => {
+  const v = state.settings[k];
+  return isNum(v) ? num(v) : DEFAULT_FEES[k];
+};
+
+// 回傳這一筆交易的手續費與交易稅（台幣；美股回傳美金，另有 ccy 標示）
+function tradeCost(t, isDay) {
+  const qty = num(t.quantity), px = num(t.price);
+  if (!(qty > 0) || !(px > 0)) return { fee: 0, tax: 0, total: 0, ccy: 'TWD' };
+
+  if (t.market === 'tw') {
+    const amount = qty * px;
+    const disc = isDay ? feeCfg('fee_day_disc') : feeCfg('fee_stock_disc');
+    const fee = Math.max(feeCfg('fee_min'), amount * feeCfg('fee_stock_rate') * disc);
+    const tax = t.side === 'sell' ? amount * (isDay ? TAX.stockDay : TAX.stock) : 0;
+    return { fee, tax, total: fee + tax, ccy: 'TWD' };
+  }
+  if (t.market === 'warrant') {
+    const amount = qty * WAR_UNITS * px;
+    const fee = Math.max(feeCfg('fee_min'), amount * feeCfg('fee_stock_rate') * feeCfg('fee_warrant_disc'));
+    const tax = t.side === 'sell' ? amount * TAX.warrant : 0;
+    return { fee, tax, total: fee + tax, ccy: 'TWD' };
+  }
+  if (t.market === 'futures') {
+    const notional = qty * px * num(t.fut_size);
+    const fee = qty * feeCfg('fee_fut_per_lot');
+    const tax = notional * TAX.futures;          // 買賣各課一次
+    return { fee, tax, total: fee + tax, ccy: 'TWD' };
+  }
+  if (t.market === 'option') {
+    const premium = qty * px * OPT_SIZE;
+    const fee = qty * feeCfg('fee_opt_per_lot');
+    const tax = premium * TAX.option;            // 買賣各課一次
+    return { fee, tax, total: fee + tax, ccy: 'TWD' };
+  }
+  if (t.market === 'us') {
+    const amount = qty * px;
+    const rate = feeCfg('fee_us_rate');
+    const fee = rate > 0 ? Math.max(feeCfg('fee_us_min'), amount * rate) : 0;
+    return { fee, tax: 0, total: fee, ccy: 'USD' };
+  }
+  return { fee: 0, tax: 0, total: 0, ccy: 'TWD' };
+}
+
+// 成本換算成台幣
+const costTwd = (t, isDay) => {
+  const c = tradeCost(t, isDay);
+  return c.total * (c.ccy === 'USD' ? num(state.settings.usd_twd) : 1);
+};
+
 // 已實現損益：美股用目前匯率換算成台幣
 const realizedTwd = (t) =>
   isNum(t.realized_pl) ? num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1) : null;
@@ -283,19 +353,26 @@ const realizedTwd = (t) =>
 function realizedSummary() {
   const dt = dayTradeKeys(state.trades);
   const byDate = new Map();
-  let total = 0, day = 0, swing = 0, closes = 0;
+  let gross = 0, day = 0, swing = 0, closes = 0, cost = 0;
   for (const t of state.trades) {
+    const isDay = dt.has(tradeKey(t));
+    // 成本每一筆都要算（買進也有手續費），損益只有平倉才有
+    const c = costTwd(t, isDay);
+    cost += c;
+    byDate.set(t.trade_date, (byDate.get(t.trade_date) || 0) - c);
+
     const v = realizedTwd(t);
     if (v === null) continue;
     closes += 1;
-    total += v;
-    if (dt.has(tradeKey(t))) day += v; else swing += v;
+    gross += v;
+    if (isDay) day += v; else swing += v;
     byDate.set(t.trade_date, (byDate.get(t.trade_date) || 0) + v);
   }
   const dates = [...byDate.keys()].sort();
   let cum = 0;
   const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
-  return { total, day, swing, closes, series, dayKeys: dt };
+  // total 是扣掉手續費與交易稅之後的淨損益
+  return { gross, cost, total: gross - cost, day, swing, closes, series, dayKeys: dt };
 }
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -1414,6 +1491,14 @@ function openTradeForm(defaults = {}) {
             `均價 ${fmtMax(p.prevCost, 2)} → ${fmtMax(p.newCost, 2)}` +
             (p.after ? '' : '（全部出清，部位將移除）');
         }
+        // 這一筆的手續費與交易稅
+        const sameDay = state.trades.some((x) => tradeKey(x) === tradeKey(v) && x.side !== v.side);
+        const cc = tradeCost(v, sameDay);
+        if (cc.total > 0) {
+          preview.innerHTML = preview.innerHTML +
+            `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0 ? `　交易稅 ${fmtMax(cc.tax, 0)}` : ''}` +
+            `　成本合計 ${fmtMax(cc.total, 0)} ${cc.ccy}${sameDay ? '（當沖費率）' : ''}</span>`;
+        }
       };
 
       const rowSymbol = $('[data-row=symbol]', form);
@@ -1817,14 +1902,18 @@ function renderHistory(el) {
     <div class="card">
       <div class="list-title">買賣收益（已實現）</div>
       <div class="grid3">
-        <div class="mini"><div class="label">合計</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
-        <div class="mini"><div class="label">當沖</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
-        <div class="mini"><div class="label">波段</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
+        <div class="mini"><div class="label">淨損益</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
+        <div class="mini"><div class="label">當沖（毛）</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
+        <div class="mini"><div class="label">波段（毛）</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
       </div>
+      <div class="row-between line"><span>已實現損益（未扣成本）</span><span class="${plClass(rs.gross)}">${signed(rs.gross)}</span></div>
+      <div class="row-between line"><span>手續費 ＋ 交易稅</span><span class="loss">${signed(-rs.cost)}</span></div>
+      <div class="row-between line"><span><b>淨損益</b></span><span class="${plClass(rs.total)}"><b>${signed(rs.total)}</b></span></div>
       <div id="chart-cum"></div>
       <div class="sub muted chart-sub">單日已實現損益</div>
       <div id="chart-daily"></div>
       <p class="hint">賣出（或平倉）時用當時的平均成本結算，買進不計。當沖＝同一天同一標的既有買也有賣。
+        <b>圖表畫的是淨損益</b>，每一筆的手續費與交易稅都扣掉了，買進那一筆的手續費也算在內。
         未實現損益請看「持倉」頁。這裡不會自動調整你的現金餘額，現金請在「資金」頁自行維護。</p>
     </div>
     ${tradeButton()}
@@ -1841,7 +1930,8 @@ function renderHistory(el) {
             </span>
             <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
               <span class="item-sub">@ ${fmtMax(t.price, 2)}${realizedTwd(t) === null ? '' :
-                `　<span class="${plClass(realizedTwd(t))}">${signed(realizedTwd(t))}</span>`}</span></span>
+                `　<span class="${plClass(realizedTwd(t))}">${signed(realizedTwd(t))}</span>`}</span>
+              <span class="item-sub muted">成本 ${fmt(costTwd(t, rs.dayKeys.has(tradeKey(t))))}</span></span>
           </button>`).join('')
         : '<p class="muted">尚無交易。按上方「記一筆交易」開始。</p>'}
       ${trades.length ? '<p class="hint">點一筆可刪除並還原部位。要修改請刪除後重新記錄。</p>' : ''}
@@ -1922,6 +2012,40 @@ function renderSettings(el) {
       <label>美金匯率（1 USD = ? TWD，每日自動更新）<input name="usd_twd" type="number" step="any" inputmode="decimal" value="${esc(num(st.usd_twd))}"></label>
       <button type="submit" class="primary block">儲存設定</button>
     </form>
+    <form id="fee-form" class="card">
+      <div class="list-title">交易成本</div>
+      <p class="sub muted">稅率是法定的、不能改。手續費因券商與折數而異，填你實際的。</p>
+      <label>台股手續費率（標準 0.001425）
+        <input name="fee_stock_rate" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_stock_rate'))}"></label>
+      <label>台股一般折數（1 = 不打折，0.6 = 六折）
+        <input name="fee_stock_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_stock_disc'))}"></label>
+      <label>台股當沖折數
+        <input name="fee_day_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_day_disc'))}"></label>
+      <label>每筆最低手續費（元）
+        <input name="fee_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_min'))}"></label>
+      <label>權證手續費折數
+        <input name="fee_warrant_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_warrant_disc'))}"></label>
+      <label>期貨手續費（元／口／<b>單邊</b>）
+        <input name="fee_fut_per_lot" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_fut_per_lot'))}"></label>
+      <label>選擇權手續費（元／口／<b>單邊</b>）
+        <input name="fee_opt_per_lot" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_opt_per_lot'))}"></label>
+      <label>複委託手續費率（0 = 不計）
+        <input name="fee_us_rate" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_us_rate'))}"></label>
+      <label>複委託每筆最低（USD）
+        <input name="fee_us_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_us_min'))}"></label>
+      <button type="submit" class="primary block">儲存費率</button>
+      <p class="hint">期貨與選擇權填的是<b>單邊</b>。如果你券商報價的「一口 30 元」是來回計，這裡要填 15。
+        ${feeCfg('fee_us_rate') > 0 ? '' : '<br>⚠ 複委託費率還沒設定，美股交易的成本目前不計入。'}</p>
+    </form>
+    <div class="card">
+      <div class="list-title">法定稅率（不可改）</div>
+      <div class="row-between line"><span>台股賣出</span><span>0.300%</span></div>
+      <div class="row-between line"><span>台股當沖賣出</span><span>0.150%</span></div>
+      <div class="row-between line"><span>權證賣出</span><span>0.100%</span></div>
+      <div class="row-between line"><span>期貨（買賣各一次）</span><span>0.002%</span></div>
+      <div class="row-between line"><span>選擇權（買賣各一次）</span><span>0.100%</span></div>
+      <p class="hint">當沖降稅 0.15% 已延長至 2027-12-31。查證日期 2026-09-08。</p>
+    </div>
     <div class="card">
       <div class="list-title">行情更新</div>
       <p class="muted sub">${priceStamp()}</p>
@@ -1979,6 +2103,17 @@ function renderSettings(el) {
     if (error) return fail(error);
     state.settings = { ...state.settings, ...payload };
     toast('設定已儲存');
+  };
+  $('#fee-form', el).onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = { user_id: state.user.id };
+    for (const k of Object.keys(DEFAULT_FEES)) payload[k] = num(fd.get(k));
+    const { error } = await sb.from('settings').upsert(payload);
+    if (error) return fail(error);
+    state.settings = { ...state.settings, ...payload };
+    render();
+    toast('費率已儲存');
   };
   $('#force-price', el).onclick = async () => {
     const b = $('#force-price', el);
