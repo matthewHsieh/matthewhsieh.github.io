@@ -294,7 +294,10 @@ const TAX = {
 };
 const DEFAULT_FEES = {
   fee_stock_rate: 0.001425, fee_stock_disc: 1, fee_day_disc: 0.3, fee_min: 20,
-  fee_warrant_disc: 1, fee_fut_per_lot: 30, fee_opt_per_lot: 25, fee_us_rate: 0, fee_us_min: 0,
+  fee_warrant_disc: 1,
+  fee_fut_per_lot: 30,   // 期貨每口，買賣各收一次
+  fee_opt_per_lot: 25,   // 選擇權每口，買賣各收一次
+  fee_us_rate: 0.001, fee_us_min: 0,   // 複委託買賣各 0.1%
 };
 const feeCfg = (k) => {
   const v = state.settings[k];
@@ -321,13 +324,13 @@ function tradeCost(t, isDay) {
   }
   if (t.market === 'futures') {
     const notional = qty * px * num(t.fut_size);
-    const fee = qty * feeCfg('fee_fut_per_lot');
+    const fee = qty * feeCfg('fee_fut_per_lot');   // 每口每邊，買賣各收一次
     const tax = notional * TAX.futures;          // 買賣各課一次
     return { fee, tax, total: fee + tax, ccy: 'TWD' };
   }
   if (t.market === 'option') {
     const premium = qty * px * OPT_SIZE;
-    const fee = qty * feeCfg('fee_opt_per_lot');
+    const fee = qty * feeCfg('fee_opt_per_lot');   // 每口每邊，買賣各收一次
     const tax = premium * TAX.option;            // 買賣各課一次
     return { fee, tax, total: fee + tax, ccy: 'TWD' };
   }
@@ -2025,16 +2028,18 @@ function renderSettings(el) {
         <input name="fee_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_min'))}"></label>
       <label>權證手續費折數
         <input name="fee_warrant_disc" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_warrant_disc'))}"></label>
-      <label>期貨手續費（元／口／<b>單邊</b>）
+      <label>期貨手續費（元／口，<b>買賣各收一次</b>）
         <input name="fee_fut_per_lot" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_fut_per_lot'))}"></label>
-      <label>選擇權手續費（元／口／<b>單邊</b>）
+      <label>選擇權手續費（元／口，<b>買賣各收一次</b>）
         <input name="fee_opt_per_lot" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_opt_per_lot'))}"></label>
-      <label>複委託手續費率（0 = 不計）
+      <label>複委託手續費率（買賣各一次，0.001 = 0.1%）
         <input name="fee_us_rate" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_us_rate'))}"></label>
       <label>複委託每筆最低（USD）
         <input name="fee_us_min" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_us_min'))}"></label>
       <button type="submit" class="primary block">儲存費率</button>
-      <p class="hint">期貨與選擇權填的是<b>單邊</b>。如果你券商報價的「一口 30 元」是來回計，這裡要填 15。
+      <p class="hint">期貨與選擇權是每口固定金額，<b>買進收一次、賣出再收一次</b>，
+        所以一口來回是填的兩倍。複委託也是買賣各收一次。
+        ${feeCfg('fee_us_min') > 0 ? '' : '若複委託有每筆最低收費，記得填。'}
         ${feeCfg('fee_us_rate') > 0 ? '' : '<br>⚠ 複委託費率還沒設定，美股交易的成本目前不計入。'}</p>
     </form>
     <div class="card">

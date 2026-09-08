@@ -30,8 +30,11 @@ alter table public.settings add column if not exists fee_stock_disc    numeric d
 alter table public.settings add column if not exists fee_day_disc      numeric default 0.3;      -- 當沖折數
 alter table public.settings add column if not exists fee_min           numeric default 20;       -- 每筆最低手續費
 alter table public.settings add column if not exists fee_warrant_disc  numeric default 1.0;      -- 權證折數
-alter table public.settings add column if not exists fee_fut_per_lot   numeric default 30;       -- 期貨每口每邊
-alter table public.settings add column if not exists fee_opt_per_lot   numeric default 25;       -- 選擇權每口每邊
+alter table public.settings add column if not exists fee_fut_per_lot   numeric default 30;       -- 期貨每口，買賣各收一次
+alter table public.settings add column if not exists fee_opt_per_lot   numeric default 25;       -- 選擇權每口，買賣各收一次
+-- 下面兩個是一度誤解需求時加的，程式已不使用；留著只為不動既有欄位
+alter table public.settings add column if not exists fee_fut_day_round numeric;
+alter table public.settings add column if not exists fee_opt_day_round numeric;
 alter table public.settings add column if not exists fee_us_rate       numeric default 0;        -- 複委託費率
 alter table public.settings add column if not exists fee_us_min        numeric default 0;        -- 複委託最低（USD）
 
