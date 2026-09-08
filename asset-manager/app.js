@@ -178,6 +178,19 @@ async function loadTwStocks() {
   }
 }
 
+// 使用者可能打中文名稱而不是代號。名稱唯一對得上就換成代號，
+// 否則同一檔會因為「台玻」與「1802」被當成兩個標的，當沖配不成對、損益就消失了。
+function resolveTwSymbol(input) {
+  const q = norm(input);
+  if (!q) return q;
+  if (TW_STOCKS[q]) return q;                       // 本來就是代號
+  const exact = TW_ENTRIES.filter(([, n]) => n === String(input).trim());
+  if (exact.length === 1) return exact[0][0];
+  const partial = TW_ENTRIES.filter(([, n]) => n.includes(String(input).trim()));
+  if (partial.length === 1) return partial[0][0];
+  return q;                                         // 解析不出來就原樣保留
+}
+
 const LOOKUPS = {
   tw: {
     exact: (q) => (TW_STOCKS[q] ? { code: q, name: TW_STOCKS[q] } : null),
@@ -263,21 +276,16 @@ const autoPriceOk = (f) => (f.kind === 'stock' ? twKnown(f.symbol) : !!indexProd
 const tradeKey = (t) =>
   t.market === 'option'
     ? `${t.trade_date}|option|${String(t.opt_expiry ?? '').trim()}|${num(t.opt_strike)}|${t.opt_cp ?? ''}`
-    : `${t.trade_date}|${t.market}|${norm(t.symbol)}|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
+    // 台股與個股期貨都用解析後的代號，中文名稱與代號才不會被當成兩個標的
+    : `${t.trade_date}|${t.market}|${
+        t.market === 'tw' || t.fut_kind === 'stock' ? resolveTwSymbol(t.symbol) : norm(t.symbol)
+      }|${t.fut_kind ?? ''}|${num(t.fut_size)}`;
 
+// 只認明確勾選的當沖。
+// 早期用「同一天同標的有買有賣」推斷，但那會把同一天的一般平倉也誤判成當沖，
+// 例如當沖 1 口的同時又賣掉 5 口長期部位。
 function dayTradeKeys(trades) {
-  const set = new Set();
-  const m = new Map();
-  for (const t of trades) {
-    const k = tradeKey(t);
-    if (t.is_day_trade) set.add(k);          // 明確標記的優先
-    const e = m.get(k) || { buy: 0, sell: 0 };
-    e[t.side] = num(e[t.side]) + num(t.quantity);
-    m.set(k, e);
-  }
-  // 沒標記但同一天同標的有買也有賣，仍視為當沖（相容舊紀錄）
-  for (const [k, e] of m) if (e.buy > 0 && e.sell > 0) set.add(k);
-  return set;
+  return new Set(trades.filter((t) => t.is_day_trade).map(tradeKey));
 }
 
 // ------------------------------------------------------------
@@ -358,29 +366,75 @@ const costTwd = (t, isDay) => {
 const realizedTwd = (t) =>
   isNum(t.realized_pl) ? num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1) : null;
 
+// 當沖損益直接由配對重算，不依賴當初存下來的值。
+// 這樣即使當初因為代號打成中文而沒配對到，現在也會算出來。
+function dayTradeRealized(trades) {
+  const groups = new Map();
+  for (const t of trades) {
+    if (!t.is_day_trade) continue;
+    const k = tradeKey(t);
+    if (!groups.has(k)) groups.set(k, { buy: [], sell: [], sample: t });
+    groups.get(k)[t.side].push(t);
+  }
+  const out = new Map();
+  for (const [k, g] of groups) {
+    const bq = sum(g.buy, (x) => x.quantity), sq = sum(g.sell, (x) => x.quantity);
+    const matched = Math.min(bq, sq);
+    if (!(matched > 0)) continue;
+    const bAvg = sum(g.buy, (x) => num(x.quantity) * num(x.price)) / bq;
+    const sAvg = sum(g.sell, (x) => num(x.quantity) * num(x.price)) / sq;
+    const t0 = g.sample;
+    const mult = t0.market === 'futures' ? num(t0.fut_size)
+               : t0.market === 'option' ? OPT_SIZE
+               : t0.market === 'warrant' ? WAR_UNITS : 1;
+    const ccy = t0.market === 'us' ? 'USD' : 'TWD';
+    out.set(k, { value: (sAvg - bAvg) * matched * mult, ccy, matched, open: Math.abs(bq - sq) });
+  }
+  return out;
+}
+
 function realizedSummary() {
   const dt = dayTradeKeys(state.trades);
+  const dayPl = dayTradeRealized(state.trades);
   const byDate = new Map();
-  let gross = 0, day = 0, swing = 0, closes = 0, cost = 0;
-  for (const t of state.trades) {
-    const isDay = dt.has(tradeKey(t));
-    // 成本每一筆都要算（買進也有手續費），損益只有平倉才有
-    const c = costTwd(t, isDay);
-    cost += c;
-    byDate.set(t.trade_date, (byDate.get(t.trade_date) || 0) - c);
+  const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
+  let gross = 0, dayNet = 0, swingNet = 0, closes = 0, cost = 0;
 
+  // 當沖：每一組配對算一次損益，掛在該組最後一筆的日期
+  const dayCounted = new Set();
+  for (const t of state.trades) {
+    const k = tradeKey(t);
+    if (!t.is_day_trade || dayCounted.has(k)) continue;
+    const r = dayPl.get(k);
+    if (!r) continue;
+    dayCounted.add(k);
+    const v = r.value * (r.ccy === 'USD' ? num(state.settings.usd_twd) : 1);
+    gross += v; dayNet += v; closes += 1;
+    add(t.trade_date, v);
+  }
+
+  // 非當沖：用當初存下來的已實現損益
+  for (const t of state.trades) {
+    if (t.is_day_trade) continue;
     const v = realizedTwd(t);
     if (v === null) continue;
-    closes += 1;
-    gross += v;
-    if (isDay) day += v; else swing += v;
-    byDate.set(t.trade_date, (byDate.get(t.trade_date) || 0) + v);
+    closes += 1; gross += v; swingNet += v;
+    add(t.trade_date, v);
   }
+
+  // 成本：每一筆都算，買進也有手續費
+  for (const t of state.trades) {
+    const c = costTwd(t, !!t.is_day_trade);
+    cost += c;
+    add(t.trade_date, -c);
+    if (t.is_day_trade) dayNet -= c; else swingNet -= c;
+  }
+
   const dates = [...byDate.keys()].sort();
   let cum = 0;
   const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
-  // total 是扣掉手續費與交易稅之後的淨損益
-  return { gross, cost, total: gross - cost, day, swing, closes, series, dayKeys: dt };
+  // day / swing 都是扣過成本的淨額，加起來等於 total
+  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, closes, series, dayKeys: dt, dayPl };
 }
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -1082,7 +1136,10 @@ function openForm({ title, fields, values = {}, allowDelete = false }) {
         if (f.type === 'number') out[f.key] = raw === '' || raw === null ? null : Number(raw);
         else out[f.key] = typeof raw === 'string' ? raw.trim() || null : raw;
       }
-      if (out.symbol) out.symbol = norm(out.symbol);
+      if (out.symbol) {
+        out.symbol = fields.some((f) => f.key === 'symbol' && f.lookup === 'tw')
+          ? resolveTwSymbol(out.symbol) : norm(out.symbol);
+      }
       if (fields.some((f) => f.key === 'symbol' && f.lookup === 'tw') && !out.name && TW_STOCKS[out.symbol]) {
         out.name = TW_STOCKS[out.symbol];
       }
@@ -1457,7 +1514,7 @@ function readTradeForm(fd) {
     };
   }
 
-  const symbol = norm(fd.get('symbol'));
+  const symbol = (tk === 'tw' || tk === 'fut_stock') ? resolveTwSymbol(fd.get('symbol')) : norm(fd.get('symbol'));
   let name = String(fd.get('name') || '').trim() || null;
   if ((tk === 'tw' || tk === 'fut_stock') && !name && TW_STOCKS[symbol]) name = TW_STOCKS[symbol];
   if (tk === 'fut_index' && !name) name = indexProduct(symbol)?.name || null;
@@ -1532,7 +1589,8 @@ function openTradeForm(defaults = {}) {
               ? `當沖沖銷 ${fmtQty(v.market, p.matched)}，已實現 <span class="${plClass(p.realized)}">${signed(p.realized)}</span> 元`
               : `建立當沖部位 ${fmtQty(v.market, v.quantity)}，等反向那一筆再結算`) +
             `<br><span class="muted">不影響長期持倉的股數與均價</span>` +
-            `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0 ? `　交易稅 ${fmtMax(cc.tax, 0)}（當沖減半）` : ''}</span>`;
+            `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0
+              ? `　交易稅 ${fmtMax(cc.tax, 0)}${v.market === 'tw' ? '（當沖減半）' : ''}` : ''}</span>`;
           return;
         }
         const label = v.market === 'option'
@@ -1966,8 +2024,8 @@ function renderHistory(el) {
       <div class="list-title">買賣收益（已實現）</div>
       <div class="grid3">
         <div class="mini"><div class="label">淨損益</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
-        <div class="mini"><div class="label">當沖（毛）</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
-        <div class="mini"><div class="label">波段（毛）</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
+        <div class="mini"><div class="label">當沖（淨）</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
+        <div class="mini"><div class="label">波段（淨）</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
       </div>
       <div class="row-between line"><span>已實現損益（未扣成本）</span><span class="${plClass(rs.gross)}">${signed(rs.gross)}</span></div>
       <div class="row-between line"><span>手續費 ＋ 交易稅</span><span class="loss">${signed(-rs.cost)}</span></div>
@@ -1975,8 +2033,9 @@ function renderHistory(el) {
       <div id="chart-cum"></div>
       <div class="sub muted chart-sub">單日已實現損益</div>
       <div id="chart-daily"></div>
-      <p class="hint">賣出（或平倉）時用當時的平均成本結算，買進不計。當沖＝同一天同一標的既有買也有賣。
-        <b>圖表畫的是淨損益</b>，每一筆的手續費與交易稅都扣掉了，買進那一筆的手續費也算在內。
+      <p class="hint">波段賣出用當時的平均成本結算；當沖則是同一組買賣直接配對，不碰長期部位。
+        <b>所有數字都是扣掉手續費與交易稅之後的淨額</b>，買進那一筆的手續費也算在內。
+        當沖以你記錄時勾選的為準，不做推斷。
         未實現損益請看「持倉」頁。這裡不會自動調整你的現金餘額，現金請在「資金」頁自行維護。</p>
     </div>
     ${tradeButton()}
@@ -1987,14 +2046,20 @@ function renderHistory(el) {
             <span class="item-main">
               <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
                 t.market === 'option' ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}` : `${esc(t.symbol)} ${esc(t.name || '')}`}${
-                t.is_day_trade || rs.dayKeys.has(tradeKey(t)) ? '<span class="badge day-badge">當沖</span>' : ''}</span>
-              <span class="item-sub">${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
+                t.is_day_trade ? '<span class="badge day-badge">當沖</span>' : ''}</span>
+              <span class="item-sub">${t.is_day_trade && rs.dayPl.get(tradeKey(t))
+                ? `當沖組損益 <span class="${plClass(rs.dayPl.get(tradeKey(t)).value)}">${signed(rs.dayPl.get(tradeKey(t)).value)}</span>・` : ''}${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                 t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
             </span>
             <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
-              <span class="item-sub">@ ${fmtMax(t.price, 2)}${realizedTwd(t) === null ? '' :
-                `　<span class="${plClass(realizedTwd(t))}">${signed(realizedTwd(t))}</span>`}</span>
-              <span class="item-sub muted">成本 ${fmt(costTwd(t, rs.dayKeys.has(tradeKey(t))))}</span></span>
+              <span class="item-sub">@ ${fmtMax(t.price, 2)}</span>
+              <span class="item-sub">${(() => {
+                const c = costTwd(t, !!t.is_day_trade);
+                const r = t.is_day_trade ? null : realizedTwd(t);
+                const net = (r ?? 0) - c;
+                return `<span class="${plClass(net)}">${signed(net)}</span>` +
+                       `<span class="muted"> 　成本 ${fmt(c)}</span>`;
+              })()}</span></span>
           </button>`).join('')
         : '<p class="muted">尚無交易。按上方「記一筆交易」開始。</p>'}
       ${trades.length ? '<p class="hint">點一筆可刪除並還原部位。要修改請刪除後重新記錄。</p>' : ''}
@@ -2107,7 +2172,8 @@ function renderSettings(el) {
       <div class="row-between line"><span>權證賣出</span><span>0.100%</span></div>
       <div class="row-between line"><span>期貨（買賣各一次）</span><span>0.002%</span></div>
       <div class="row-between line"><span>選擇權（買賣各一次）</span><span>0.100%</span></div>
-      <p class="hint">當沖降稅 0.15% 已延長至 2027-12-31。查證日期 2026-09-08。</p>
+      <p class="hint">當沖降稅 0.15% 已延長至 2027-12-31，查證日期 2026-09-08。
+        <b>只有台股現股當沖有減半優惠</b>；期貨、選擇權、權證都沒有，買賣各課一次全額。</p>
     </div>
     <div class="card">
       <div class="list-title">行情更新</div>
