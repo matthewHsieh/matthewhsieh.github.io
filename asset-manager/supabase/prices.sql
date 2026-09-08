@@ -15,7 +15,7 @@ create extension if not exists pg_cron;
 -- 行情快取（全站共用，登入者可讀，只有排程/RPC 能寫）
 -- ------------------------------------------------------------
 create table if not exists public.market_prices (
-  market     text not null check (market in ('tw','us','fut','fx','opt')),
+  market     text not null check (market in ('tw','us','fut','fx','opt','war')),
   symbol     text not null,
   name       text,
   price      numeric not null,
@@ -28,7 +28,7 @@ alter table public.market_prices add column if not exists src text;
 do $mp$ begin
   alter table public.market_prices drop constraint if exists market_prices_market_check;
   alter table public.market_prices add constraint market_prices_market_check
-    check (market in ('tw','us','fut','fx','opt'));
+    check (market in ('tw','us','fut','fx','opt','war'));
 end $mp$;
 
 alter table public.market_prices enable row level security;
@@ -72,15 +72,18 @@ exception when others then
 end $$;
 
 create or replace function public.pm_fetch(p_url text)
-returns text language plpgsql security definer set search_path = public, extensions as $$
+returns text language plpgsql security definer set search_path = public, extensions as $fn$
 declare body text;
 begin
+  -- 預設連線逾時只有 1 秒，抓大檔或對方忙碌時會失敗
+  perform extensions.http_set_curlopt('CURLOPT_CONNECTTIMEOUT', '20');
+  perform extensions.http_set_curlopt('CURLOPT_TIMEOUT', '180');
   select content into body from extensions.http((
     'GET', p_url,
     array[extensions.http_header('User-Agent', 'Mozilla/5.0 (asset-manager)')],
     null, null)::extensions.http_request);
   return body;
-end $$;
+end $fn$;
 
 create or replace function public.pm_log(p_source text, p_rows integer, p_ok boolean, p_msg text)
 returns void language sql security definer set search_path = public as $$
@@ -499,6 +502,186 @@ begin
   return n;
 end $fn$;
 
+-- ============================================================
+-- 權證（券商發行的認購/認售權證）
+--   基本資料 20MB，每週更新一次就夠（只有除權息調整才會變）。
+--   每日報價含標的收盤價；約半數權證當天沒成交，
+--   這時用造市商的委買賣中價當作評價基準。
+--   隱含波動率由市價反推並逐日留存，用來偵測發行券商調降隱波。
+-- ============================================================
+
+-- 標準常態機率密度
+create or replace function public.pm_npdf(x double precision)
+returns double precision language sql immutable as $fn$
+  select 0.3989422804014327 * exp(-x * x / 2.0);
+$fn$;
+
+-- Black-Scholes（歐式、不含股利），回傳每股理論價
+create or replace function public.pm_bs(s double precision, k double precision, t double precision,
+                                        r double precision, sig double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare d1 double precision; d2 double precision;
+begin
+  if s is null or k is null or s <= 0 or k <= 0 then return null; end if;
+  if t is null or t <= 0 or sig is null or sig <= 0 then
+    return greatest(0, case when is_call then s - k else k - s end);
+  end if;
+  d1 := (ln(s / k) + (r + sig * sig / 2.0) * t) / (sig * sqrt(t));
+  d2 := d1 - sig * sqrt(t);
+  if is_call then return s * public.pm_ncdf(d1) - k * exp(-r * t) * public.pm_ncdf(d2);
+  else            return k * exp(-r * t) * public.pm_ncdf(-d2) - s * public.pm_ncdf(-d1); end if;
+end $fn$;
+
+create or replace function public.pm_bs_delta(s double precision, k double precision, t double precision,
+                                              r double precision, sig double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare d1 double precision;
+begin
+  if s is null or k is null or s <= 0 or k <= 0 then return null; end if;
+  if t is null or t <= 0 or sig is null or sig <= 0 then
+    if is_call then return case when s > k then 1 else 0 end;
+    else            return case when s < k then -1 else 0 end; end if;
+  end if;
+  d1 := (ln(s / k) + (r + sig * sig / 2.0) * t) / (sig * sqrt(t));
+  if is_call then return public.pm_ncdf(d1); else return public.pm_ncdf(d1) - 1.0; end if;
+end $fn$;
+
+-- 每日時間價值流失（每股，負值）
+create or replace function public.pm_bs_theta_day(s double precision, k double precision, t double precision,
+                                                  r double precision, sig double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare d1 double precision; d2 double precision; th double precision;
+begin
+  if s is null or k is null or s <= 0 or k <= 0 or t is null or t <= 0 or sig is null or sig <= 0 then
+    return null;
+  end if;
+  d1 := (ln(s / k) + (r + sig * sig / 2.0) * t) / (sig * sqrt(t));
+  d2 := d1 - sig * sqrt(t);
+  if is_call then
+    th := -s * public.pm_npdf(d1) * sig / (2.0 * sqrt(t)) - r * k * exp(-r * t) * public.pm_ncdf(d2);
+  else
+    th := -s * public.pm_npdf(d1) * sig / (2.0 * sqrt(t)) + r * k * exp(-r * t) * public.pm_ncdf(-d2);
+  end if;
+  return th / 365.0;
+end $fn$;
+
+-- 由市價反推隱含波動率（二分法）
+create or replace function public.pm_solve_iv(s double precision, k double precision, t double precision,
+                                              r double precision, px double precision, is_call boolean)
+returns double precision language plpgsql immutable as $fn$
+declare lo double precision := 0.001; hi double precision := 5.0; mid double precision;
+        intrinsic double precision; i integer;
+begin
+  if s is null or k is null or px is null or t is null or s <= 0 or k <= 0 or t <= 0 or px <= 0 then
+    return null;
+  end if;
+  intrinsic := greatest(0, case when is_call then s - k * exp(-r * t) else k * exp(-r * t) - s end);
+  if px <= intrinsic + 1e-9 then return null; end if;        -- 價格已在內含價值以下，模型不適用
+  if public.pm_bs(s, k, t, r, hi, is_call) < px then return null; end if;
+  for i in 1..80 loop
+    mid := (lo + hi) / 2.0;
+    if public.pm_bs(s, k, t, r, mid, is_call) < px then lo := mid; else hi := mid; end if;
+  end loop;
+  return (lo + hi) / 2.0;
+end $fn$;
+
+-- 權證基本資料（20MB，每週跑一次）
+create or replace function public.refresh_warrant_info()
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; payload jsonb;
+begin
+  perform set_config('statement_timeout', '300s', true);
+  begin
+    payload := public.pm_fetch('https://openapi.twse.com.tw/v1/opendata/t187ap37_L')::jsonb;
+    insert into public.warrant_info (code, name, cp, underlying, underlying_name,
+                                     strike, ratio, last_trade_date, category, updated_at)
+    select upper(btrim(e ->> '權證代號')),
+           btrim(e ->> '權證簡稱'),
+           case when (e ->> '權證類型') like '%購%' then 'call' else 'put' end,
+           null,                                                    -- 標的代號由每日報價補
+           btrim(e ->> '標的證券/指數'),
+           public.pm_num(e ->> '最新履約價格(元)/履約指數'),
+           public.pm_num(e ->> '最新標的履約配發數量(每仟單位權證)') / 1000.0,
+           public.pm_roc_date(e ->> '最後交易日'),
+           btrim(e ->> '類別'),
+           now()
+    from jsonb_array_elements(payload) e
+    where btrim(e ->> '權證代號') <> ''
+      and public.pm_num(e ->> '最新履約價格(元)/履約指數') > 0
+    on conflict (code) do update
+      set name = excluded.name, cp = excluded.cp, underlying_name = excluded.underlying_name,
+          strike = excluded.strike, ratio = excluded.ratio,
+          last_trade_date = excluded.last_trade_date, category = excluded.category, updated_at = now();
+    get diagnostics n = row_count;
+    perform public.pm_log('twse_warrant_info', n, true, null);
+  exception when others then
+    perform public.pm_log('twse_warrant_info', 0, false, sqlerrm);
+  end;
+  return n;
+end $fn$;
+
+-- 權證每日報價（認購 + 認售）
+create or replace function public.refresh_warrant_prices()
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; total integer := 0; payload jsonb; tbl jsonb;
+        d date; i integer; kind text; have date;
+begin
+  perform set_config('statement_timeout', '300s', true);
+  select max(as_of) into have from public.market_prices where market = 'war';
+  d := (now() at time zone 'Asia/Taipei')::date;
+
+  foreach kind in array array['0999', '0999P'] loop
+    begin
+      for i in 0..8 loop
+        exit when have is not null and have >= (d - i);
+        begin
+          payload := public.pm_fetch(
+            'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date='
+            || to_char(d - i, 'YYYYMMDD') || '&type=' || kind || '&response=json')::jsonb;
+        exception when others then payload := null; end;
+
+        if payload is not null and payload ->> 'stat' = 'OK' then
+          select t into tbl from jsonb_array_elements(payload -> 'tables') t
+          where jsonb_array_length(coalesce(t -> 'data', '[]'::jsonb)) > 0 limit 1;
+
+          if tbl is not null then
+            -- 有成交用收盤價，沒成交用造市商委買賣中價
+            insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+            select 'war', upper(btrim(r ->> 1)), btrim(r ->> 2),
+                   coalesce(public.pm_num(r ->> 9),
+                            (public.pm_num(r ->> 12) + public.pm_num(r ->> 14)) / 2.0,
+                            public.pm_num(r ->> 12)),
+                   d - i, 'twse_warrant', now()
+            from jsonb_array_elements(tbl -> 'data') r
+            where btrim(r ->> 1) ~ '^[0-9A-Z]{6}$'
+              and coalesce(public.pm_num(r ->> 9),
+                           (public.pm_num(r ->> 12) + public.pm_num(r ->> 14)) / 2.0,
+                           public.pm_num(r ->> 12)) > 0
+            on conflict (market, symbol) do update
+              set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+                  as_of = excluded.as_of, src = excluded.src, updated_at = now();
+            get diagnostics n = row_count; total := total + n;
+
+            -- 順便把標的代號補進基本資料
+            update public.warrant_info wi
+               set underlying = z.ul
+              from (select upper(btrim(r ->> 1)) as code, btrim(r ->> 17) as ul
+                    from jsonb_array_elements(tbl -> 'data') r
+                    where btrim(r ->> 17) ~ '^[0-9A-Z]{4,6}$') z
+             where wi.code = z.code and wi.underlying is distinct from z.ul;
+
+            perform public.pm_log('twse_warrant_' || kind || ' ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
+            exit;
+          end if;
+        end if;
+      end loop;
+    exception when others then
+      perform public.pm_log('twse_warrant_' || kind, 0, false, sqlerrm);
+    end;
+  end loop;
+  return total;
+end $fn$;
+
 -- ------------------------------------------------------------
 -- 把行情寫回持倉
 --   只在價格真的不同時才 UPDATE：不會新增、不會刪除任何項目
@@ -571,6 +754,65 @@ begin
           or o.delta is null);
   get diagnostics c = row_count; n := n + c;
 
+  -- 權證：補基本資料、市價、標的價，反推隱波後算 delta / theta / 實質槓桿
+  with w as (
+    select wr.id, wi.name, wi.cp, wi.underlying, wi.underlying_name, wi.strike, wi.ratio,
+           wi.last_trade_date, wi.category,
+           mp.price as px, ul.price as ulpx,
+           greatest((wi.last_trade_date - (now() at time zone 'Asia/Taipei')::date)::double precision / 365.0, 0) as tt
+    from public.warrants wr
+    join public.warrant_info wi on wi.code = upper(btrim(wr.code))
+    left join public.market_prices mp on mp.market = 'war' and mp.symbol = upper(btrim(wr.code))
+    left join public.market_prices ul on ul.market = 'tw'  and ul.symbol = upper(btrim(wi.underlying))
+    where (p_user is null or wr.user_id = p_user)
+  ), calc as (
+    select w.*,
+           public.pm_solve_iv(w.ulpx::double precision, w.strike::double precision, w.tt, 0.015,
+                              (w.px / nullif(w.ratio, 0))::double precision, w.cp = 'call') as iv_calc
+    from w
+  ), greeks as (
+    select c.*,
+           public.pm_bs_delta(c.ulpx::double precision, c.strike::double precision, c.tt, 0.015,
+                              c.iv_calc, c.cp = 'call') as delta_calc,
+           public.pm_bs_theta_day(c.ulpx::double precision, c.strike::double precision, c.tt, 0.015,
+                                  c.iv_calc, c.cp = 'call') as theta_calc
+    from calc c
+  )
+  update public.warrants wr
+     set name             = coalesce(f.name, wr.name),
+         cp               = coalesce(f.cp, wr.cp),
+         underlying       = coalesce(f.underlying, wr.underlying),
+         underlying_name  = coalesce(f.underlying_name, wr.underlying_name),
+         strike           = f.strike,
+         ratio            = f.ratio,
+         last_trade_date  = f.last_trade_date,
+         category         = f.category,
+         price            = coalesce(f.px, wr.price),
+         underlying_price = f.ulpx,
+         iv               = f.iv_calc,
+         delta            = f.delta_calc,
+         theta_day        = f.theta_calc * f.ratio,
+         gearing          = case when f.px > 0 and f.delta_calc is not null
+                                 then (f.ulpx * f.ratio / f.px) * f.delta_calc end
+    from greeks f
+   where f.id = wr.id
+     and (wr.price is distinct from coalesce(f.px, wr.price)
+          or wr.underlying_price is distinct from f.ulpx
+          or wr.iv is distinct from f.iv_calc
+          or wr.delta is null
+          or wr.strike is distinct from f.strike);
+  get diagnostics c = row_count; n := n + c;
+
+  -- 逐日留存隱波，用來看發行券商有沒有調降
+  insert into public.warrant_iv_history (code, as_of, iv, price, underlying_price)
+  select upper(btrim(wr.code)), mp.as_of, wr.iv, wr.price, wr.underlying_price
+  from public.warrants wr
+  join public.market_prices mp on mp.market = 'war' and mp.symbol = upper(btrim(wr.code))
+  where wr.iv is not null and mp.as_of is not null
+    and (p_user is null or wr.user_id = p_user)
+  on conflict (code, as_of) do update
+    set iv = excluded.iv, price = excluded.price, underlying_price = excluded.underlying_price;
+
   -- 匯率
   update public.settings st
      set usd_twd = mp.price
@@ -603,6 +845,11 @@ begin
                      from public.options x where x.user_id = u.id), 0) as opt_value,
            coalesce((select sum(abs(x.lots * coalesce(x.delta, 0) * coalesce(x.forward, 0) * x.size))
                      from public.options x where x.user_id = u.id), 0) as opt_exposure,
+           coalesce((select sum(x.lots * 1000 * x.price)
+                     from public.warrants x where x.user_id = u.id), 0) as war_value,
+           coalesce((select sum(abs(x.lots * 1000 * coalesce(x.ratio, 0)
+                        * coalesce(x.delta_override, x.delta, 0) * coalesce(x.underlying_price, 0)))
+                     from public.warrants x where x.user_id = u.id), 0) as war_exposure,
            coalesce((select st.usd_twd from public.settings st where st.user_id = u.id), 32) as rate,
            coalesce((select st.target_amount from public.settings st where st.user_id = u.id), 0) as target
     from u
@@ -620,24 +867,25 @@ begin
   f as (
     select b.*,
            b.us_usd * b.rate as us_value,
-           b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash + b.opt_value as total_assets
+           b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash + b.opt_value + b.war_value as total_assets
     from b
   ),
   g as (
     select f.*, f.total_assets - f.liab as net_assets,
-           f.stock_value + f.us_value + f.fut_notional + f.opt_exposure as exposure
+           f.stock_value + f.us_value + f.fut_notional + f.opt_exposure + f.war_exposure as exposure
     from f
   )
   insert into public.snapshots (
     user_id, snap_date, price_as_of, total_assets, liabilities, net_assets, stock_value, us_value,
     futures_margin, futures_notional, cash, option_value, option_exposure,
-    leverage_asset, leverage_exposure, target_amount, note)
+    warrant_value, warrant_exposure, leverage_asset, leverage_exposure, target_amount, note)
   -- 日期用台北時區：美股那班排程在 UTC 22:00 跑，等於台北隔天早上 06:00
   select user_id, (now() at time zone 'Asia/Taipei')::date,
          (select max(as_of) from public.market_prices where market = 'tw'),
          round(total_assets, 2), round(liab, 2), round(net_assets, 2), round(stock_value, 2), round(us_value, 2),
          round(fut_equity, 2), round(fut_notional, 2), round(cash, 2),
          round(opt_value, 2), round(opt_exposure, 2),
+         round(war_value, 2), round(war_exposure, 2),
          case when net_assets > 0 then round(total_assets / net_assets, 4) end,
          case when total_assets > 0 then round(exposure / total_assets, 4) end,
          round(target, 2), 'auto'
@@ -650,6 +898,7 @@ begin
         us_value = excluded.us_value, futures_margin = excluded.futures_margin,
         futures_notional = excluded.futures_notional, cash = excluded.cash,
         option_value = excluded.option_value, option_exposure = excluded.option_exposure,
+        warrant_value = excluded.warrant_value, warrant_exposure = excluded.warrant_exposure,
         leverage_asset = excluded.leverage_asset, leverage_exposure = excluded.leverage_exposure,
         target_amount = excluded.target_amount
     where public.snapshots.note = 'auto';   -- 手動存的快照不覆蓋
@@ -668,6 +917,12 @@ begin
   perform public.refresh_tw_prices();
   perform public.refresh_futures_prices();
   perform public.refresh_option_prices();
+  -- 權證基本資料 20MB，超過 6 天沒更新才重抓
+  if (select coalesce(max(updated_at), '2000-01-01'::timestamptz) from public.warrant_info)
+     < now() - interval '6 days' then
+    perform public.refresh_warrant_info();
+  end if;
+  perform public.refresh_warrant_prices();
   perform public.refresh_fx();
   if p_include_us then perform public.refresh_us_prices(); end if;
   perform public.sync_positions(null);
@@ -692,6 +947,11 @@ begin
     perform public.refresh_tw_prices();
     perform public.refresh_futures_prices();
     perform public.refresh_option_prices();
+    if (select coalesce(max(updated_at), '2000-01-01'::timestamptz) from public.warrant_info)
+       < now() - interval '6 days' then
+      perform public.refresh_warrant_info();
+    end if;
+    perform public.refresh_warrant_prices();
     perform public.refresh_fx();
     perform public.refresh_us_prices();
     fetched := true;

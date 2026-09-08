@@ -176,11 +176,78 @@ create table if not exists public.options (
 do $tm$ begin
   alter table public.trades drop constraint if exists trades_market_check;
   alter table public.trades add constraint trades_market_check
-    check (market in ('tw','futures','us','option'));
+    check (market in ('tw','futures','us','option','warrant'));
 end $tm$;
 alter table public.trades add column if not exists opt_expiry text;
 alter table public.trades add column if not exists opt_strike numeric;
 alter table public.trades add column if not exists opt_cp     text;
+
+-- ------------------------------------------------------------
+-- 權證部位（券商發行的認購/認售權證，1 張 = 1000 單位）
+--   ratio  = 行使比例，每單位可換的標的股數
+--   曝險 = 張數 × 1000 × 行使比例 × delta × 標的股價
+--   權證只能做買方，最大損失就是付出的權利金
+--   iv 是從市價反推的隱含波動率。發行券商可以事後調降隱波，
+--   這是 delta 抓不到的風險，所以要逐日留存變化。
+-- ------------------------------------------------------------
+create table if not exists public.warrants (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  code             text not null,                 -- 權證代號，例如 030573
+  name             text,
+  cp               text check (cp in ('call','put')),
+  underlying       text,                          -- 標的代號
+  underlying_name  text,
+  strike           numeric,
+  ratio            numeric,                       -- 行使比例
+  last_trade_date  date,
+  category         text,                          -- 一般型 / 界限型 / 重設型
+  lots             numeric not null default 1,    -- 張數
+  price            numeric not null default 0,    -- 目前權證價（元/單位），自動更新
+  cost             numeric,                       -- 成本（元/單位）
+  underlying_price numeric,
+  iv               numeric,                       -- 反推的隱含波動率，自動更新
+  delta            numeric,                       -- 自動更新
+  theta_day        numeric,                       -- 每日時間價值流失（元/單位），自動更新
+  gearing          numeric,                       -- 實質槓桿，自動更新
+  delta_override   numeric,                       -- 手動覆寫（界限型/重設型模型不適用時用）
+  iv_override      numeric,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+-- 權證基本資料快取（全站共用，非使用者資料；每週更新一次即可）
+create table if not exists public.warrant_info (
+  code            text primary key,
+  name            text,
+  cp              text,
+  underlying      text,
+  underlying_name text,
+  strike          numeric,
+  ratio           numeric,
+  last_trade_date date,
+  category        text,
+  updated_at      timestamptz not null default now()
+);
+alter table public.warrant_info enable row level security;
+drop policy if exists "read warrant info" on public.warrant_info;
+create policy "read warrant info" on public.warrant_info for select to authenticated using (true);
+
+-- 隱含波動率逐日紀錄：用來看發行券商有沒有偷偷調降隱波
+create table if not exists public.warrant_iv_history (
+  code             text not null,
+  as_of            date not null,
+  iv               numeric,
+  price            numeric,
+  underlying_price numeric,
+  primary key (code, as_of)
+);
+alter table public.warrant_iv_history enable row level security;
+drop policy if exists "read iv history" on public.warrant_iv_history;
+create policy "read iv history" on public.warrant_iv_history for select to authenticated using (true);
+
+-- 交易紀錄要能記權證
+alter table public.trades add column if not exists war_code text;
 
 -- ------------------------------------------------------------
 -- 交易紀錄：記一筆買/賣，App 會自動更新對應的部位
@@ -217,6 +284,8 @@ create table if not exists public.snapshots (
   price_as_of       date,         -- 這筆是用哪一天的行情算的（來源可能比當天晚發布）
   option_value      numeric,      -- 選擇權權利金市值（買方正、賣方負）
   option_exposure   numeric,      -- 選擇權 delta 曝險（絕對值加總）
+  warrant_value     numeric,      -- 權證市值
+  warrant_exposure  numeric,      -- 權證 delta 曝險
   total_assets      numeric,
   liabilities       numeric,
   net_assets        numeric,
@@ -239,7 +308,7 @@ create table if not exists public.snapshots (
 do $$
 declare t text;
 begin
-  foreach t in array array['settings','stocks','futures','us_stocks','balances','options'] loop
+  foreach t in array array['settings','stocks','futures','us_stocks','balances','options','warrants'] loop
     execute format('drop trigger if exists set_updated_at on public.%I', t);
     execute format('create trigger set_updated_at before update on public.%I for each row execute function public.set_updated_at()', t);
   end loop;
@@ -252,7 +321,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['settings','stocks','futures','us_stocks','balances','snapshots','trades','options'] loop
+  foreach t in array array['settings','stocks','futures','us_stocks','balances','snapshots','trades','options','warrants'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists "own rows" on public.%I', t);
     execute format(
@@ -268,6 +337,10 @@ create index if not exists balances_user_idx  on public.balances(user_id);
 alter table public.snapshots add column if not exists price_as_of date;
 alter table public.snapshots add column if not exists option_value numeric;
 alter table public.snapshots add column if not exists option_exposure numeric;
+alter table public.snapshots add column if not exists warrant_value numeric;
+alter table public.snapshots add column if not exists warrant_exposure numeric;
 create index if not exists snapshots_user_idx on public.snapshots(user_id, snap_date desc);
 create index if not exists trades_user_idx    on public.trades(user_id, trade_date desc, created_at desc);
 create index if not exists options_user_idx   on public.options(user_id);
+create index if not exists warrants_user_idx  on public.warrants(user_id);
+create index if not exists warrant_info_ul_idx on public.warrant_info(underlying);

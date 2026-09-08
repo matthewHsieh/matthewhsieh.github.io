@@ -25,6 +25,8 @@ const state = {
   balances: [],
   options: [],
   optExpiries: [],
+  warrants: [],
+  ivHistory: [],
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
   priceInfo: null,
@@ -119,6 +121,41 @@ function optMaxRisk(o) {
   if (o.cp === 'put') return { value: Math.max(0, num(o.strike) - basis) * lots * size, unlimited: false };
   return { value: null, unlimited: true };
 }
+
+// 權證：1 張 = 1000 單位；每單位可換 ratio 股標的
+const WAR_UNITS = 1000;
+const ivSince = () => {
+  const d = new Date(Date.now() - 60 * 86400000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+// 發行券商調降隱波是權證買方最大的隱形損失，delta 抓不到，只能靠逐日比對
+function ivChange(code) {
+  const rows = state.ivHistory.filter((r) => norm(r.code) === norm(code) && isNum(r.iv));
+  if (rows.length < 2) return null;
+  const first = num(rows[0].iv), last = num(rows[rows.length - 1].iv);
+  return { first, last, diff: last - first, days: rows.length };
+}
+const warLabel = (w) => `${esc(w.code)} ${esc(w.name || '')}`.trim();
+const warDelta = (w) => (isNum(w.delta_override) ? num(w.delta_override) : isNum(w.delta) ? num(w.delta) : null);
+// 市值：權證只能做買方，一定是正的
+const warValue = (w) => num(w.lots) * WAR_UNITS * num(w.price);
+// delta 曝險 = 張數 × 1000 × 行使比例 × delta × 標的股價
+const warExposure = (w) => {
+  const d = warDelta(w);
+  return d === null || !isNum(w.ratio) || !isNum(w.underlying_price)
+    ? null : num(w.lots) * WAR_UNITS * num(w.ratio) * d * num(w.underlying_price);
+};
+const warPl = (w) => (isNum(w.cost) ? (num(w.price) - num(w.cost)) * num(w.lots) * WAR_UNITS : null);
+// 買方最大損失就是付出的權利金
+const warMaxRisk = (w) => (isNum(w.cost) ? num(w.cost) : num(w.price)) * num(w.lots) * WAR_UNITS;
+// 剩餘交易日（粗估）
+const warDaysLeft = (w) => {
+  if (!w.last_trade_date) return null;
+  const d = Math.round((new Date(w.last_trade_date + 'T00:00:00') - new Date(todayISO() + 'T00:00:00')) / 86400000);
+  return Number.isFinite(d) ? d : null;
+};
+// 模型只對一般型成立；界限型、重設型要靠手動填 delta
+const warModelOk = (w) => !w.category || w.category.includes('一般型');
 
 // 個股期貨規格：曝險等同的現股股數
 const STOCK_FUT_SIZES = [
@@ -285,6 +322,14 @@ function exposureSlices() {
     const v = num(u.shares) * num(u.price_usd) * rate;
     if (v > 0) items.push({ label: `${norm(u.symbol)} ${u.name || ''}`.trim(), sub: '複委託', value: v });
   }
+  for (const w of state.warrants) {
+    const v = Math.abs(warExposure(w) ?? 0);
+    if (v > 0) items.push({
+      label: warLabel(w),
+      sub: `權證・${w.cp === 'put' ? '認售' : '認購'}（delta 曝險）`,
+      value: v,
+    });
+  }
   for (const o of state.options) {
     const v = Math.abs(optDeltaExp(o) ?? 0);
     if (v > 0) items.push({
@@ -336,14 +381,24 @@ function compute() {
   const optMaxLoss = optRisks.reduce((a, r) => a + (r.value ?? 0), 0);
   const optNoDelta = opts.some((o) => !isNum(o.delta));
 
+  // 權證
+  const wars = state.warrants;
+  const warMarket = sum(wars, warValue);
+  const warExp = wars.reduce((a, w) => a + Math.abs(warExposure(w) ?? 0), 0);
+  const warWithPl = wars.filter((w) => isNum(w.cost));
+  const warProfit = warWithPl.length ? sum(warWithPl, warPl) : null;
+  const warMaxLoss = sum(wars, warMaxRisk);
+  const warTheta = sum(wars.filter((w) => isNum(w.theta_day)), (w) => num(w.theta_day) * num(w.lots) * WAR_UNITS);
+  const warNoDelta = wars.some((w) => warDelta(w) === null);
+
   const toTwd = (b) => num(b.amount) * (b.currency === 'USD' ? rate : 1);
   const cash = sum(balances.filter((b) => b.kind === 'cash'), toTwd);
   const futEquity = sum(balances.filter((b) => b.kind === 'futures_equity'), toTwd);
   const liabilities = sum(balances.filter((b) => b.kind === 'liability'), toTwd);
 
-  const totalAssets = stockValue + usValue + futEquity + cash + optMarket;
+  const totalAssets = stockValue + usValue + futEquity + cash + optMarket + warMarket;
   const netAssets = totalAssets - liabilities;
-  const exposure = stockValue + usValue + futGross + optExposure;
+  const exposure = stockValue + usValue + futGross + optExposure + warExp;
 
   const leverageAsset = netAssets > 0 ? totalAssets / netAssets : NaN;
   // 曝險槓桿以「總資產」為分母：淨資產為負時仍算得出來
@@ -356,6 +411,7 @@ function compute() {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
     optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optRiskUnlimited, optNoDelta,
+    warMarket, warExp, warProfit, warMaxLoss, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
   };
@@ -371,12 +427,14 @@ const TRADE_KINDS = {
   fut_index: { label: '指數期貨', market: 'futures', fut_kind: 'index' },
   fut_stock: { label: '個股期貨', market: 'futures', fut_kind: 'stock' },
   option:    { label: '台指選擇權', market: 'option' },
+  warrant:   { label: '權證',       market: 'warrant' },
   us:        { label: '複委託',   market: 'us' },
 };
 const tradeKindOf = (t) =>
   t.market === 'futures' ? (t.fut_kind === 'stock' ? 'fut_stock' : 'fut_index') : t.market;
 
 function findPosition(t) {
+  if (t.market === 'warrant') return state.warrants.find((w) => norm(w.code) === norm(t.symbol));
   if (t.market === 'option') {
     return state.options.find((o) =>
       btrimEq(o.expiry, t.opt_expiry) && num(o.strike) === num(t.opt_strike) && o.cp === t.opt_cp);
@@ -398,6 +456,7 @@ function futDisplayName(kind, symbol, size) {
 }
 
 function newPositionRow(t) {
+  if (t.market === 'warrant') return { code: norm(t.symbol), name: t.name || null, price: num(t.price) };
   if (t.market === 'option') {
     return { contract: 'TXO', expiry: String(t.opt_expiry).trim(), strike: num(t.opt_strike),
              cp: t.opt_cp, size: OPT_SIZE, price: num(t.price) };
@@ -415,6 +474,7 @@ function newPositionRow(t) {
 function fmtQty(market, q) {
   q = num(q);
   if (market === 'futures' || market === 'option') return `${fmtMax(q, 2)} 口`;
+  if (market === 'warrant') return `${fmtMax(q, 2)} 張`;
   if (market === 'tw') return q !== 0 && q % 1000 === 0 ? `${fmt(q / 1000)} 張` : `${fmt(q)} 股`;
   return `${fmtMax(q, 4)} 股`;
 }
@@ -498,10 +558,12 @@ function projectTrade(t, opts = {}) {
              newCost: net === 0 ? null : newCost, realized, realizedCcy: 'TWD' };
   }
 
+  const isWar = t.market === 'warrant';
   const isUs = t.market === 'us';
   const priceKey = isUs ? 'price_usd' : 'price';
   const costKey = isUs ? 'cost_usd' : 'cost';
-  const prevShares = pos ? num(pos.shares) : 0;
+  const sharesKey = isWar ? 'lots' : 'shares';
+  const prevShares = pos ? num(pos[sharesKey]) : 0;
   const prevCost = pos && isNum(pos[costKey]) ? num(pos[costKey]) : null;
   const newShares = prevShares + dir * qty;
   if (newShares < -1e-9) return { error: `賣出 ${fmtQty(t.market, qty)} 超過目前持有 ${fmtQty(t.market, prevShares)}` };
@@ -515,7 +577,7 @@ function projectTrade(t, opts = {}) {
   const base = pos || newPositionRow(t);
   const after = gone
     ? null
-    : { ...base, shares: newShares, [priceKey]: opts.reverse ? num(base[priceKey]) : num(t.price), [costKey]: newCost };
+    : { ...base, [sharesKey]: newShares, [priceKey]: opts.reverse ? num(base[priceKey]) : num(t.price), [costKey]: newCost };
   if (after && !after.name && t.name) after.name = t.name;
 
   // 已實現損益：賣出的部分 ×（成交價 − 平均成本）
@@ -523,7 +585,9 @@ function projectTrade(t, opts = {}) {
   if (!opts.reverse && dir < 0 && prevShares > 0 && isNum(prevCost)) {
     realized = (num(t.price) - prevCost) * Math.min(qty, prevShares);
   }
-  return { table: isUs ? 'us_stocks' : 'stocks', pos, prevShares, prevCost, after, newShares,
+  if (isWar && isNum(realized)) realized *= WAR_UNITS;   // 權證以「張」記，一張 1000 單位
+  return { table: isWar ? 'warrants' : isUs ? 'us_stocks' : 'stocks',
+           pos, prevShares, prevCost, after, newShares,
            newCost: gone ? null : newCost, realized, realizedCcy: isUs ? 'USD' : 'TWD' };
 }
 
@@ -544,12 +608,14 @@ function restoreProjection(t) {
           cost: isNum(t.prev_cost) ? num(t.prev_cost) : null };
     return { table: 'futures', pos, after };
   }
+  const isWar = t.market === 'warrant';
   const isUs = t.market === 'us';
   const costKey = isUs ? 'cost_usd' : 'cost';
+  const sharesKey = isWar ? 'lots' : 'shares';
   const after = prev <= 1e-9
     ? null
-    : { ...(pos || newPositionRow(t)), shares: prev, [costKey]: isNum(t.prev_cost) ? num(t.prev_cost) : null };
-  return { table: isUs ? 'us_stocks' : 'stocks', pos, after };
+    : { ...(pos || newPositionRow(t)), [sharesKey]: prev, [costKey]: isNum(t.prev_cost) ? num(t.prev_cost) : null };
+  return { table: isWar ? 'warrants' : isUs ? 'us_stocks' : 'stocks', pos, after };
 }
 
 // 只有真的有變動才寫入；賣光才刪除
@@ -592,6 +658,7 @@ async function saveTrade(v) {
       user_id: state.user.id,
       market: v.market, fut_kind: v.fut_kind ?? null, fut_size: v.fut_size ?? null,
       opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
+      war_code: v.market === 'warrant' ? v.symbol : null,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,
@@ -688,11 +755,13 @@ async function loadAll() {
     sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
     sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
     sb.from('options').select('*').order('expiry').order('strike'),
+    sb.from('warrants').select('*').order('created_at'),
+    sb.from('warrant_iv_history').select('code,as_of,iv').gte('as_of', ivSince()).order('as_of'),
     sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, fwds, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -701,6 +770,8 @@ async function loadAll() {
   state.snapshots = snaps.data ?? [];
   state.trades = trades.data ?? [];
   state.options = opts.data ?? [];
+  state.warrants = wars.data ?? [];
+  state.ivHistory = ivh.data ?? [];
   state.optExpiries = (fwds.data ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
@@ -1026,6 +1097,127 @@ function openOptionsForm(existing) {
   });
 }
 
+// 依代號查權證基本資料（37,000 筆放在資料庫，不下載到手機）
+async function lookupWarrant(code) {
+  const c = norm(code);
+  if (!/^[0-9A-Z]{6}$/.test(c)) return null;
+  const { data, error } = await sb.from('warrant_info').select('*').eq('code', c).maybeSingle();
+  if (error) { console.warn(error); return null; }
+  return data;
+}
+
+function openWarrantForm(existing, info) {
+  const v = existing || { code: '', lots: 1, cost: '' };
+  const meta = info || existing || {};
+  const modelOk = !meta.category || String(meta.category).includes('一般型');
+  const html = `
+    <label>權證代號<input name="code" type="text" required autocomplete="off" autocapitalize="characters"
+      maxlength="6" value="${esc(v.code || '')}" placeholder="030573" ${existing ? 'readonly' : ''}></label>
+    <div class="resolved muted" data-resolved></div>
+    <label>張數（1 張 = 1000 單位）<input name="lots" type="number" step="any" inputmode="decimal" required min="0" value="${esc(num(v.lots))}"></label>
+    <label>成本（元／單位，選填）<input name="cost" type="number" step="any" inputmode="decimal" value="${isNum(v.cost) ? esc(num(v.cost)) : ''}"></label>
+    <label data-row="ovr" ${modelOk ? 'hidden' : ''}>delta 手動填（界限型／重設型模型不適用）
+      <input name="delta_override" type="number" step="any" inputmode="decimal" value="${isNum(v.delta_override) ? esc(num(v.delta_override)) : ''}" placeholder="0.5"></label>
+    <div class="preview" data-preview></div>`;
+
+  const read = (fd) => ({
+    code: norm(fd.get('code')),
+    lots: num(fd.get('lots')),
+    cost: fd.get('cost') === '' || fd.get('cost') === null ? null : Number(fd.get('cost')),
+    delta_override: fd.get('delta_override') === '' || fd.get('delta_override') === null ? null : Number(fd.get('delta_override')),
+  });
+
+  return openDialog({
+    title: existing ? '編輯權證部位' : '新增權證',
+    html, allowDelete: !!existing,
+    onMount: (form) => {
+      const resolved = $('[data-resolved]', form);
+      const preview = $('[data-preview]', form);
+      const rowOvr = $('[data-row=ovr]', form);
+      let found = info || (existing ? existing : null);
+
+      const draw = () => {
+        const val = read(new FormData(form));
+        if (!found) {
+          resolved.textContent = val.code.length === 6 ? '查詢中…' : '輸入 6 碼權證代號';
+          preview.textContent = '';
+          return;
+        }
+        const ok = !found.category || String(found.category).includes('一般型');
+        rowOvr.hidden = ok;
+        resolved.innerHTML = `${esc(found.name || '')}　${found.cp === 'put' ? '認售' : '認購'}<br>` +
+          `標的 ${esc(found.underlying || '')} ${esc(found.underlying_name || '')}　履約價 ${fmtMax(found.strike, 2)}<br>` +
+          `行使比例 ${fmtMax(found.ratio, 4)}　最後交易日 ${esc(found.last_trade_date || '')}　${esc(found.category || '')}`;
+
+        const w = { ...found, ...val, price: existing ? num(existing.price) : 0,
+                    underlying_price: existing ? num(existing.underlying_price) : 0,
+                    delta: existing ? existing.delta : null };
+        const lines = [];
+        if (existing && num(existing.price) > 0) {
+          lines.push(`權證價 ${fmtMax(existing.price, 2)}　標的 ${fmtMax(existing.underlying_price, 2)}`);
+          lines.push(`市值 ${fmt(warValue(w))} 元`);
+          const de = warExposure(w);
+          if (de !== null) lines.push(`delta ${fmtMax(warDelta(w), 3)}　delta 曝險 ${fmt(Math.abs(de))} 元`);
+          if (isNum(existing.iv)) lines.push(`隱含波動率 ${(num(existing.iv) * 100).toFixed(1)}%`);
+          if (isNum(existing.gearing)) lines.push(`實質槓桿 ${fmtMax(existing.gearing, 2)} 倍`);
+          const pl = warPl(w);
+          if (pl !== null) lines.push(`未實現損益 ${signed(pl)} 元`);
+        } else {
+          lines.push('權證價、隱波、delta 存檔後會自動帶入');
+        }
+        lines.push(`最大損失 ${fmt(warMaxRisk(w))} 元（權證買方最多賠光權利金）`);
+        if (!ok) lines.push('⚠ 這是界限型／重設型，Black-Scholes 不適用，delta 請手動填');
+        preview.innerHTML = lines.join('<br>');
+      };
+
+      let timer;
+      form.code.addEventListener('input', () => {
+        found = null;
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const c = norm(form.code.value);
+          if (!/^[0-9A-Z]{6}$/.test(c)) { draw(); return; }
+          found = await lookupWarrant(c);
+          if (!found) resolved.textContent = '查不到這個代號，確認一下是不是上櫃權證或已下市';
+          else draw();
+        }, 350);
+        draw();
+      });
+      form.addEventListener('input', draw);
+      form.addEventListener('change', draw);
+      draw();
+    },
+    collect: (fd) => {
+      const val = read(fd);
+      if (!/^[0-9A-Z]{6}$/.test(val.code)) { toast('權證代號要 6 碼', 2500); return undefined; }
+      if (!(val.lots > 0)) { toast('張數必須大於 0', 2500); return undefined; }
+      return val;
+    },
+  });
+}
+
+async function editWarrant(id) {
+  const existing = id ? state.warrants.find((w) => w.id === id) : null;
+  const res = await openWarrantForm(existing);
+  if (!res) return;
+  try {
+    if (res.action === 'delete') {
+      const { error } = await sb.from('warrants').delete().eq('id', id);
+      if (error) throw error;
+      await refresh('已刪除');
+    } else {
+      const payload = { ...res.values, user_id: state.user.id };
+      if (id) payload.id = id;
+      const { error } = await sb.from('warrants').upsert(payload);
+      if (error) throw error;
+      await applyCachedPrices();
+      await refresh('已儲存');
+    }
+  } catch (e) {
+    fail(e);
+  }
+}
+
 async function editOption(id) {
   const existing = id ? state.options.find((o) => o.id === id) : null;
   const res = await openOptionsForm(existing);
@@ -1186,6 +1378,7 @@ function openTradeForm(defaults = {}) {
       const setKind = () => {
         const k = form.kind.value;
         const isOpt = k === 'option';
+        const isWarrant = k === 'warrant';
         const isStockFut = k === 'fut_stock', isIdxFut = k === 'fut_index';
         rowOpt.hidden = !isOpt;
         rowSymbol.hidden = isOpt;
@@ -1201,14 +1394,15 @@ function openTradeForm(defaults = {}) {
         }
         rowFutSize.hidden = !isStockFut;
         $('[data-l=symbol]', form).textContent =
-          isIdxFut ? '商品' : isStockFut ? '標的股票代號' : '代號';
+          isIdxFut ? '商品' : isStockFut ? '標的股票代號' : isWarrant ? '權證代號' : '代號';
         $('[data-l=price]', form).textContent =
-          k === 'us' ? '價格 (USD)' : isIdxFut ? '成交價（指數）' : '價格 (TWD)';
+          k === 'us' ? '價格 (USD)' : isIdxFut ? '成交價（指數）' : isWarrant ? '權證價（元／單位）' : '價格 (TWD)';
         form.symbol.placeholder =
-          k === 'tw' || isStockFut ? '2330 或 台積' : isIdxFut ? 'TX / 小台 / 微台' : 'VOO';
+          k === 'tw' || isStockFut ? '2330 或 台積' : isIdxFut ? 'TX / 小台 / 微台' : isWarrant ? '030573' : 'VOO';
         form.unit.innerHTML = k === 'tw'
           ? '<option value="lot">張</option><option value="share">股</option>'
-          : k === 'us' ? '<option value="share">股</option>' : '<option value="share">口</option>';
+          : k === 'us' ? '<option value="share">股</option>'
+          : isWarrant ? '<option value="share">張</option>' : '<option value="share">口</option>';
         form.unit.disabled = k !== 'tw';
         form.name.value = '';
         resolved.textContent = k === 'us' ? '美股不會自動帶名稱' : '輸入代號或名稱會自動帶出';
@@ -1216,7 +1410,8 @@ function openTradeForm(defaults = {}) {
       };
 
       attachLookup(form.symbol,
-        () => (form.kind.value === 'fut_index' ? 'index' : form.kind.value === 'us' ? 'none' : 'tw'),
+        () => (form.kind.value === 'fut_index' ? 'index'
+             : form.kind.value === 'us' || form.kind.value === 'warrant' ? 'none' : 'tw'),
         (m, picked) => {
           form.name.value = m.name || '';
           resolved.textContent = `${m.code}　${m.name || ''}`;
@@ -1226,6 +1421,18 @@ function openTradeForm(defaults = {}) {
       form.symbol.addEventListener('input', () => {
         const k = form.kind.value;
         if (k === 'option') return;
+        if (k === 'warrant') {
+          const c = norm(form.symbol.value);
+          if (/^[0-9A-Z]{6}$/.test(c)) {
+            lookupWarrant(c).then((w) => {
+              if (w && norm(form.symbol.value) === c) {
+                form.name.value = w.name || '';
+                resolved.textContent = `${w.name || ''}　標的 ${w.underlying || ''} ${w.underlying_name || ''}　履約 ${fmtMax(w.strike, 2)}`;
+              }
+            });
+          } else { resolved.textContent = '輸入 6 碼權證代號'; }
+          return;
+        }
         const lk = k === 'fut_index' ? LOOKUPS.index : k === 'us' ? null : LOOKUPS.tw;
         if (lk && !lk.exact(norm(form.symbol.value))) {
           form.name.value = '';
@@ -1288,11 +1495,13 @@ function bindListActions(el) {
     const d = JSON.parse(b.dataset.defaults || '{}');
     if (b.dataset.add === 'future') editFutures(null);
     else if (b.dataset.add === 'option') editOption(null);
+    else if (b.dataset.add === 'warrant') editWarrant(null);
     else editItem(b.dataset.add, null, d);
   }));
   $$('[data-edit]', el).forEach((b) => (b.onclick = () =>
     b.dataset.edit === 'future' ? editFutures(b.dataset.id)
     : b.dataset.edit === 'option' ? editOption(b.dataset.id)
+    : b.dataset.edit === 'warrant' ? editWarrant(b.dataset.id)
     : editItem(b.dataset.edit, b.dataset.id)));
   $$('[data-trade]', el).forEach((b) => (b.onclick = () => logTrade()));
 }
@@ -1366,10 +1575,20 @@ function renderOverview(el) {
       ${line('指數期貨名目', c.futIndex)}
       ${line('個股期貨名目', c.futStock)}
       ${line('選擇權 delta 曝險', c.optExposure)}
+      ${line('權證 delta 曝險', c.warExp)}
       ${line('期貨名目・多單', c.futLong)}
       ${line('期貨名目・空單', c.futShort)}
       ${line('總曝險', c.exposure)}
     </div>
+    ${state.warrants.length ? `<div class="card list">
+      <div class="list-title">權證風險</div>
+      ${line('權證市值', c.warMarket)}
+      ${line('delta 曝險', c.warExp)}
+      ${line('最大損失（買方賠光權利金）', c.warMaxLoss)}
+      <div class="row-between line"><span>每日時間價值流失</span><span class="loss">${fmt(c.warTheta)}</span></div>
+      <p class="hint">權證的隱含波動率由發行券商決定，可以在發行後調降，這會讓權證價格下跌但 delta 完全反映不出來。
+        系統每天記錄各檔隱波，被調降時會在「持倉」標示。${c.warNoDelta ? '<br>⚠ 有部位還沒算出 delta。' : ''}</p>
+    </div>` : ''}
     ${state.options.length ? `<div class="card list">
       <div class="list-title">選擇權風險</div>
       ${line('權利金市值（買方正、賣方負）', c.optMarket)}
@@ -1451,6 +1670,26 @@ function renderHoldings(el) {
       `US$ ${fmt(v, 2)}`,
       pl === null ? `≈ ${fmt(v * c.rate)}` : `<span class="${plClass(pl)}">${signed(pl, 2)}</span> ≈ ${fmt(v * c.rate)}`);
   });
+  const warRows = state.warrants.map((w) => {
+    const de = warExposure(w);
+    const pl = warPl(w);
+    const days = warDaysLeft(w);
+    const ivc = ivChange(w.code);
+    const ivCut = ivc && ivc.diff < -0.005;
+    return itemRow('warrant', w.id,
+      `${warLabel(w)}<span class="badge">${w.cp === 'put' ? '認售' : '認購'}</span>${
+        warModelOk(w) ? '' : '<span class="badge warn-badge">模型不適用</span>'}${
+        ivCut ? '<span class="badge warn-badge">隱波被調降</span>' : ''}`,
+      `${fmtMax(w.lots, 2)} 張 × ${fmtMax(w.price, 2)} 元${isNum(w.cost) ? `　成本 ${fmtMax(w.cost, 2)}` : ''}` +
+      `${isNum(w.iv) ? `　隱波 ${(num(w.iv) * 100).toFixed(1)}%` : ''}` +
+      `${isNum(w.gearing) ? `　槓桿 ${fmtMax(w.gearing, 1)}x` : ''}` +
+      `${days !== null ? `　剩 ${fmt(days)} 天` : ''}`,
+      `市值 ${fmt(warValue(w))}`,
+      pl === null
+        ? (de === null ? '曝險待算' : `曝險 ${fmt(Math.abs(de))}`)
+        : `<span class="${plClass(pl)}">${signed(pl)}</span>`);
+  });
+
   const optRows = state.options.map((o) => {
     const de = optDeltaExp(o);
     const pl = optPl(o);
@@ -1479,6 +1718,10 @@ function renderHoldings(el) {
       `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
         ? '<span class="muted">填了平均成本才會顯示損益</span>'
         : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}`) +
+    section('權證', 'warrant', warRows,
+      `市值 ${fmt(c.warMarket)}　delta 曝險 ${fmt(c.warExp)}　最大損失 ${fmt(c.warMaxLoss)}${
+        c.warProfit === null ? '' : `　<span class="${plClass(c.warProfit)}">${signed(c.warProfit)}</span>`}${
+        c.warTheta ? `　<span class="loss">每日時間價值 ${fmt(c.warTheta)}</span>` : ''}`) +
     section('台指選擇權', 'option', optRows,
       `權利金市值 ${fmt(c.optMarket)}　delta 曝險 ${fmt(c.optExposure)}　${
         c.optRiskUnlimited ? '<span class="loss">最大風險無上限</span>'
@@ -1661,6 +1904,14 @@ function renderSettings(el) {
         <dt>槓桿②（曝險槓桿）</dt><dd>（台股 ＋ 複委託 ＋ 期貨名目）÷ <b>總資產</b>，指數期貨與個股期貨都算</dd>
         <dt>指數期貨名目</dt><dd>口數 × 結算價 × 每點價值（大台 200、小台 50、微台 10）</dd>
         <dt>個股期貨名目</dt><dd>口數 × 標的股價 × 等同股數（大型 2,000 股 ＝ 2 張、小型 100 股）</dd>
+        <dt>權證（1 張 = 1000 單位）</dt>
+        <dd>市值 = 張數 × 1000 × 權證價，計入總資產。<br>
+            delta 曝險 = 張數 × 1000 × 行使比例 × delta × 標的股價，計入槓桿②。<br>
+            最大損失 = 付出的權利金，買方不會賠更多。<br>
+            隱波、delta、theta、實質槓桿由每日收盤價自動反推。約半數權證當天沒成交，
+            這時用造市商的委買賣中價評價。<br>
+            <b>隱波是發行券商唯一能事後操縱的參數</b>，調降會讓權證價格下跌而 delta 看不出來，
+            所以系統每天留存隱波，被調降時會標示。界限型與重設型模型不適用，delta 請手動填。</dd>
         <dt>選擇權（TXO，每點 50 元）</dt>
         <dd>權利金市值 = 口數 × 權利金 × 50，買方為正、賣方為負，計入總資產。<br>
             delta 曝險 = 口數 × delta × 隱含遠期指數 × 50，計入槓桿②。<br>
