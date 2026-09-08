@@ -167,7 +167,12 @@ git push
 
 - 個股期貨用**標的股票收盤價**計價，因為曝險的定義就是「等同 N 股現股」。
 - 價格只會 `UPDATE`，**不會新增或刪除任何項目**；只有賣光時部位才會被移除。
-- 想立刻更新：App 右上角 ↻，或到「設定 → 立即重新抓取報價」。
+- 想立刻更新：App 右上角 ↻，或到「設定 → 立即重新抓取報價」，約 6 秒。
+
+> **為什麼手動更新是一項一項抓的。** Supabase 給 `authenticated` 角色的 statement_timeout 是 **8 秒**，
+> 但七個來源一次跑完要 10 秒以上，權證基本資料更要 50 秒，所以一定會逾時。
+> 手動更新改成呼叫 `refresh_market(kind)` 一次做一項，每項都遠低於 8 秒，
+> 某一項失敗也不影響其他項。權證基本資料 20MB 不放進互動流程，只由排程處理。
 - 排程狀態可查：SQL Editor 執行 `select * from price_runs order by id desc limit 20;`
 - 各市場資料日期：`select * from price_status;`
 

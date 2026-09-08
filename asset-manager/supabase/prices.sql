@@ -927,9 +927,12 @@ begin
   perform public.refresh_tw_prices();
   perform public.refresh_futures_prices();
   perform public.refresh_option_prices();
-  -- 權證基本資料 20MB，超過 6 天沒更新才重抓
+  -- 權證基本資料 20MB：超過 2 天沒更新，或有持倉查不到基本資料時才重抓
   if (select coalesce(max(updated_at), '2000-01-01'::timestamptz) from public.warrant_info)
-     < now() - interval '6 days' then
+       < now() - interval '2 days'
+     or exists (select 1 from public.warrants w
+                left join public.warrant_info wi on wi.code = upper(btrim(w.code))
+                where wi.code is null or w.ratio is null) then
     perform public.refresh_warrant_info();
   end if;
   perform public.refresh_warrant_prices();
@@ -940,41 +943,58 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
+-- 逐項更新（App 手動重新整理用）
+--   authenticated 角色的 statement_timeout 是 8 秒，
+--   七個來源一次跑完要 10 秒以上，一定逾時，所以拆成一次做一項。
+--   權證基本資料 20MB 要 50 秒，不放進互動流程，只由排程處理。
+-- ------------------------------------------------------------
+create or replace function public.refresh_market(p_kind text)
+returns json language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; t0 timestamptz := clock_timestamp();
+begin
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+
+  case p_kind
+    when 'tw'  then n := public.refresh_tw_prices();
+    when 'fut' then n := public.refresh_futures_prices();
+    when 'opt' then n := public.refresh_option_prices();
+    when 'war' then n := public.refresh_warrant_prices();
+    when 'fx'  then n := coalesce((public.refresh_fx() is not null)::int, 0);
+    when 'us'  then n := public.refresh_us_prices();
+    when 'sync' then n := public.sync_positions(auth.uid());
+    else raise exception 'unknown market %', p_kind;
+  end case;
+
+  return json_build_object(
+    'kind', p_kind, 'rows', n,
+    'ms', round(extract(epoch from clock_timestamp() - t0) * 1000),
+    'as_of', (select max(as_of) from public.market_prices
+              where market = case p_kind when 'tw' then 'tw' when 'fut' then 'fut'
+                                         when 'opt' then 'opt' when 'war' then 'war'
+                                         when 'fx' then 'fx' when 'us' then 'us' else 'tw' end));
+end $fn$;
+
+revoke all on function public.refresh_market(text) from public, anon;
+grant execute on function public.refresh_market(text) to authenticated;
+
+-- ------------------------------------------------------------
 -- App 手動重新整理用的 RPC
 --   行情 10 分鐘內剛更新過就只做同步，避免一直打對方的 API
 -- ------------------------------------------------------------
 create or replace function public.refresh_prices(p_force boolean default false)
-returns json language plpgsql security definer set search_path = public as $$
-declare last_at timestamptz; changed integer; fetched boolean := false;
+returns json language plpgsql security definer set search_path = public as $fn$
+declare changed integer;
 begin
-  if auth.uid() is null then
-    raise exception 'not authenticated';
-  end if;
-
-  select max(updated_at) into last_at from public.market_prices;
-
-  if p_force or last_at is null or last_at < now() - interval '10 minutes' then
-    perform public.refresh_tw_prices();
-    perform public.refresh_futures_prices();
-    perform public.refresh_option_prices();
-    if (select coalesce(max(updated_at), '2000-01-01'::timestamptz) from public.warrant_info)
-       < now() - interval '6 days' then
-      perform public.refresh_warrant_info();
-    end if;
-    perform public.refresh_warrant_prices();
-    perform public.refresh_fx();
-    perform public.refresh_us_prices();
-    fetched := true;
-  end if;
-
+  if auth.uid() is null then raise exception 'not authenticated'; end if;
+  -- 這支只做「把已快取的行情套到部位上」，很快。
+  -- 真正的外部抓取請用 refresh_market() 一項一項來，否則會超過 8 秒上限。
   changed := public.sync_positions(auth.uid());
-
   return json_build_object(
-    'fetched', fetched,
+    'fetched', false,
     'changed', changed,
     'as_of', (select max(as_of) from public.market_prices where market = 'tw'),
     'updated_at', (select max(updated_at) from public.market_prices));
-end $$;
+end $fn$;
 
 revoke all on function public.refresh_prices(boolean) from public, anon;
 grant execute on function public.refresh_prices(boolean) to authenticated;

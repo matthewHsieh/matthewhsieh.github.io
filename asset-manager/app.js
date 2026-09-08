@@ -790,15 +790,44 @@ async function refresh(msg) {
 }
 
 // 手動抓最新報價（平常不用按，每天會自動更新）
+// 資料庫給前端呼叫的時間上限是 8 秒，七個來源一次跑完會超過，
+// 所以一次只抓一項；某一項失敗也不影響其他項。
+const REFRESH_STAGES = [
+  ['tw', '台股'], ['fut', '指數期貨'], ['opt', '選擇權'],
+  ['war', '權證'], ['fx', '匯率'], ['us', '美股'], ['sync', '套用到持倉'],
+];
+
+async function runStagedRefresh(onStage) {
+  const done = [];
+  for (const [kind, label] of REFRESH_STAGES) {
+    if (onStage) onStage(label);
+    try {
+      const { data, error } = await sb.rpc('refresh_market', { p_kind: kind });
+      if (error) throw error;
+      done.push({ kind, label, ok: true, rows: data?.rows ?? 0 });
+    } catch (e) {
+      console.warn('refresh ' + kind, e);
+      done.push({ kind, label, ok: false, msg: e?.message || String(e) });
+    }
+  }
+  return done;
+}
+
+function refreshSummary(done) {
+  const bad = done.filter((d) => !d.ok);
+  if (!bad.length) return null;
+  return bad.map((d) => d.label).join('、') + ' 更新失敗';
+}
+
 async function refreshPrices() {
   const btn = $('#refresh-btn');
   btn.classList.add('spin');
   try {
-    const { data, error } = await sb.rpc('refresh_prices', { p_force: false });
-    if (error) throw error;
+    const done = await runStagedRefresh((label) => toast('更新中：' + label, 8000));
     await loadAll();
     render();
-    toast(data?.fetched ? `報價已更新（${data.as_of ?? ''}）` : '報價是最新的');
+    const bad = refreshSummary(done);
+    toast(bad ? bad + '，其餘已更新' : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`, bad ? 5000 : 2500);
   } catch (e) {
     fail(e);
   } finally {
@@ -1907,7 +1936,9 @@ function renderSettings(el) {
         }).join('')}</tbody>
       </table></div>
       <button type="button" class="block" id="force-price">立即重新抓取報價</button>
-      <p class="hint">每個交易日 16:00（台股 / 期貨 / 匯率）與隔日 06:00（美股）自動更新，並自動存一筆快照。手機沒開也會跑。</p>
+      <p class="hint">每個交易日 14:30、16:00、18:00、21:00（台股／期貨／選擇權／權證／匯率）與隔日 06:00（美股）自動更新，
+        並自動存一筆快照。手機沒開也會跑，平常不需要按這個按鈕。
+        按下去會一項一項抓，大約 6 秒；某一項失敗不影響其他項。</p>
     </div>
     <div class="card">
       <div class="list-title">帳號</div>
@@ -1951,13 +1982,16 @@ function renderSettings(el) {
   };
   $('#force-price', el).onclick = async () => {
     const b = $('#force-price', el);
-    b.disabled = true; b.textContent = '抓取中…';
+    b.disabled = true;
     try {
-      const { data, error } = await sb.rpc('refresh_prices', { p_force: true });
-      if (error) throw error;
+      const done = await runStagedRefresh((label) => { b.textContent = `更新中：${label}…`; });
       await loadAll(); render();
-      toast(`報價已更新（${data?.as_of ?? ''}）`);
-    } catch (e) { fail(e); b.disabled = false; b.textContent = '立即重新抓取報價'; }
+      const bad = refreshSummary(done);
+      toast(bad ? bad + '，其餘已更新' : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`, bad ? 5000 : 2500);
+    } catch (e) {
+      fail(e);
+      b.disabled = false; b.textContent = '立即重新抓取報價';
+    }
   };
   $('#logout-btn', el).onclick = async () => {
     const { error } = await sb.auth.signOut();
