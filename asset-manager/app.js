@@ -1135,6 +1135,7 @@ function openWarrantForm(existing, info) {
       const preview = $('[data-preview]', form);
       const rowOvr = $('[data-row=ovr]', form);
       let found = info || (existing ? existing : null);
+      form.__found = found;
 
       const draw = () => {
         const val = read(new FormData(form));
@@ -1173,11 +1174,13 @@ function openWarrantForm(existing, info) {
       let timer;
       form.code.addEventListener('input', () => {
         found = null;
+        form.__found = null;
         clearTimeout(timer);
         timer = setTimeout(async () => {
           const c = norm(form.code.value);
           if (!/^[0-9A-Z]{6}$/.test(c)) { draw(); return; }
           found = await lookupWarrant(c);
+          form.__found = found;
           if (!found) resolved.textContent = '查不到這個代號，確認一下是不是上櫃權證或已下市';
           else draw();
         }, 350);
@@ -1187,10 +1190,22 @@ function openWarrantForm(existing, info) {
       form.addEventListener('change', draw);
       draw();
     },
-    collect: (fd) => {
+    collect: (fd, form) => {
       const val = read(fd);
       if (!/^[0-9A-Z]{6}$/.test(val.code)) { toast('權證代號要 6 碼', 2500); return undefined; }
       if (!(val.lots > 0)) { toast('張數必須大於 0', 2500); return undefined; }
+      // 把查到的基本資料一起存起來，不要等排程同步才有行使比例與標的
+      const f = form.__found;
+      if (f) {
+        Object.assign(val, {
+          name: f.name ?? null, cp: f.cp ?? null,
+          underlying: f.underlying ?? null, underlying_name: f.underlying_name ?? null,
+          strike: isNum(f.strike) ? num(f.strike) : null,
+          ratio: isNum(f.ratio) ? num(f.ratio) : null,
+          last_trade_date: f.last_trade_date ?? null,
+          category: f.category ?? null,
+        });
+      }
       return val;
     },
   });
@@ -1579,6 +1594,10 @@ function renderOverview(el) {
       ${line('期貨名目・多單', c.futLong)}
       ${line('期貨名目・空單', c.futShort)}
       ${line('總曝險', c.exposure)}
+      ${c.warNoDelta || c.optNoDelta ? `<p class="hint warn-hint">⚠ 有${
+        [c.warNoDelta ? '權證' : '', c.optNoDelta ? '選擇權' : ''].filter(Boolean).join('、')
+        }部位還沒算出 delta，<b>這些部位目前沒有計入上面的總曝險</b>，實際曝險比顯示的高。
+        按右上角 ↻ 重新整理，或等下次自動更新。</p>` : ''}
     </div>
     ${state.warrants.length ? `<div class="card list">
       <div class="list-title">權證風險</div>

@@ -756,14 +756,24 @@ begin
 
   -- 權證：補基本資料、市價、標的價，反推隱波後算 delta / theta / 實質槓桿
   with w as (
-    select wr.id, wi.name, wi.cp, wi.underlying, wi.underlying_name, wi.strike, wi.ratio,
-           wi.last_trade_date, wi.category,
+    select wr.id,
+           coalesce(wi.name, wr.name) as name,
+           coalesce(wi.cp, wr.cp) as cp,
+           coalesce(wi.underlying, wr.underlying) as underlying,
+           coalesce(wi.underlying_name, wr.underlying_name) as underlying_name,
+           coalesce(wi.strike, wr.strike) as strike,
+           coalesce(wi.ratio, wr.ratio) as ratio,
+           coalesce(wi.last_trade_date, wr.last_trade_date) as last_trade_date,
+           coalesce(wi.category, wr.category) as category,
            mp.price as px, ul.price as ulpx,
-           greatest((wi.last_trade_date - (now() at time zone 'Asia/Taipei')::date)::double precision / 365.0, 0) as tt
+           greatest((coalesce(wi.last_trade_date, wr.last_trade_date)
+                     - (now() at time zone 'Asia/Taipei')::date)::double precision / 365.0, 0) as tt
     from public.warrants wr
-    join public.warrant_info wi on wi.code = upper(btrim(wr.code))
+    -- 用 left join：就算基本資料還沒抓到，價格也要更新，不要整筆卡住
+    left join public.warrant_info wi on wi.code = upper(btrim(wr.code))
     left join public.market_prices mp on mp.market = 'war' and mp.symbol = upper(btrim(wr.code))
-    left join public.market_prices ul on ul.market = 'tw'  and ul.symbol = upper(btrim(wi.underlying))
+    left join public.market_prices ul on ul.market = 'tw'
+      and ul.symbol = upper(btrim(coalesce(wi.underlying, wr.underlying)))
     where (p_user is null or wr.user_id = p_user)
   ), calc as (
     select w.*,
@@ -783,10 +793,10 @@ begin
          cp               = coalesce(f.cp, wr.cp),
          underlying       = coalesce(f.underlying, wr.underlying),
          underlying_name  = coalesce(f.underlying_name, wr.underlying_name),
-         strike           = f.strike,
-         ratio            = f.ratio,
-         last_trade_date  = f.last_trade_date,
-         category         = f.category,
+         strike           = coalesce(f.strike, wr.strike),
+         ratio            = coalesce(f.ratio, wr.ratio),
+         last_trade_date  = coalesce(f.last_trade_date, wr.last_trade_date),
+         category         = coalesce(f.category, wr.category),
          price            = coalesce(f.px, wr.price),
          underlying_price = f.ulpx,
          iv               = f.iv_calc,
