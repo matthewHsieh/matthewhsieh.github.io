@@ -234,6 +234,12 @@ git push
 > 手動更新改成呼叫 `refresh_market(kind)` 一次做一項，每項都遠低於 8 秒，
 > 某一項失敗也不影響其他項。權證基本資料 20MB 不放進互動流程，只由排程處理。
 > 目前的階段是 `tw` `fut` `opt` `war` `fx` `us` `val` `rev` `fin` `est` `risk` `sync`。
+>
+> **踩過的坑：函式裡不能寫沒有 WHERE 的 DELETE。** Supabase 對 PostgREST 的連線載入了
+> `safeupdate`，它會擋掉沒有 WHERE 的 DELETE，而且 `SECURITY DEFINER` 切換角色時
+> **不會卸載這個 session 設定**。症狀很難察覺：用 Management API（postgres session）跑得過，
+> 但從 App 按「立即更新」一定失敗。實測選擇權結算價那段
+> 2026-09-08 一天就失敗 7 次而畫面完全看不出來。清空暫存表要寫 `delete from x where true`。
 > 其中 `est` 一次只抓 12 檔（挑最久沒更新的），因為每檔要 0.5 秒；排程則一次抓完。
 - 排程狀態可查：SQL Editor 執行 `select * from price_runs order by id desc limit 20;`
 - 各市場資料日期：`select * from price_status;`

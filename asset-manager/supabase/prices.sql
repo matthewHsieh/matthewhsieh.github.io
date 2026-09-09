@@ -446,7 +446,11 @@ begin
     begin payload := body::jsonb; exception when others then payload := null; end;
 
     create temp table if not exists _opt (expiry text, strike numeric, cp text, prem numeric, as_of date);
-    delete from _opt;
+    -- **不能寫成 delete from _opt**。Supabase 對 PostgREST 的連線載入了 safeupdate，
+    -- 它會擋掉沒有 WHERE 的 DELETE，而 SECURITY DEFINER 不會卸載這個 session 設定。
+    -- 結果是：用 Management API（postgres session）跑得過，但 App 按「立即更新」一定失敗。
+    -- 實測 2026-09-08 這一天就失敗了 7 次，選擇權結算價完全沒更新到。
+    delete from _opt where true;
 
     if payload is not null then
       insert into _opt
