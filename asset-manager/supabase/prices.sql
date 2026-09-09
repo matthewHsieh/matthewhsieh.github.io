@@ -889,23 +889,51 @@ language sql stable security definer set search_path = public as $fn$
   order by a.theme, a.ym;
 $fn$;
 
--- 族群裡每一檔的最新營收年增，用來看是誰在拉動
+-- 族群裡每一檔的最新營收年增與估值，用來看是誰在拉動、以及貴不貴
+--   pe   近四季本益比（官方每日公告）
+--   fy1 / eps1 / pe1  最近一個有預估的年度
+--   fy2 / eps2 / pe2  再下一年
+--   年度不寫死，從資料推出來，明年就自動變成 2027 / 2028。
 create or replace function public.theme_members(p_ym text default null)
 returns table (theme text, symbol text, name text, ym text,
-               amount numeric, last_year numeric, yoy numeric, pe numeric)
+               amount numeric, last_year numeric, yoy numeric, pe numeric,
+               fy1 smallint, eps1 numeric, pe1 numeric, an1 smallint,
+               fy2 smallint, eps2 numeric, pe2 numeric)
 language sql stable security definer set search_path = public as $fn$
   with target as (
     select coalesce(p_ym, (select max(ym) from public.revenue)) as ym
+  ),
+  er as (select * from public.eps_resolved()),
+  yr as (
+    select er.symbol, min(er.fy) as fy1 from er
+    where er.fy >= extract(year from current_date)::int and er.eps is not null
+    group by er.symbol
+  ),
+  ep as (
+    select y.symbol, y.fy1,
+           max(e1.eps) as eps1, max(e1.analysts) as an1,
+           max(e2.eps) as eps2
+    from yr y
+    left join er e1 on e1.symbol = y.symbol and e1.fy = y.fy1
+    left join er e2 on e2.symbol = y.symbol and e2.fy = y.fy1 + 1
+    group by y.symbol, y.fy1
   )
   select t.theme, t.symbol, r.name, r.ym, r.amount, ly.amount,
          case when ly.amount > 0 then r.amount / ly.amount - 1 end,
-         v.pe
+         v.pe,
+         ep.fy1::smallint, ep.eps1,
+         case when ep.eps1 > 0 and mp.price > 0 then round(mp.price / ep.eps1, 1) end,
+         ep.an1::smallint,
+         (ep.fy1 + 1)::smallint, ep.eps2,
+         case when ep.eps2 > 0 and mp.price > 0 then round(mp.price / ep.eps2, 1) end
   from public.themes t
   cross join target g
   join public.revenue r on r.symbol = t.symbol and r.ym = g.ym
   left join public.revenue ly on ly.symbol = t.symbol
         and ly.ym = public.pm_ym_roc(public.pm_ym_add(g.ym, -12))
   left join public.valuation v on v.symbol = t.symbol
+  left join public.market_prices mp on mp.market = 'tw' and mp.symbol = t.symbol
+  left join ep on ep.symbol = t.symbol
   order by t.theme, t.sort, coalesce(r.amount, 0) desc;
 $fn$;
 
@@ -1174,6 +1202,8 @@ begin
   perform public.refresh_revenue();
   -- 季報 EPS：每季才變，跟著月營收一起跑
   perform public.refresh_financials();
+  -- 分析師預估 EPS：190 檔約 40 秒，只有排程跑，手動更新分批
+  perform public.refresh_estimates(400);
   perform public.sync_positions(null);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
@@ -1201,6 +1231,7 @@ begin
     when 'val' then n := public.refresh_valuation();
     when 'rev' then n := public.refresh_revenue();
     when 'fin' then n := public.refresh_financials();
+    when 'est' then n := public.refresh_estimates(12);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;

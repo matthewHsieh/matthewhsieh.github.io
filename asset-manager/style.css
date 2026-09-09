@@ -385,3 +385,7 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 .fwd-pe b { font-weight: 600; opacity: .75; }
 .fwd-pe.weak { opacity: .8; }
 .warn-mark { margin-left: 2px; }
+
+/* 族群成分股：兩行式，第二行放估值 */
+.line.member { display: block; padding: 6px 0; }
+.line.member .sub { margin-top: 2px; }

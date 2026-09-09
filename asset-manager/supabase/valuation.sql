@@ -220,8 +220,74 @@ create policy "own eps override" on public.eps_override for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ------------------------------------------------------------
+-- 預估 EPS 的三個來源，依優先順序合併
+--   1. eps_override  你自己填的，最優先
+--   2. eps_estimate  stockanalysis.com 自動抓的，涵蓋廣、當年度與次年度
+--   3. eps_forecast  人工整理自新聞與券商報告，涵蓋窄但有 2028 與詳細註解
+--   自動抓的比人工整理的新，所以排在前面；但註解一律沿用人工那份，
+--   因為那裡寫的是「這個數字能不能信」，跟數字本身一樣重要。
+-- ------------------------------------------------------------
+create or replace function public.eps_resolved()
+returns table (symbol text, fy smallint, eps numeric, analysts smallint,
+               src text, note text, confidence text, lo numeric, hi numeric)
+language sql stable security definer set search_path = public as $fn$
+  with keys as (
+    select o.symbol, o.fy from public.eps_override o
+      where o.user_id = auth.uid() and o.eps is not null
+    union select e.symbol, e.fy from public.eps_estimate e
+    union select f.symbol, f.fy from public.eps_forecast f
+  ),
+  fin as (
+    select distinct on (symbol) symbol, fy, q, eps_cum
+    from public.financials where eps_cum is not null
+    order by symbol, fy desc, q desc
+  ),
+  -- **以官方財報當守門員。**自動抓來的預估如果比「已經公告的年初至今累計 EPS」
+  -- 還低，而且還沒到第四季，那個預估一定有問題（實測 107 檔裡緯穎中招：
+  -- 預估 120.3，但上半年就已經賺了 156.4）。這種就當作沒有，退回人工整理的那份。
+  bad as (
+    -- 只要有任何一年被財報打臉，這一檔的整條自動預估都不能用。
+    -- 因為這種錯通常來自股數基期不對，會一路污染後面每一年
+    -- （緯穎就是：2026 被擋掉後，2027 的 178.6 仍然低於 2026 的 361，自相矛盾）。
+    select distinct e.symbol
+    from public.eps_estimate e
+    join fin f on f.symbol = e.symbol and f.fy = e.fy
+    where f.q <= 3 and e.eps > 0 and f.eps_cum > e.eps
+  ),
+  auto as (
+    select e.symbol, e.fy,
+           case when b.symbol is null then e.eps end      as eps,
+           case when b.symbol is null then e.analysts end as analysts,
+           e.src
+    from public.eps_estimate e
+    left join bad b on b.symbol = e.symbol
+  )
+  select k.symbol, k.fy,
+         coalesce(u.eps, a.eps, c.eps),
+         coalesce(a.analysts, c.analysts),
+         case when u.eps is not null then '自填'
+              when a.eps is not null then coalesce(a.src, 'stockanalysis.com')
+              else c.source end,
+         c.note,
+         case when u.eps is not null then null
+              when a.eps is not null then
+                -- 自動抓的用分析師人數判斷可信度，兩位以下就是樣本太少
+                case when a.analysts is null then 'low'
+                     when a.analysts <= 2 then 'low'
+                     when a.analysts <= 5 then 'medium'
+                     else 'high' end
+              else c.confidence end,
+         c.low, c.high
+  from keys k
+  left join public.eps_override u on u.symbol = k.symbol and u.fy = k.fy and u.user_id = auth.uid()
+  left join auto a on a.symbol = k.symbol and a.fy = k.fy
+  left join public.eps_forecast c on c.symbol = k.symbol and c.fy = k.fy
+$fn$;
+grant execute on function public.eps_resolved() to authenticated;
+
+-- ------------------------------------------------------------
 -- 我的持倉估值
---   把現股、個股期貨標的、權證標的全部收進來，一檔一列。
+--   把現股、個股期貨標的、權證標的、複委託全部收進來，一檔一列。
 --   股價用每日自動更新的收盤價，所以本益比每天都是新的。
 --   預估本益比 = 現價 ÷ 預估 EPS；EPS <= 0 時回 null，因為虧損算本益比沒有意義。
 -- ------------------------------------------------------------
@@ -253,51 +319,36 @@ returns table (
      where u.user_id = auth.uid()
   ),
   agg as (
-    select symbol, string_agg(distinct how, '・' order by how) as how,
-           min(ccy) as ccy
+    select symbol, string_agg(distinct how, '・' order by how) as how, min(ccy) as ccy
     from held group by symbol
-  ),
-  eps as (
-    select coalesce(o.symbol, f.symbol) as symbol,
-           coalesce(o.fy, f.fy)         as fy,
-           coalesce(o.eps, f.eps)       as eps,
-           (o.eps is not null)          as overridden,
-           f.source, f.checked_on, f.confidence, f.analysts
-    from public.eps_forecast f
-    full outer join public.eps_override o
-      on o.symbol = f.symbol and o.fy = f.fy and o.user_id = auth.uid()
-    where coalesce(o.user_id, auth.uid()) = auth.uid()
   ),
   fin as (
     select distinct on (symbol) symbol, fy, q, eps_cum
-    from public.financials
-    where eps_cum is not null
+    from public.financials where eps_cum is not null
     order by symbol, fy desc, q desc
   ),
   e as (
-    select symbol,
-           max(eps) filter (where fy = 2026) as e26,
-           max(eps) filter (where fy = 2027) as e27,
-           max(eps) filter (where fy = 2028) as e28,
-           bool_or(overridden)                as overridden,
-           -- 只取最近年度的來源，三年併起來會變成一長串重複字串。
-           coalesce(max(source) filter (where fy = 2026),
-                    max(source) filter (where fy = 2027),
-                    max(source)) as source,
-           max(checked_on) as checked_on,
-           -- 可信度逐年存，因為同一檔的不同年度差很多：
-           -- 和碩 2026/2027 有 9 位分析師，2028 只剩 1 位。整列標同一個等級會誤導。
-           max(confidence) filter (where fy = 2026) as c26,
-           max(confidence) filter (where fy = 2027) as c27,
-           max(confidence) filter (where fy = 2028) as c28,
-           max(analysts)   filter (where fy = 2026) as a26,
-           max(analysts)   filter (where fy = 2027) as a27,
-           max(analysts)   filter (where fy = 2028) as a28,
-           -- 整列取「最好」的那一年，回答的是「這檔到底有沒有人在認真報」。
-           case when bool_or(confidence = 'high') then 'high'
-                when bool_or(confidence = 'medium') then 'medium'
-                when bool_or(confidence = 'low') then 'low' end as confidence
-    from eps group by symbol
+    select r.symbol,
+           max(r.eps) filter (where r.fy = 2026) as e26,
+           max(r.eps) filter (where r.fy = 2027) as e27,
+           max(r.eps) filter (where r.fy = 2028) as e28,
+           bool_or(r.src = '自填')               as overridden,
+           coalesce(max(r.src)  filter (where r.fy = 2026),
+                    max(r.src)  filter (where r.fy = 2027),
+                    max(r.src)) as source,
+           max(c.checked_on) as checked_on,
+           max(r.confidence) filter (where r.fy = 2026) as c26,
+           max(r.confidence) filter (where r.fy = 2027) as c27,
+           max(r.confidence) filter (where r.fy = 2028) as c28,
+           max(r.analysts)   filter (where r.fy = 2026) as a26,
+           max(r.analysts)   filter (where r.fy = 2027) as a27,
+           max(r.analysts)   filter (where r.fy = 2028) as a28,
+           case when bool_or(r.confidence = 'high') then 'high'
+                when bool_or(r.confidence = 'medium') then 'medium'
+                when bool_or(r.confidence = 'low') then 'low' end as confidence
+    from public.eps_resolved() r
+    left join public.eps_forecast c on c.symbol = r.symbol and c.fy = r.fy
+    group by r.symbol
   )
   select a.symbol,
          coalesce(v.name, mp.name, us.name),
@@ -330,19 +381,44 @@ $fn$;
 -- 族群估值：成分股本益比的中位數
 --   用中位數不用平均，因為一檔虧損或一檔異常高就會把平均拉爛。
 --   虧損公司（pe 為 null）不計入，但另外回報有幾檔在虧損，那本身就是訊息。
+--   預估本益比同樣取中位數，並回報有幾檔有分析師覆蓋——
+--   一個族群裡只有兩檔有人報，那個中位數的意義就很有限。
 -- ------------------------------------------------------------
 create or replace function public.theme_valuation()
 returns table (theme text, pe_median numeric, pb_median numeric, dy_median numeric,
-               rated integer, loss integer)
+               rated integer, loss integer,
+               fy1 smallint, pe1_median numeric, fy2 smallint, pe2_median numeric,
+               covered integer, total integer)
 language sql stable security definer set search_path = public as $fn$
+  with er as (select * from public.eps_resolved() where eps > 0),
+  yr as (
+    select min(fy) as fy1 from er where fy >= extract(year from current_date)::int
+  ),
+  fwd as (
+    select t.theme, t.symbol,
+           case when e1.eps > 0 and mp.price > 0 then mp.price / e1.eps end as pe1,
+           case when e2.eps > 0 and mp.price > 0 then mp.price / e2.eps end as pe2
+    from public.themes t
+    cross join yr
+    left join public.market_prices mp on mp.market = 'tw' and mp.symbol = t.symbol
+    left join er e1 on e1.symbol = t.symbol and e1.fy = yr.fy1
+    left join er e2 on e2.symbol = t.symbol and e2.fy = yr.fy1 + 1
+  )
   select t.theme,
          round(percentile_cont(0.5) within group (order by v.pe)::numeric, 1),
          round(percentile_cont(0.5) within group (order by v.pb)::numeric, 2),
          round(percentile_cont(0.5) within group (order by v.dy)::numeric, 2),
          count(v.pe)::int,
-         count(*) filter (where v.symbol is not null and v.pe is null)::int
+         count(*) filter (where v.symbol is not null and v.pe is null)::int,
+         (select fy1 from yr)::smallint,
+         round(percentile_cont(0.5) within group (order by f.pe1)::numeric, 1),
+         ((select fy1 from yr) + 1)::smallint,
+         round(percentile_cont(0.5) within group (order by f.pe2)::numeric, 1),
+         count(f.pe1)::int,
+         count(*)::int
   from public.themes t
   left join public.valuation v on v.symbol = t.symbol
+  left join fwd f on f.theme = t.theme and f.symbol = t.symbol
   group by t.theme
   order by t.theme;
 $fn$;

@@ -1000,7 +1000,7 @@ async function refresh(msg) {
 const REFRESH_STAGES = [
   ['tw', '台股'], ['fut', '指數期貨'], ['opt', '選擇權'],
   ['war', '權證'], ['fx', '匯率'], ['us', '美股'],
-  ['val', '估值'], ['rev', '月營收'], ['sync', '套用到持倉'],
+  ['val', '估值'], ['rev', '月營收'], ['fin', '季報'], ['est', '分析師預估'], ['sync', '套用到持倉'],
 ];
 
 async function runStagedRefresh(onStage) {
@@ -2322,9 +2322,11 @@ function renderThemes(el) {
           <span>${fmt(t.members)} 檔・實際營收年增</span>
         </div>
         <div class="row-between sub muted">
-          <span>本益比中位數 ${tv && isNum(tv.pe_median) ? `<b>${fmtMax(tv.pe_median, 1)}x</b>` : '–'}${
+          <span>本益比 近四季 ${tv && isNum(tv.pe_median) ? `<b>${fmtMax(tv.pe_median, 1)}x</b>` : '–'}${
+            tv && isNum(tv.pe1_median) ? `　${String(tv.fy1).slice(2)}F <b>${fmtMax(tv.pe1_median, 1)}x</b>` : ''}${
+            tv && isNum(tv.pe2_median) ? `　${String(tv.fy2).slice(2)}F <b>${fmtMax(tv.pe2_median, 1)}x</b>` : ''}</span>
+          <span>${tv ? `${fmt(tv.covered)}/${fmt(tv.total)} 檔有預估` : ''}${
             tv && num(tv.loss) > 0 ? `　<span class="loss">${fmt(tv.loss)} 檔虧損</span>` : ''}</span>
-          <span>${tv && isNum(tv.dy_median) ? `殖利率 ${fmtMax(tv.dy_median, 2)}%` : ''}</span>
         </div>
         <div class="forecast">
           <div class="row-between sub">
@@ -2350,7 +2352,10 @@ function renderThemes(el) {
       <b>整體市場的 CAGR 幾乎都不是你要的那個數字</b>，因為它含大量與 AI 無關的成熟需求。
       真正的成長在小眾領域，標「看小眾」的代表兩者差一倍以上，只看整體會嚴重低估。
       本益比取<b>中位數</b>不取平均，因為一檔異常高就會把平均拉爛；虧損的公司不計入中位數，
-      但會另外標出有幾檔在虧損，那本身就是訊息。本益比由證交所與櫃買中心每日公告，每天自動更新。
+      但會另外標出有幾檔在虧損，那本身就是訊息。近四季本益比由證交所與櫃買中心每日公告。
+      <b>預估本益比 = 現價 ÷ 分析師預估 EPS</b>，預估值自動抓自 stockanalysis.com 的共識，
+      股價每天更新所以比值每天變。台股只有大約六成的公司有人在報，「無人覆蓋」是常態不是錯誤，
+      分析師兩位以下會標 ⚠。族群的「N/M 檔有預估」如果分母遠大於分子，那個中位數就別太當真。
       營收成長不等於股價會漲，這頁看的是產業景氣的轉折。</p>`;
 
   $$('.theme-card', el).forEach((card) => {
@@ -2367,11 +2372,20 @@ function renderThemes(el) {
              <div class="muted">預測來源：${esc(info.source || '未註明')}${info.checked_on ? `　查證於 ${esc(info.checked_on)}` : ''}</div>
            </div>` : '';
       body.innerHTML = head + (rows.length
-        ? rows.map((m) => `<div class="row-between line">
-            <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}
-              <span class="muted">${isNum(m.pe) ? fmtMax(m.pe, 1) + 'x' : '虧損'}</span></span>
-            <span>${fmt(num(m.amount) / 100000, 1)} 億　<span class="${plClass(num(m.yoy))}">${
-              isNum(m.yoy) ? signed(num(m.yoy) * 100, 1) + '%' : '–'}</span></span>
+        ? rows.map((m) => `<div class="line member">
+            <div class="row-between">
+              <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>
+              <span>${fmt(num(m.amount) / 100000, 1)} 億　<span class="${plClass(num(m.yoy))}">${
+                isNum(m.yoy) ? signed(num(m.yoy) * 100, 1) + '%' : '–'}</span></span>
+            </div>
+            <div class="row-between sub muted">
+              <span>近四季 ${isNum(m.pe) ? fmtMax(m.pe, 1) + 'x' : '虧損'}${
+                isNum(m.pe1) ? `　${String(m.fy1).slice(2)}F <b>${fmtMax(m.pe1, 1)}x</b>` : ''}${
+                isNum(m.pe2) ? `　${String(m.fy2).slice(2)}F <b>${fmtMax(m.pe2, 1)}x</b>` : ''}</span>
+              <span>${isNum(m.an1)
+                ? `${fmt(m.an1)} 位分析師${num(m.an1) <= 2 ? '<span class="warn-mark">⚠</span>' : ''}`
+                : '<span class="muted">無人覆蓋</span>'}</span>
+            </div>
           </div>`).join('')
         : '<p class="muted">沒有成分股資料。</p>');
       body.hidden = false;
