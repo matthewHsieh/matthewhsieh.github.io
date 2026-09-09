@@ -413,3 +413,6 @@ textarea.journal-input {
   padding: 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--card); color: inherit; box-sizing: border-box;
 }
+
+/* 族群頁的市場切換 */
+.market-seg { margin-bottom: 12px; }

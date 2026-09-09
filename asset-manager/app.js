@@ -33,6 +33,8 @@ const state = {
   valuation: [],   // 我的持股估值（本益比等）
   themeVal: [],    // 各族群本益比中位數
   riskStats: [],   // 報酬/波動計分
+  usStats: [], usThemeTrend: [], usThemeMembers: [],
+  themeMarket: 'tw',   // 族群頁看台股還是美股
   rules: [],       // 自己定的紀律
   journalDays: [], // 每日心得＋戰績
   openTheme: null,
@@ -977,12 +979,15 @@ async function loadAll() {
     sb.rpc('my_valuation', {}),
     sb.rpc('theme_valuation', {}),
     sb.from('risk_stats').select('symbol,ratio,vol,cagr,mdd'),
+    sb.from('us_stats').select('symbol,ratio,vol,cagr'),
+    sb.rpc('us_theme_trend', {}),
+    sb.rpc('us_theme_members', {}),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -999,6 +1004,9 @@ async function loadAll() {
   state.valuation = val.data ?? [];
   state.themeVal = tval.data ?? [];
   state.riskStats = risk.data ?? [];
+  state.usStats = ustat.data ?? [];
+  state.usThemeTrend = utrend.data ?? [];
+  state.usThemeMembers = umem.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -1024,7 +1032,8 @@ async function refresh(msg) {
 const REFRESH_STAGES = [
   ['tw', '台股'], ['fut', '指數期貨'], ['opt', '選擇權'],
   ['war', '權證'], ['fx', '匯率'], ['us', '美股'],
-  ['val', '估值'], ['rev', '月營收'], ['fin', '季報'], ['est', '分析師預估'], ['sync', '套用到持倉'],
+  ['val', '估值'], ['rev', '月營收'], ['fin', '季報'], ['est', '分析師預估'],
+  ['risk', '報酬/波動'], ['usx', '美股產業'], ['sync', '套用到持倉'],
 ];
 
 async function runStagedRefresh(onStage) {
@@ -2454,7 +2463,7 @@ const rocYm = (ym) => {
   return `${y}/${String(ym).slice(3)}`;
 };
 
-function renderThemes(el) {
+function renderTwThemes(el) {
   const trend = [...state.themeTrend].filter((t) => isNum(t.yoy)).sort((a, b) => num(b.yoy) - num(a.yoy));
   const held = heldSymbols();
   const ym = state.themeTrend[0]?.ym;
@@ -2747,6 +2756,122 @@ function renderJournal(el) {
     editRule(state.rules.find((r) => r.id === b.dataset.rule))));
   const add = $('[data-add-rule]', el);
   if (add) add.onclick = (e) => { e.stopPropagation(); editRule(null); };
+}
+
+// ------------------------------------------------------------
+// 美股 AI 產業地圖
+//   跟台股那頁的訊號方向相反：台股用已公告的月營收（落後），
+//   美股用分析師的營收預估（前瞻）。後者更接近「產業趨勢」本身，
+//   但分母是別人的猜測，看的時候要連分析師人數一起看。
+//   基準線用那斯達克 100，不是加權指數，因為比較對象要同一個市場。
+// ------------------------------------------------------------
+const usIdxRatio = () => num(state.usStats.find((r) => r.symbol === 'NDX')?.ratio);
+const usBeats = (r) => isNum(r) && isNum(usIdxRatio()) && num(r) > usIdxRatio();
+const usdB = (v) => (isNum(v) ? `${fmt(num(v) / 100000000, 0)} 億` : '–');
+
+function renderUsThemes(host) {
+  const trend = [...state.usThemeTrend].sort((a, b) => num(b.growth_next) - num(a.growth_next));
+  const held = new Set(state.us.map((s) => norm(s.symbol)));
+  if (!trend.length) {
+    host.innerHTML = '<div class="card"><p class="muted">還沒有美股資料。按右上角 ↻ 更新。</p></div>';
+    return;
+  }
+  const myThemes = new Set(state.usThemeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+  const ndx = usIdxRatio();
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">美股 AI 產業地圖</div>
+      <p class="sub muted">用<b>分析師的營收預估</b>加總，看整個產業被預期要長多快。
+        這是前瞻指標，跟台股那頁用已公告的月營收（落後指標）方向相反。
+        基準線是那斯達克 100，報酬/波動 ${isNum(ndx) ? fmtMax(ndx, 2) : '–'}。</p>
+    </div>
+    ${trend.map((t) => {
+      const mine = myThemes.has(t.theme);
+      return `<div class="card theme-card${mine ? ' mine' : ''}" data-ustheme="${esc(t.theme)}">
+        <div class="row-between">
+          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
+          <span class="theme-yoy ${plClass(num(t.growth_next))}">${
+            isNum(t.growth_next) ? signed(num(t.growth_next) * 100, 1) + '%' : '–'}</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>營收預估 ${usdB(t.rev_this)}美元・${fmt(t.covered)}/${fmt(t.members)} 檔</span>
+          <span>明年營收年增</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>本年營收年增 <b class="${plClass(num(t.growth))}">${
+            isNum(t.growth) ? signed(num(t.growth) * 100, 1) + '%' : '–'}</b></span>
+          <span>本益比 本年 ${isNum(t.pe_median) ? fmtMax(t.pe_median, 1) + 'x' : '–'}　明年 ${
+            isNum(t.pe_next_median) ? fmtMax(t.pe_next_median, 1) + 'x' : '–'}</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>報酬/波動 ${isNum(t.ratio_median)
+            ? `<b class="${num(t.ratio_median) > ndx ? 'gain' : ''}">${fmtMax(t.ratio_median, 2)}</b>` : '–'}${
+            isNum(t.vol_median) ? `　波動 ${(num(t.vol_median) * 100).toFixed(0)}%` : ''}</span>
+          <span>${fmt(t.beat_idx)}/${fmt(t.members)} 檔贏過 NDX</span>
+        </div>
+        <div class="theme-body" hidden></div>
+      </div>`;
+    }).join('')}
+    <p class="hint">營收與 EPS 預估來自 stockanalysis.com 匯總的分析師共識（S&amp;P Global、TipRanks），
+      每天自動更新，只有本年度與次年度免費。<b>各公司會計年度不一致</b>，
+      例如 NVDA 的 FY2027 其實是 2026 曆年，所以這裡只講「本年／明年」不寫死年份。
+      報酬/波動是三年年化報酬除以年化波動，及格線是那斯達克 100 的
+      ${isNum(ndx) ? fmtMax(ndx, 2) : '–'}；低於它代表承受的波動換不到相稱的報酬。
+      <b>預估是別人的猜測</b>，分析師少的那幾檔請當參考不要當事實。</p>`;
+
+  $$('.theme-card', host).forEach((card) => {
+    card.onclick = () => {
+      const body = $('.theme-body', card);
+      if (!body.hidden) { body.hidden = true; return; }
+      $$('.theme-body', host).forEach((b) => (b.hidden = true));
+      const rows = state.usThemeMembers.filter((m) => m.theme === card.dataset.ustheme);
+      body.innerHTML = rows.length
+        ? rows.map((m) => `<div class="line member">
+            <div class="row-between">
+              <span>${esc(m.symbol)} ${esc(m.name || '')}${
+                held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>
+              <span>${usdB(m.rev_this)}美元　<span class="${plClass(num(m.rev_g))}">${
+                isNum(m.rev_g) ? signed(num(m.rev_g) * 100, 1) + '%' : '–'}</span></span>
+            </div>
+            <div class="row-between sub muted">
+              <span>本益比 本年 ${isNum(m.pe_this) ? fmtMax(m.pe_this, 1) + 'x' : '–'}　明年 ${
+                isNum(m.pe_next) ? fmtMax(m.pe_next, 1) + 'x' : '–'}</span>
+              <span>${isNum(m.analysts)
+                ? `${fmt(m.analysts)} 位分析師${num(m.analysts) <= 5 ? '<span class="warn-mark">⚠</span>' : ''}`
+                : '<span class="muted">無人覆蓋</span>'}</span>
+            </div>
+            <div class="row-between sub muted">
+              <span>${isNum(m.ratio)
+                ? `報酬/波動 <b class="${usBeats(m.ratio) ? 'gain' : ''}">${fmtMax(m.ratio, 2)}</b>${
+                    usBeats(m.ratio) ? '<span class="badge day-badge">贏 NDX</span>' : ''}`
+                : (num(m.days) > 0
+                    ? `<span class="muted">上市未滿兩年（${fmt(m.days)} 天），不給比值</span>`
+                    : '報酬/波動 –')}</span>
+              <span>${isNum(m.vol) ? `波動 ${(num(m.vol) * 100).toFixed(0)}%` : ''}${
+                isNum(m.rev_g_next) ? `　明年營收 ${signed(num(m.rev_g_next) * 100, 0)}%` : ''}</span>
+            </div>
+          </div>`).join('')
+        : '<p class="muted">沒有成分股資料。</p>';
+      body.hidden = false;
+    };
+  });
+}
+
+
+// 族群頁：台股看落後的月營收，美股看前瞻的營收預估，兩邊分開看
+function renderThemes(el) {
+  const mk = state.themeMarket === 'us' ? 'us' : 'tw';
+  el.innerHTML = `<div class="seg market-seg">
+      <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
+      <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
+    </div><div data-themebody></div>`;
+  const host = $('[data-themebody]', el);
+  (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
+  $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
+    state.themeMarket = r.value;
+    renderThemes(el);
+  }));
 }
 
 function renderSettings(el) {

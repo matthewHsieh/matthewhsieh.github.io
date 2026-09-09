@@ -77,8 +77,14 @@ begin
 
   sd := sqrt((s2 - s * s / n) / (n - 1));
   vol := round((sd * sqrt(252.0))::numeric, 4);
-  cagr := round((power(last_p / first_p, 252.0 / n) - 1)::numeric, 4);
-  ratio := case when vol > 0 then round(cagr / vol, 2) end;
+  -- **上市或分拆未滿兩年的，不給年化報酬與比值。**
+  -- 把 1.5 年的報酬年化再標成「三年」會產生假的高分：
+  -- SNDK 2025-02 才從 WDC 分拆，只有 393 個交易日，算出來比值 10.57，
+  -- 拿去跟真的跑滿三年的公司比完全沒有意義。波動用 200 天估就夠，所以保留。
+  if n >= 500 then
+    cagr := round((power(last_p / first_p, 252.0 / n) - 1)::numeric, 4);
+    ratio := case when vol > 0 then round(cagr / vol, 2) end;
+  end if;
   mdd := round(worst, 4);
   if n1 > 30 then
     sd1 := sqrt((s21 - s1 * s1 / n1) / (n1 - 1));

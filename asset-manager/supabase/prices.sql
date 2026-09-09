@@ -1213,9 +1213,13 @@ begin
   perform public.refresh_estimates(400);
   -- 報酬/波動計分：170 檔約 30 秒
   perform public.refresh_risk_stats(400);
+  -- 美股 AI 產業地圖：66 檔約 30 秒
+  perform public.refresh_us_stats(200);
   perform public.sync_positions(null);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
+  -- price_runs 是純日誌，不清會無限長（實測佔年成長的 24%），只留 60 天
+  delete from public.price_runs where ran_at < now() - interval '60 days';
 end $$;
 
 -- ------------------------------------------------------------
@@ -1242,6 +1246,7 @@ begin
     when 'fin' then n := public.refresh_financials();
     when 'est' then n := public.refresh_estimates(12);
     when 'risk' then n := public.refresh_risk_stats(15);
+    when 'usx' then n := public.refresh_us_stats(8);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;
