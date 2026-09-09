@@ -32,6 +32,8 @@ const state = {
   themeInfo: [],
   valuation: [],   // 我的持股估值（本益比等）
   themeVal: [],    // 各族群本益比中位數
+  rules: [],       // 自己定的紀律
+  journalDays: [], // 每日心得＋戰績
   openTheme: null,
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
@@ -841,6 +843,15 @@ async function writePosition({ table, pos, after }) {
 async function saveTrade(v) {
   const proj = projectTrade(v);
   if (proj.error) return toast(proj.error, 3500);
+
+  // 破戒前先讓你停一秒。不阻止，只是要你自己按下去。
+  const breaks = checkRules(v);
+  if (breaks.length) {
+    const NL = String.fromCharCode(10);
+    const msg = breaks.map((x, i) => `${i + 1}. ${x.text}${NL}   ${x.why}`).join(NL + NL);
+    if (!confirm(`這筆會違反你自己定的規則：${NL}${NL}${msg}${NL}${NL}還是要記錄嗎？`)) return;
+  }
+
   try {
     await writePosition(proj);
     const { error } = await sb.from('trades').insert({
@@ -856,7 +867,13 @@ async function saveTrade(v) {
       realized_ccy: isNum(proj.realized) ? proj.realizedCcy : null,
     });
     if (error) throw error;
-    await refresh('交易已記錄，部位已更新');
+    if (breaks.length) {
+      // 留下證據，心得頁才算得出守規天數
+      await sb.from('rule_breaks').insert(breaks.map((x) => ({
+        user_id: state.user.id, break_date: v.trade_date, kind: x.kind, detail: x.text,
+      })));
+    }
+    await refresh(breaks.length ? '已記錄，但違反了 ' + breaks.length + ' 條規則' : '交易已記錄，部位已更新');
   } catch (e) {
     fail(e);
   }
@@ -958,10 +975,12 @@ async function loadAll() {
     sb.from('theme_info').select('*'),
     sb.rpc('my_valuation', {}),
     sb.rpc('theme_valuation', {}),
+    sb.from('rules').select('*').eq('active', true).order('sort'),
+    sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -977,6 +996,8 @@ async function loadAll() {
   state.themeInfo = tinfo.data ?? [];
   state.valuation = val.data ?? [];
   state.themeVal = tval.data ?? [];
+  state.rules = rules.data ?? [];
+  state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
@@ -1601,7 +1622,7 @@ function openTradeForm(defaults = {}) {
       const preview = $('[data-preview]', form);
       const rowFutSize = $('[data-row=futsize]', form);
 
-      const updatePreview = () => {
+      const updatePreviewRaw = () => {
         const v = readTradeForm(new FormData(form));
         if (!v.symbol || !(v.quantity > 0)) { preview.hidden = true; return; }
         const p = projectTrade(v);
@@ -1647,6 +1668,19 @@ function openTradeForm(defaults = {}) {
             `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0 ? `　交易稅 ${fmtMax(cc.tax, 0)}` : ''}` +
             `　成本合計 ${fmtMax(cc.total, 0)} ${cc.ccy}${sameDay ? '（當沖費率）' : ''}</span>`;
         }
+      };
+
+      // 規則檢查放在最上面，因為手癢是在按下確定那一刻發生的。
+      // 不擋存檔，但要讓你看見自己正在破自己定的戒。
+      const updatePreview = () => {
+        updatePreviewRaw();
+        const v = readTradeForm(new FormData(form));
+        const rb = checkRules(v);
+        if (!rb.length) return;
+        preview.hidden = false;
+        preview.insertAdjacentHTML('afterbegin', rb.map((x) =>
+          `<div class="break-item"><b>違反自己的規則：</b>${esc(x.text)}<br><span class="muted">${esc(x.why)}</span></div>`
+        ).join(''));
       };
 
       const rowSymbol = $('[data-row=symbol]', form);
@@ -1743,7 +1777,7 @@ async function logTrade(defaults) {
 // ============================================================
 // 畫面
 // ============================================================
-const TITLES = { overview: '總覽', holdings: '持倉', funds: '資金', themes: '族群', history: '紀錄', settings: '設定' };
+const TITLES = { overview: '總覽', holdings: '持倉', funds: '資金', themes: '族群', journal: '心得', history: '紀錄', settings: '設定' };
 
 const stat = (label, value, extra = '') =>
   `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div>${extra ? `<div class="sub muted">${extra}</div>` : ''}</div>`;
@@ -2023,6 +2057,118 @@ async function editEps(symbol, name) {
   } catch (e) {
     fail(e);
   }
+}
+
+// ------------------------------------------------------------
+// 紀律規則
+//   規則存在資料庫（rules 表），是使用者資料，程式更新不會動它。
+//   這裡只負責「在記錄交易的當下」把違規算出來並顯示。
+//   **刻意不阻止存檔**——那是他的錢、他的帳；但違規會被記下來，
+//   而且每天在心得頁攤開來。手癢發生在下單那一刻，不是寫日誌的時候。
+// ------------------------------------------------------------
+const activeRule = (kind) => state.rules.find((r) => r.kind === kind && r.active) || null;
+
+// 今天各標的的當沖淨部位。歸零才算「沖完」。
+function dayNet(dateISO, market, extra) {
+  const net = new Map();
+  const feed = extra ? [...state.trades, extra] : state.trades;
+  for (const t of feed) {
+    if (!t.is_day_trade || t.trade_date !== dateISO || t.market !== market) continue;
+    const k = market === 'tw' ? resolveTwSymbol(t.symbol) : tradeKey(t);
+    net.set(k, num(net.get(k)) + (t.side === 'buy' ? 1 : -1) * num(t.quantity));
+  }
+  for (const [k, v] of [...net]) if (Math.abs(v) < 1e-9) net.delete(k);
+  return net;
+}
+
+// 一筆交易（可以是還沒存檔的）違反了哪些規則
+function checkRules(t) {
+  const out = [];
+  if (!t || !state.rules.length) return out;
+
+  const hedge = activeRule('opt_only_hedge');
+  if (hedge && t.market === 'option') {
+    const banned = (t.side === 'buy' && t.opt_cp === 'call') || (t.side === 'sell' && t.opt_cp === 'put');
+    if (banned) {
+      out.push({
+        kind: 'opt_only_hedge',
+        text: `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)}違反「只做 buy put 與 sell call」`,
+        why: '結算日手癢的 buy call 是這三個月最大的破口，這條沒有例外。',
+      });
+    }
+  }
+
+  const cap = activeRule('day_max_amount');
+  if (cap && t.is_day_trade && t.market === 'tw' && isNum(cap.amount)) {
+    const amt = num(t.quantity) * num(t.price);
+    if (amt > num(cap.amount)) {
+      out.push({
+        kind: 'day_max_amount',
+        text: `這筆 ${fmt(amt)} 元，超過單檔當沖上限 ${fmt(cap.amount)} 元（${(amt / num(cap.amount)).toFixed(1)} 倍）`,
+        why: '上限是「完全做錯也還在」的金額，不是「這檔我很有把握」的金額。',
+      });
+    }
+  }
+
+  const one = activeRule('day_one_at_a_time');
+  if (one && t.is_day_trade && t.market === 'tw') {
+    const me = resolveTwSymbol(t.symbol);
+    const open = [...dayNet(t.trade_date, 'tw').keys()].filter((k) => k !== me);
+    if (open.length) {
+      out.push({
+        kind: 'day_one_at_a_time',
+        text: `${open.map((k) => `${k} ${TW_STOCKS[k] || ''}`).join('、')} 還沒沖完就開新的一檔`,
+        why: '同時開兩檔就是注意力不夠，而注意力不夠正是當沖唯一會致命的地方。',
+      });
+    }
+  }
+  return out;
+}
+
+// 掃某一天已經記錄的交易，回報違規。用於心得頁的每日檢討。
+function breaksOn(dateISO) {
+  const out = [];
+  const day = state.trades.filter((t) => t.trade_date === dateISO);
+  const hedge = activeRule('opt_only_hedge');
+  const cap = activeRule('day_max_amount');
+  const one = activeRule('day_one_at_a_time');
+
+  if (hedge && dateISO >= hedge.started_on) {
+    const bad = day.filter((t) => t.market === 'option'
+      && ((t.side === 'buy' && t.opt_cp === 'call') || (t.side === 'sell' && t.opt_cp === 'put')));
+    if (bad.length) {
+      const prem = bad.reduce((a, t) => a + num(t.quantity) * num(t.price) * OPT_SIZE, 0);
+      out.push({ kind: 'opt_only_hedge',
+        text: `選擇權違規 ${bad.length} 筆，權利金合計 ${fmt(prem)} 元`,
+        detail: bad.map((t) => `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)} ${fmt(t.quantity)} 口 @ ${fmtMax(t.price, 2)}`).join('、') });
+    }
+  }
+  if (cap && isNum(cap.amount) && dateISO >= cap.started_on) {
+    const bad = day.filter((t) => t.is_day_trade && t.market === 'tw'
+      && num(t.quantity) * num(t.price) > num(cap.amount));
+    if (bad.length) {
+      out.push({ kind: 'day_max_amount',
+        text: `當沖單檔超過 ${fmt(cap.amount)} 元共 ${bad.length} 筆`,
+        detail: bad.map((t) => `${resolveTwSymbol(t.symbol)} ${TW_STOCKS[resolveTwSymbol(t.symbol)] || ''} ${fmt(num(t.quantity) * num(t.price))}`).join('、') });
+    }
+  }
+  if (one && dateISO >= one.started_on) {
+    // 依時間重播，只要在還有未沖完部位時開了另一檔就算違規
+    const list = day.filter((t) => t.is_day_trade && t.market === 'tw')
+      .sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
+    const net = new Map(); const hit = new Set();
+    for (const t of list) {
+      const k = resolveTwSymbol(t.symbol);
+      const others = [...net].filter(([kk, v]) => kk !== k && Math.abs(v) > 1e-9).map(([kk]) => kk);
+      if (!net.has(k) && others.length) others.forEach((o) => hit.add(`${o} → ${k}`));
+      net.set(k, num(net.get(k)) + (t.side === 'buy' ? 1 : -1) * num(t.quantity));
+    }
+    if (hit.size) {
+      out.push({ kind: 'day_one_at_a_time',
+        text: `同時開了不只一檔當沖 ${hit.size} 次`, detail: [...hit].join('、') });
+    }
+  }
+  return out;
 }
 
 function renderHoldings(el) {
@@ -2393,6 +2539,175 @@ function renderThemes(el) {
   });
 }
 
+// ------------------------------------------------------------
+// 心得 / 交易日誌
+//   這頁的重點不是損益，是「有沒有照著自己的規則做」。
+//   損益是結果，紀律是原因。只看損益的話，會在賺錢的月份把壞習慣放大。
+// ------------------------------------------------------------
+const MOODS = [[5, '很好'], [4, '還行'], [3, '普通'], [2, '不佳'], [1, '很差']];
+
+// 從今天往回數，連續幾個交易日沒有違規（沒交易的日子不中斷也不計入）
+function cleanStreak() {
+  let n = 0;
+  for (const d of state.journalDays) {
+    if (num(d.trades) === 0) continue;
+    if (breaksOn(d.d).length) break;
+    n += 1;
+  }
+  return n;
+}
+
+async function editJournal(dateISO) {
+  const row = state.journalDays.find((d) => d.d === dateISO);
+  const b = breaksOn(dateISO);
+  const hint = b.length
+    ? `<div class="break-item">這天有 ${b.length} 項違規：${esc(b.map((x) => x.text).join('；'))}</div>`
+    : '<div class="sub muted">這天沒有偵測到違規。</div>';
+  const html = `
+    <p class="sub muted">${esc(dateISO)}　已實現 ${signed(num(row?.realized))}　${
+      fmt(num(row?.trades))} 筆交易</p>
+    ${hint}
+    <label>心得
+      <textarea name="body" class="journal-input" placeholder="今天做了什麼、為什麼做、哪裡做對、哪裡手癢了。寫給三個月後的自己看。">${esc(row?.body || '')}</textarea>
+    </label>
+    <label>紀律自評（評的是有沒有照規則做，不是賺賠）
+      <select name="mood">${MOODS.map(([v, l]) =>
+        `<option value="${v}" ${num(row?.mood) === v ? 'selected' : ''}>${v} ${l}</option>`).join('')}</select>
+    </label>
+    <label class="chk"><input type="checkbox" name="followed" ${row?.followed ? 'checked' : ''}>
+      <span>今天守住了所有規則</span></label>`;
+  const res = await openDialog({
+    title: `${dateISO} 心得`,
+    html,
+    collect: (fd) => ({
+      body: (fd.get('body') || '').toString().trim() || null,
+      mood: Number(fd.get('mood')) || null,
+      followed: fd.get('followed') === 'on',
+    }),
+  });
+  if (!res || res.action !== 'save') return;
+  try {
+    const { error } = await sb.from('journal').upsert({
+      user_id: state.user.id, entry_date: dateISO,
+      body: res.values.body, mood: res.values.mood, followed: res.values.followed,
+      pl_snapshot: num(row?.realized), updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,entry_date' });
+    if (error) throw error;
+    await refresh('心得已儲存');
+  } catch (e) { fail(e); }
+}
+
+async function editRule(existing) {
+  const v = existing || { kind: 'free', scope: 'all', title: '', detail: '', amount: null };
+  const res = await openForm({
+    title: existing ? '編輯規則' : '新增規則',
+    fields: [
+      { key: 'title', label: '規則', type: 'text', required: true },
+      { key: 'detail', label: '為什麼要有這條（寫給以後想破戒的自己）', type: 'text' },
+      { key: 'kind', label: '檢查方式', type: 'select', options: [
+        ['free', '只提醒，不自動檢查'],
+        ['opt_only_hedge', '選擇權只准 buy put / sell call'],
+        ['day_one_at_a_time', '個股當沖一次一檔'],
+        ['day_max_amount', '個股當沖單檔金額上限'],
+        ['scale_in', '一律分批（提醒）'],
+      ] },
+      { key: 'amount', label: '金額上限（只有「單檔金額上限」用得到）', type: 'number' },
+    ],
+    values: v,
+    allowDelete: !!existing,
+  });
+  if (!res) return;
+  try {
+    if (res.action === 'delete') {
+      const { error } = await sb.from('rules').delete().eq('id', existing.id);
+      if (error) throw error;
+      return refresh('規則已刪除');
+    }
+    const payload = { ...res.values, user_id: state.user.id, scope: v.scope || 'all',
+                      updated_at: new Date().toISOString() };
+    if (existing) payload.id = existing.id;
+    const { error } = await sb.from('rules').upsert(payload);
+    if (error) throw error;
+    await refresh('規則已儲存');
+  } catch (e) { fail(e); }
+}
+
+function renderJournal(el) {
+  const today = todayISO();
+  const days = state.journalDays;
+  const todayRow = days.find((d) => d.d === today);
+  const tb = breaksOn(today);
+  const streak = cleanStreak();
+  const brokenKinds = new Set(tb.map((x) => x.kind));
+  const past = days.filter((d) => d.d !== today);
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="row-between">
+        <span class="list-title">${esc(today)}</span>
+        <span class="${plClass(num(todayRow?.realized))}">${signed(num(todayRow?.realized))}</span>
+      </div>
+      <div class="row-between sub muted">
+        <span>${fmt(num(todayRow?.trades))} 筆交易・當沖 ${fmt(num(todayRow?.day_trades))} 筆</span>
+        <span class="streak">${streak > 0 ? `連續 ${fmt(streak)} 個交易日沒違規` : '今天重新開始'}</span>
+      </div>
+      ${tb.length
+        ? `<div class="breaks">${tb.map((x) => `<div class="break-item"><b>${esc(x.text)}</b>${
+            x.detail ? `<br><span class="muted">${esc(x.detail)}</span>` : ''}</div>`).join('')}</div>`
+        : '<p class="sub" style="margin-top:8px">今天沒有偵測到違規。</p>'}
+      ${todayRow?.body ? `<div class="journal-body">${esc(todayRow.body)}</div>` : ''}
+      <button type="button" class="primary block" data-journal="${esc(today)}">${
+        todayRow?.body ? '編輯今天的心得' : '寫今天的心得'}</button>
+    </div>
+
+    <div class="card">
+      <div class="row-between">
+        <span class="list-title">我的規則</span>
+        <button type="button" class="link" data-add-rule>＋ 新增</button>
+      </div>
+      ${state.rules.length
+        ? state.rules.map((r) => `<div class="rule${brokenKinds.has(r.kind) ? ' broken' : ''}" data-rule="${esc(r.id)}">
+            <div class="rule-title">${esc(r.title)}${
+              brokenKinds.has(r.kind) ? '<span class="badge warn-badge">今天違反</span>' : ''}</div>
+            ${r.detail ? `<div class="rule-detail">${esc(r.detail)}</div>` : ''}
+            <div class="rule-since">自 ${esc(r.started_on)}　已經 ${
+              fmt(Math.max(0, Math.round((Date.parse(today) - Date.parse(r.started_on)) / 86400000)))} 天</div>
+          </div>`).join('')
+        : '<p class="muted">還沒有規則。</p>'}
+      <p class="hint">規則不會擋住你存檔，那是你的錢、你的帳。
+        但違規會被記下來，每天在這一頁攤開。
+        手癢是在下單那一刻發生的，不是晚上寫日誌的時候，所以記交易時就會跳出來提醒。</p>
+    </div>
+
+    <div class="card">
+      <div class="list-title">過去的日子</div>
+      ${past.length
+        ? past.map((d) => {
+            const b = breaksOn(d.d);
+            return `<div class="journal-day" data-journal="${esc(d.d)}">
+              <div class="row-between">
+                <span>${esc(d.d)}${b.length ? `<span class="badge warn-badge">${fmt(b.length)} 項違規</span>` : ''}${
+                  d.followed ? '<span class="badge day-badge">守住</span>' : ''}</span>
+                <span class="${plClass(num(d.realized))}">${signed(num(d.realized))}</span>
+              </div>
+              <div class="row-between sub muted">
+                <span>${fmt(num(d.trades))} 筆・當沖 ${fmt(num(d.day_trades))}${
+                  num(d.opt_pl) !== 0 ? `・選擇權 ${signed(num(d.opt_pl))}` : ''}</span>
+                <span>${isNum(d.mood) ? `紀律 ${fmt(d.mood)}/5` : ''}</span>
+              </div>
+              ${d.body ? `<div class="journal-body">${esc(d.body)}</div>` : '<div class="sub muted">（沒寫）</div>'}
+            </div>`;
+          }).join('')
+        : '<p class="muted">還沒有紀錄。每天寫一則，三個月後回頭看會很有用。</p>'}
+    </div>`;
+
+  $$('[data-journal]', el).forEach((b) => (b.onclick = () => editJournal(b.dataset.journal)));
+  $$('[data-rule]', el).forEach((b) => (b.onclick = () =>
+    editRule(state.rules.find((r) => r.id === b.dataset.rule))));
+  const add = $('[data-add-rule]', el);
+  if (add) add.onclick = (e) => { e.stopPropagation(); editRule(null); };
+}
+
 function renderSettings(el) {
   const st = state.settings;
   el.innerHTML = `
@@ -2525,7 +2840,7 @@ function renderSettings(el) {
   };
 }
 
-const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, themes: renderThemes, history: renderHistory, settings: renderSettings };
+const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, themes: renderThemes, journal: renderJournal, history: renderHistory, settings: renderSettings };
 
 function render() {
   if (!state.user) return;
