@@ -892,18 +892,20 @@ $fn$;
 -- 族群裡每一檔的最新營收年增，用來看是誰在拉動
 create or replace function public.theme_members(p_ym text default null)
 returns table (theme text, symbol text, name text, ym text,
-               amount numeric, last_year numeric, yoy numeric)
+               amount numeric, last_year numeric, yoy numeric, pe numeric)
 language sql stable security definer set search_path = public as $fn$
   with target as (
     select coalesce(p_ym, (select max(ym) from public.revenue)) as ym
   )
   select t.theme, t.symbol, r.name, r.ym, r.amount, ly.amount,
-         case when ly.amount > 0 then r.amount / ly.amount - 1 end
+         case when ly.amount > 0 then r.amount / ly.amount - 1 end,
+         v.pe
   from public.themes t
   cross join target g
   join public.revenue r on r.symbol = t.symbol and r.ym = g.ym
   left join public.revenue ly on ly.symbol = t.symbol
         and ly.ym = public.pm_ym_roc(public.pm_ym_add(g.ym, -12))
+  left join public.valuation v on v.symbol = t.symbol
   order by t.theme, t.sort, coalesce(r.amount, 0) desc;
 $fn$;
 
@@ -1166,6 +1168,10 @@ begin
   perform public.refresh_warrant_prices();
   perform public.refresh_fx();
   if p_include_us then perform public.refresh_us_prices(); end if;
+  -- 估值（官方每日公告的本益比/淨值比/殖利率）
+  perform public.refresh_valuation();
+  -- 月營收：每月 10 日前後才會變，但天天跑很快，而且漏掉一天就整個月是舊的
+  perform public.refresh_revenue();
   perform public.sync_positions(null);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
@@ -1190,6 +1196,8 @@ begin
     when 'war' then n := public.refresh_warrant_prices();
     when 'fx'  then n := coalesce((public.refresh_fx() is not null)::int, 0);
     when 'us'  then n := public.refresh_us_prices();
+    when 'val' then n := public.refresh_valuation();
+    when 'rev' then n := public.refresh_revenue();
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;

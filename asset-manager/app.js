@@ -30,6 +30,8 @@ const state = {
   themeTrend: [],
   themeMembers: [],
   themeInfo: [],
+  valuation: [],   // 我的持股估值（本益比等）
+  themeVal: [],    // 各族群本益比中位數
   openTheme: null,
   snapshots: [], // 依日期由新到舊
   trades: [],    // 依日期、建立時間由新到舊
@@ -954,10 +956,12 @@ async function loadAll() {
     sb.rpc('theme_trend', { p_months: 1 }),
     sb.rpc('theme_members', {}),
     sb.from('theme_info').select('*'),
+    sb.rpc('my_valuation', {}),
+    sb.rpc('theme_valuation', {}),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -971,6 +975,8 @@ async function loadAll() {
   state.themeTrend = trend.data ?? [];
   state.themeMembers = members.data ?? [];
   state.themeInfo = tinfo.data ?? [];
+  state.valuation = val.data ?? [];
+  state.themeVal = tval.data ?? [];
   state.optExpiries = (fwds.data ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
@@ -993,7 +999,8 @@ async function refresh(msg) {
 // 所以一次只抓一項；某一項失敗也不影響其他項。
 const REFRESH_STAGES = [
   ['tw', '台股'], ['fut', '指數期貨'], ['opt', '選擇權'],
-  ['war', '權證'], ['fx', '匯率'], ['us', '美股'], ['sync', '套用到持倉'],
+  ['war', '權證'], ['fx', '匯率'], ['us', '美股'],
+  ['val', '估值'], ['rev', '月營收'], ['sync', '套用到持倉'],
 ];
 
 async function runStagedRefresh(onStage) {
@@ -1911,6 +1918,94 @@ function renderOverview(el) {
   bindListActions(el);
 }
 
+// ------------------------------------------------------------
+// 估值
+//   近四季本益比：證交所與櫃買中心每天公告，是用「已經發生」的獲利算的，是事實。
+//   26/27/28 年本益比：現價 ÷ 預估 EPS。台灣沒有免費的分析師共識 API，
+//     所以預估 EPS 是存在資料庫裡人工維護的，而股價每天自動更新，
+//     因此比值每天都會變，但分母的品質取決於那個預估準不準。
+//   虧損的公司沒有本益比，顯示「虧損」而不是 0，因為 0 會讓人誤以為很便宜。
+// ------------------------------------------------------------
+const valOf = (symbol) => state.valuation.find((v) => norm(v.symbol) === norm(symbol)) || null;
+const peLabel = (pe) => (isNum(pe) ? `${fmtMax(pe, 1)}x` : '虧損');
+const themePe = (theme) => state.themeVal.find((t) => t.theme === theme) || null;
+
+const FWD_YEARS = [[2026, 'fy2026', 'eps2026'], [2027, 'fy2027', 'eps2027'], [2028, 'fy2028', 'eps2028']];
+
+function valuationRow(v) {
+  const usd = v.ccy === 'USD';
+  const cur = usd ? 'US$ ' : '';
+  const fwd = FWD_YEARS.map(([y, pk, ek]) => {
+    const pe = v[pk], eps = v[ek];
+    return isNum(pe)
+      ? `<span class="fwd-pe"><b>${String(y).slice(2)}F</b> ${fmtMax(pe, 1)}x <span class="muted">(EPS ${cur}${fmtMax(eps, 2)})</span></span>`
+      : `<span class="fwd-pe muted"><b>${String(y).slice(2)}F</b> –</span>`;
+  }).join('');
+  const anyFwd = FWD_YEARS.some(([, pk]) => isNum(v[pk]));
+  return `<button type="button" class="item" data-eps="${esc(v.symbol)}" data-nm="${esc(v.name || '')}">
+    <span class="item-main">
+      <span class="item-title">${esc(v.symbol)} ${esc(v.name || '')}<span class="badge">${esc(v.held || '')}</span>${
+        v.mine ? '<span class="badge day-badge">自填預估</span>' : ''}</span>
+      <span class="item-sub">現價 ${cur}${fmtMax(v.price, 2)}　${isNum(v.pb) ? `PB ${fmtMax(v.pb, 2)}　` : ''}${
+        isNum(v.dy) ? `殖利率 ${fmtMax(v.dy, 2)}%` : ''}${
+        usd ? '<span class="muted">近四季本益比無免費來源</span>' : ''}</span>
+      <span class="item-sub fwd-row">${fwd}</span>
+      ${anyFwd && v.eps_src ? `<span class="item-sub muted">預估來源：${esc(v.eps_src)}${
+        v.eps_checked ? `　${esc(v.eps_checked)}` : ''}</span>` : ''}
+    </span>
+    <span class="item-right"><span>${usd ? '–' : peLabel(v.pe)}</span><span class="item-sub">近四季</span></span>
+  </button>`;
+}
+
+function valuationCard() {
+  if (!state.valuation.length) return '';
+  const asOf = state.valuation.map((v) => v.as_of).filter(Boolean).sort().pop();
+  const missing = state.valuation.filter((v) => !FWD_YEARS.some(([, pk]) => isNum(v[pk])));
+  return `<div class="card">
+    <div class="row-between">
+      <span class="list-title">估值</span>
+      <span class="sub muted">${asOf ? esc(asOf) : ''}</span>
+    </div>
+    ${state.valuation.map(valuationRow).join('')}
+    <p class="hint"><b>近四季本益比</b>由證交所與櫃買中心每日公告，是已經發生的獲利算出來的，自動更新。
+      <b>26/27/28 是用預估 EPS 算的</b>：股價每天更新所以比值每天變，但預估 EPS 沒有免費 API，要自己維護。
+      點任一列可以填入你自己的預估，填了就以你的為準。
+      複委託的美股沒有免費的近四季本益比來源（Yahoo 的估值端點已經要驗證），但股價一樣每天更新，
+      所以自己填了預估 EPS，預估本益比照樣會每天重算。
+      ${missing.length ? `目前 ${missing.map((v) => esc(v.symbol)).join('、')} 還沒有預估值。` : ''}
+      預估本益比的分母是別人的猜測，不同券商的 2028 年 EPS 可以差一倍，別當成事實看。</p>
+  </div>`;
+}
+
+async function editEps(symbol, name) {
+  const v = valOf(symbol) || {};
+  const unit = v.ccy === 'USD' ? '美元' : '元';
+  const res = await openForm({
+    title: `${symbol} ${name || ''} 預估 EPS`,
+    fields: [
+      { key: 'eps2026', label: `2026 預估 EPS（${unit}，留空就用內建參考值）`, type: 'number' },
+      { key: 'eps2027', label: `2027 預估 EPS（${unit}）`, type: 'number' },
+      { key: 'eps2028', label: `2028 預估 EPS（${unit}）`, type: 'number' },
+      { key: 'note', label: '備註：哪一家券商、什麼時候看到的', type: 'text' },
+    ],
+    values: { eps2026: v.mine ? v.eps2026 : null, eps2027: v.mine ? v.eps2027 : null,
+              eps2028: v.mine ? v.eps2028 : null, note: '' },
+  });
+  if (!res || res.action !== 'save') return;
+  try {
+    const rows = FWD_YEARS.map(([fy]) => ({
+      user_id: state.user.id, symbol: norm(symbol), fy,
+      eps: res.values['eps' + fy], note: res.values.note,
+      updated_at: new Date().toISOString(),
+    }));
+    const { error } = await sb.from('eps_override').upsert(rows, { onConflict: 'user_id,symbol,fy' });
+    if (error) throw error;
+    await refresh('已儲存預估 EPS');
+  } catch (e) {
+    fail(e);
+  }
+}
+
 function renderHoldings(el) {
   const c = compute();
   const stockRows = state.stocks.map((s) => {
@@ -2004,11 +2099,13 @@ function renderHoldings(el) {
     section('期貨帳戶權益數', 'balance', equityRows, `合計 ${fmt(c.futEquity)}`, { kind: 'futures_equity', name: '期貨帳戶' }) +
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +
+    valuationCard() +
     `<p class="hint">「記一筆交易」會自動加減部位、重算均價；部位沒變動就不會動資料，賣光才移除。
       期貨的<b>權益數</b>計入總資產，<b>名目金額</b>計入曝險。個股期貨以標的股價計價：大型 = 2 張（2,000 股）、小型 = 100 股。
       選擇權的<b>權利金市值</b>計入總資產（買方為正、賣方為負），<b>delta 曝險</b>計入槓桿；
       delta 由期交所結算價每天自動反推，不用手動填。</p>`;
   bindListActions(el);
+  $$('[data-eps]', el).forEach((b) => (b.onclick = () => editEps(b.dataset.eps, b.dataset.nm)));
 }
 
 function renderFunds(el) {
@@ -2191,6 +2288,7 @@ function renderThemes(el) {
     ${trend.map((t) => {
       const mine = myThemes.has(t.theme);
       const info = state.themeInfo.find((i) => i.theme === t.theme);
+      const tv = themePe(t.theme);
       // 整體與小眾差一倍以上，代表頭條數字會嚴重誤導
       const partial = info && isNum(info.cagr) && isNum(info.niche_cagr)
         && num(info.niche_cagr) > num(info.cagr) * 2;
@@ -2203,6 +2301,11 @@ function renderThemes(el) {
         <div class="row-between sub muted">
           <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億</span>
           <span>${fmt(t.members)} 檔・實際營收年增</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>本益比中位數 ${tv && isNum(tv.pe_median) ? `<b>${fmtMax(tv.pe_median, 1)}x</b>` : '–'}${
+            tv && num(tv.loss) > 0 ? `　<span class="loss">${fmt(tv.loss)} 檔虧損</span>` : ''}</span>
+          <span>${tv && isNum(tv.dy_median) ? `殖利率 ${fmtMax(tv.dy_median, 2)}%` : ''}</span>
         </div>
         <div class="forecast">
           <div class="row-between sub">
@@ -2227,6 +2330,8 @@ function renderThemes(el) {
       預測值是各研究機構的市場預測，沒有免費 API，由人工整理，查證日期 2026-09-08。
       <b>整體市場的 CAGR 幾乎都不是你要的那個數字</b>，因為它含大量與 AI 無關的成熟需求。
       真正的成長在小眾領域，標「看小眾」的代表兩者差一倍以上，只看整體會嚴重低估。
+      本益比取<b>中位數</b>不取平均，因為一檔異常高就會把平均拉爛；虧損的公司不計入中位數，
+      但會另外標出有幾檔在虧損，那本身就是訊息。本益比由證交所與櫃買中心每日公告，每天自動更新。
       營收成長不等於股價會漲，這頁看的是產業景氣的轉折。</p>`;
 
   $$('.theme-card', el).forEach((card) => {
@@ -2244,7 +2349,8 @@ function renderThemes(el) {
            </div>` : '';
       body.innerHTML = head + (rows.length
         ? rows.map((m) => `<div class="row-between line">
-            <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>
+            <span>${esc(m.symbol)} ${esc(m.name || '')}${held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}
+              <span class="muted">${isNum(m.pe) ? fmtMax(m.pe, 1) + 'x' : '虧損'}</span></span>
             <span>${fmt(num(m.amount) / 100000, 1)} 億　<span class="${plClass(num(m.yoy))}">${
               isNum(m.yoy) ? signed(num(m.yoy) * 100, 1) + '%' : '–'}</span></span>
           </div>`).join('')

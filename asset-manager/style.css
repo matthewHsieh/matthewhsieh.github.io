@@ -379,3 +379,7 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 .theme-card .niche > span:first-child { color: var(--text); }
 .niche-cagr { color: var(--gain); font-size: 15px; }
 .forecast-note .niche-note { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+
+/* 估值：預估本益比橫排 */
+.fwd-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.fwd-pe b { font-weight: 600; opacity: .75; }
