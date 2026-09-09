@@ -383,3 +383,5 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 /* 估值：預估本益比橫排 */
 .fwd-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .fwd-pe b { font-weight: 600; opacity: .75; }
+.fwd-pe.weak { opacity: .8; }
+.warn-mark { margin-left: 2px; }

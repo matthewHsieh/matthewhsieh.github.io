@@ -1172,6 +1172,8 @@ begin
   perform public.refresh_valuation();
   -- 月營收：每月 10 日前後才會變，但天天跑很快，而且漏掉一天就整個月是舊的
   perform public.refresh_revenue();
+  -- 季報 EPS：每季才變，跟著月營收一起跑
+  perform public.refresh_financials();
   perform public.sync_positions(null);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
@@ -1198,6 +1200,7 @@ begin
     when 'us'  then n := public.refresh_us_prices();
     when 'val' then n := public.refresh_valuation();
     when 'rev' then n := public.refresh_revenue();
+    when 'fin' then n := public.refresh_financials();
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;

@@ -1930,27 +1930,41 @@ const valOf = (symbol) => state.valuation.find((v) => norm(v.symbol) === norm(sy
 const peLabel = (pe) => (isNum(pe) ? `${fmtMax(pe, 1)}x` : '虧損');
 const themePe = (theme) => state.themeVal.find((t) => t.theme === theme) || null;
 
-const FWD_YEARS = [[2026, 'fy2026', 'eps2026'], [2027, 'fy2027', 'eps2027'], [2028, 'fy2028', 'eps2028']];
+const FWD_YEARS = [
+  [2026, 'fy2026', 'eps2026', 'conf2026', 'an2026'],
+  [2027, 'fy2027', 'eps2027', 'conf2027', 'an2027'],
+  [2028, 'fy2028', 'eps2028', 'conf2028', 'an2028'],
+];
 
 function valuationRow(v) {
   const usd = v.ccy === 'USD';
   const cur = usd ? 'US$ ' : '';
-  const fwd = FWD_YEARS.map(([y, pk, ek]) => {
-    const pe = v[pk], eps = v[ek];
-    return isNum(pe)
-      ? `<span class="fwd-pe"><b>${String(y).slice(2)}F</b> ${fmtMax(pe, 1)}x <span class="muted">(EPS ${cur}${fmtMax(eps, 2)})</span></span>`
-      : `<span class="fwd-pe muted"><b>${String(y).slice(2)}F</b> –</span>`;
+  // 可信度逐年標。同一檔的 2026 可能有 9 位分析師、2028 只剩 1 位，
+  // 標同一個等級會讓人以為那三個數字一樣可靠。
+  const fwd = FWD_YEARS.map(([y, pk, ek, ck, ak]) => {
+    const pe = v[pk], eps = v[ek], conf = v[ck], an = v[ak];
+    if (!isNum(pe)) return `<span class="fwd-pe muted"><b>${String(y).slice(2)}F</b> –</span>`;
+    const weak = conf === 'low';
+    return `<span class="fwd-pe${weak ? ' weak' : ''}"><b>${String(y).slice(2)}F</b> ${fmtMax(pe, 1)}x`
+      + ` <span class="muted">(EPS ${cur}${fmtMax(eps, 2)}${isNum(an) ? `・${fmt(an)}人` : ''})</span>`
+      + `${weak ? '<span class="warn-mark" title="樣本太少或無具名機構">⚠</span>' : ''}</span>`;
   }).join('');
   const anyFwd = FWD_YEARS.some(([, pk]) => isNum(v[pk]));
   return `<button type="button" class="item" data-eps="${esc(v.symbol)}" data-nm="${esc(v.name || '')}">
     <span class="item-main">
       <span class="item-title">${esc(v.symbol)} ${esc(v.name || '')}<span class="badge">${esc(v.held || '')}</span>${
-        v.mine ? '<span class="badge day-badge">自填預估</span>' : ''}</span>
+        v.mine ? '<span class="badge day-badge">自填預估</span>' : ''}${
+        v.confidence === 'low' ? '<span class="badge warn-badge">無分析師覆蓋</span>'
+        : v.confidence === 'medium' ? '<span class="badge">覆蓋薄</span>' : ''}</span>
       <span class="item-sub">現價 ${cur}${fmtMax(v.price, 2)}　${isNum(v.pb) ? `PB ${fmtMax(v.pb, 2)}　` : ''}${
         isNum(v.dy) ? `殖利率 ${fmtMax(v.dy, 2)}%` : ''}${
         usd ? '<span class="muted">近四季本益比無免費來源</span>' : ''}</span>
       <span class="item-sub fwd-row">${fwd}</span>
+      ${isNum(v.ytd_eps) ? `<span class="item-sub">${esc(String(v.ytd_fy))} 前 ${esc(String(v.ytd_q))} 季已實現 EPS ${
+        fmtMax(v.ytd_eps, 2)}${isNum(v.ytd_pct)
+          ? `　<b class="${num(v.ytd_pct) < 40 ? 'loss' : ''}">達成率 ${fmtMax(v.ytd_pct, 0)}%</b>` : ''}</span>` : ''}
       ${anyFwd && v.eps_src ? `<span class="item-sub muted">預估來源：${esc(v.eps_src)}${
+        isNum(v.analysts) ? `　${fmt(v.analysts)} 位分析師` : ''}${
         v.eps_checked ? `　${esc(v.eps_checked)}` : ''}</span>` : ''}
     </span>
     <span class="item-right"><span>${usd ? '–' : peLabel(v.pe)}</span><span class="item-sub">近四季</span></span>
@@ -1973,6 +1987,11 @@ function valuationCard() {
       複委託的美股沒有免費的近四季本益比來源（Yahoo 的估值端點已經要驗證），但股價一樣每天更新，
       所以自己填了預估 EPS，預估本益比照樣會每天重算。
       ${missing.length ? `目前 ${missing.map((v) => esc(v.symbol)).join('、')} 還沒有預估值。` : ''}
+      <b>覆蓋度差很多，而且同一檔的不同年度也差很多。</b>台積電有 42 位分析師在報，台玻是 0 位；
+      和碩 2026 與 2027 有 9 位，2028 只剩 1 位。所以人數逐年標在括號裡，
+      標 ⚠ 的代表樣本太少或沒有具名機構，那格請當它是傳聞不是預估。
+      <b>達成率</b>是年初至今已實現 EPS ÷ 當年度預估：半年報時應該在 50% 上下，
+      明顯偏低就代表那個預估在賭下半年大爆發，這件事光看本益比是看不出來的。
       預估本益比的分母是別人的猜測，不同券商的 2028 年 EPS 可以差一倍，別當成事實看。</p>
   </div>`;
 }

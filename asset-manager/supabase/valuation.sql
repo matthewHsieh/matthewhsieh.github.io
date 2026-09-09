@@ -88,6 +88,91 @@ begin
   return total;
 end $fn$;
 
+
+-- ------------------------------------------------------------
+-- 實際財報（季度累計）
+--   來源：證交所 t187ap14_L、櫃買中心 mopsfin_t187ap14_O，每季更新。
+--   「基本每股盈餘」是**年初到該季的累計值**，不是單季，所以 Q2 就是上半年。
+--   用途：判斷券商的全年預估合不合理。
+--   如果上半年只賺了全年預估的兩成，那個預估就是在賭下半年大爆發，
+--   這件事光看預估本益比是看不出來的。
+-- ------------------------------------------------------------
+create table if not exists public.financials (
+  symbol     text not null,
+  fy         smallint not null,      -- 西元年
+  q          smallint not null,      -- 季別 1-4（累計到該季）
+  eps_cum    numeric,                -- 年初至該季累計每股盈餘
+  revenue    numeric,
+  op_income  numeric,
+  net_income numeric,
+  updated_at timestamptz not null default now(),
+  primary key (symbol, fy, q)
+);
+alter table public.financials enable row level security;
+drop policy if exists "read financials" on public.financials;
+create policy "read financials" on public.financials for select to authenticated using (true);
+
+create or replace function public.refresh_financials()
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare n integer := 0; total integer := 0; payload jsonb;
+begin
+  perform set_config('statement_timeout', '120s', true);
+
+  -- 上市
+  begin
+    payload := public.pm_fetch('https://openapi.twse.com.tw/v1/opendata/t187ap14_L')::jsonb;
+    insert into public.financials (symbol, fy, q, eps_cum, revenue, op_income, net_income, updated_at)
+    select upper(btrim(e ->> '公司代號')),
+           (public.pm_num(e ->> '年度') + 1911)::smallint,
+           public.pm_num(e ->> '季別')::smallint,
+           public.pm_num(e ->> '基本每股盈餘(元)'),
+           public.pm_num(e ->> '營業收入'),
+           public.pm_num(e ->> '營業利益'),
+           public.pm_num(e ->> '稅後淨利'),
+           now()
+    from jsonb_array_elements(payload) e
+    where btrim(e ->> '公司代號') ~ '^[0-9]{4,6}[A-Z]?$'
+      and public.pm_num(e ->> '年度') is not null
+      and public.pm_num(e ->> '季別') between 1 and 4
+    on conflict (symbol, fy, q) do update
+      set eps_cum = excluded.eps_cum, revenue = excluded.revenue,
+          op_income = excluded.op_income, net_income = excluded.net_income, updated_at = now();
+    get diagnostics n = row_count; total := total + n;
+    perform public.pm_log('financials twse', n, true, null);
+  exception when others then
+    perform public.pm_log('financials twse', 0, false, sqlerrm);
+  end;
+
+  -- 上櫃（欄位名少了「(元)」，其餘一樣）
+  begin
+    payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap14_O')::jsonb;
+    insert into public.financials (symbol, fy, q, eps_cum, revenue, op_income, net_income, updated_at)
+    select upper(btrim(e ->> 'SecuritiesCompanyCode')),
+           (public.pm_num(e ->> 'Year') + 1911)::smallint,
+           public.pm_num(e ->> '季別')::smallint,
+           public.pm_num(e ->> '基本每股盈餘'),
+           public.pm_num(e ->> '營業收入'),
+           public.pm_num(e ->> '營業利益'),
+           public.pm_num(e ->> '稅後淨利'),
+           now()
+    from jsonb_array_elements(payload) e
+    where btrim(e ->> 'SecuritiesCompanyCode') ~ '^[0-9]{4,6}[A-Z]?$'
+      and public.pm_num(e ->> 'Year') is not null
+      and public.pm_num(e ->> '季別') between 1 and 4
+    on conflict (symbol, fy, q) do update
+      set eps_cum = excluded.eps_cum, revenue = excluded.revenue,
+          op_income = excluded.op_income, net_income = excluded.net_income, updated_at = now();
+    get diagnostics n = row_count; total := total + n;
+    perform public.pm_log('financials tpex', n, true, null);
+  exception when others then
+    perform public.pm_log('financials tpex', 0, false, sqlerrm);
+  end;
+
+  return total;
+end $fn$;
+
+revoke all on function public.refresh_financials() from public, anon;
+
 -- ------------------------------------------------------------
 -- 預估 EPS（人工維護的共用參考值）
 --   台灣沒有免費的分析師共識 API，這裡存的是新聞與券商報告裡公開引用的數字。
@@ -106,6 +191,11 @@ create table if not exists public.eps_forecast (
   updated_at timestamptz not null default now(),
   primary key (symbol, fy)
 );
+-- 覆蓋度差很多：台積電 42 位分析師，台玻 0 位。同樣一個數字意義完全不同，
+-- 所以存可信度，App 會把 low 標出來提醒那是傳聞不是共識。
+alter table public.eps_forecast add column if not exists confidence text;   -- high / medium / low
+alter table public.eps_forecast add column if not exists analysts  smallint;
+
 alter table public.eps_forecast enable row level security;
 drop policy if exists "read eps forecast" on public.eps_forecast;
 create policy "read eps forecast" on public.eps_forecast for select to authenticated using (true);
@@ -141,7 +231,11 @@ returns table (
   pe numeric, pb numeric, dy numeric, as_of date,
   fy2026 numeric, fy2027 numeric, fy2028 numeric,
   eps2026 numeric, eps2027 numeric, eps2028 numeric,
-  eps_src text, eps_checked date, mine boolean
+  eps_src text, eps_checked date, mine boolean,
+  ytd_eps numeric, ytd_fy smallint, ytd_q smallint, ytd_pct numeric,
+  confidence text,
+  conf2026 text, conf2027 text, conf2028 text,
+  an2026 smallint, an2027 smallint, an2028 smallint
 ) language sql stable security definer set search_path = public as $fn$
   with held as (
     select upper(btrim(s.symbol)) as symbol, '現股' as how, 'TWD' as ccy from public.stocks s
@@ -168,11 +262,17 @@ returns table (
            coalesce(o.fy, f.fy)         as fy,
            coalesce(o.eps, f.eps)       as eps,
            (o.eps is not null)          as overridden,
-           f.source, f.checked_on
+           f.source, f.checked_on, f.confidence, f.analysts
     from public.eps_forecast f
     full outer join public.eps_override o
       on o.symbol = f.symbol and o.fy = f.fy and o.user_id = auth.uid()
     where coalesce(o.user_id, auth.uid()) = auth.uid()
+  ),
+  fin as (
+    select distinct on (symbol) symbol, fy, q, eps_cum
+    from public.financials
+    where eps_cum is not null
+    order by symbol, fy desc, q desc
   ),
   e as (
     select symbol,
@@ -180,8 +280,23 @@ returns table (
            max(eps) filter (where fy = 2027) as e27,
            max(eps) filter (where fy = 2028) as e28,
            bool_or(overridden)                as overridden,
-           max(source)     as source,
-           max(checked_on) as checked_on
+           -- 只取最近年度的來源，三年併起來會變成一長串重複字串。
+           coalesce(max(source) filter (where fy = 2026),
+                    max(source) filter (where fy = 2027),
+                    max(source)) as source,
+           max(checked_on) as checked_on,
+           -- 可信度逐年存，因為同一檔的不同年度差很多：
+           -- 和碩 2026/2027 有 9 位分析師，2028 只剩 1 位。整列標同一個等級會誤導。
+           max(confidence) filter (where fy = 2026) as c26,
+           max(confidence) filter (where fy = 2027) as c27,
+           max(confidence) filter (where fy = 2028) as c28,
+           max(analysts)   filter (where fy = 2026) as a26,
+           max(analysts)   filter (where fy = 2027) as a27,
+           max(analysts)   filter (where fy = 2028) as a28,
+           -- 整列取「最好」的那一年，回答的是「這檔到底有沒有人在認真報」。
+           case when bool_or(confidence = 'high') then 'high'
+                when bool_or(confidence = 'medium') then 'medium'
+                when bool_or(confidence = 'low') then 'low' end as confidence
     from eps group by symbol
   )
   select a.symbol,
@@ -193,13 +308,21 @@ returns table (
          case when e.e27 > 0 then round(coalesce(mp.price, us.price_usd) / e.e27, 1) end,
          case when e.e28 > 0 then round(coalesce(mp.price, us.price_usd) / e.e28, 1) end,
          e.e26, e.e27, e.e28,
-         e.source, e.checked_on, coalesce(e.overridden, false)
+         e.source, e.checked_on, coalesce(e.overridden, false),
+         f.eps_cum, f.fy, f.q,
+         -- 達成率：年初至今已實現 ÷ 當年度預估。半年報時應該在 50% 上下，
+         -- 差太遠就代表那個預估在賭下半年，或者已經該調整了。
+         case when f.fy = 2026 and e.e26 > 0 then round(f.eps_cum / e.e26 * 100, 0)
+              when f.fy = 2027 and e.e27 > 0 then round(f.eps_cum / e.e27 * 100, 0) end,
+         case when e.overridden then null else e.confidence end,
+         e.c26, e.c27, e.c28, e.a26, e.a27, e.a28
   from agg a
   left join public.valuation v on v.symbol = a.symbol
   left join public.market_prices mp on mp.market = 'tw' and mp.symbol = a.symbol
   left join (select distinct on (upper(btrim(symbol))) upper(btrim(symbol)) as symbol, name, price_usd
              from public.us_stocks where user_id = auth.uid()) us on us.symbol = a.symbol
   left join e on e.symbol = a.symbol
+  left join fin f on f.symbol = a.symbol
   order by a.ccy desc, a.symbol;
 $fn$;
 
