@@ -32,6 +32,7 @@ const state = {
   themeInfo: [],
   valuation: [],   // 我的持股估值（本益比等）
   themeVal: [],    // 各族群本益比中位數
+  riskStats: [],   // 報酬/波動計分
   rules: [],       // 自己定的紀律
   journalDays: [], // 每日心得＋戰績
   openTheme: null,
@@ -975,12 +976,13 @@ async function loadAll() {
     sb.from('theme_info').select('*'),
     sb.rpc('my_valuation', {}),
     sb.rpc('theme_valuation', {}),
+    sb.from('risk_stats').select('symbol,ratio,vol,cagr,mdd'),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -996,6 +998,7 @@ async function loadAll() {
   state.themeInfo = tinfo.data ?? [];
   state.valuation = val.data ?? [];
   state.themeVal = tval.data ?? [];
+  state.riskStats = risk.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -1964,6 +1967,17 @@ const valOf = (symbol) => state.valuation.find((v) => norm(v.symbol) === norm(sy
 const peLabel = (pe) => (isNum(pe) ? `${fmtMax(pe, 1)}x` : '虧損');
 const themePe = (theme) => state.themeVal.find((t) => t.theme === theme) || null;
 
+// ------------------------------------------------------------
+// 報酬 ÷ 波動
+//   「這檔漲很多」最會騙人。實測 2022-2026，金居買進持有 7.79 倍看起來很猛，
+//   但波動 52% 讓風險等價槓桿只能開 0.81 倍，套上同一條規則後只有 4.03 倍，
+//   反而輸給加權指數的 7.75 倍。**漲得多不等於賺得多。**
+//   所以用加權指數的比值當及格線：低於它的個股，不如直接開槓桿買指數。
+// ------------------------------------------------------------
+const riskOf = (symbol) => state.riskStats.find((r) => norm(r.symbol) === norm(symbol)) || null;
+const idxRatio = () => num(state.riskStats.find((r) => r.symbol === 'TAIEX')?.ratio);
+const beatsIdx = (ratio) => isNum(ratio) && isNum(idxRatio()) && num(ratio) > idxRatio();
+
 const FWD_YEARS = [
   [2026, 'fy2026', 'eps2026', 'conf2026', 'an2026'],
   [2027, 'fy2027', 'eps2027', 'conf2027', 'an2027'],
@@ -1994,6 +2008,12 @@ function valuationRow(v) {
         isNum(v.dy) ? `殖利率 ${fmtMax(v.dy, 2)}%` : ''}${
         usd ? '<span class="muted">近四季本益比無免費來源</span>' : ''}</span>
       <span class="item-sub fwd-row">${fwd}</span>
+      ${(() => { const k = riskOf(v.symbol); return k && isNum(k.ratio)
+        ? `<span class="item-sub">報酬/波動 <b class="${beatsIdx(k.ratio) ? 'gain' : ''}">${fmtMax(k.ratio, 2)}</b>${
+            beatsIdx(k.ratio) ? '<span class="badge day-badge">贏指數</span>'
+            : `<span class="muted">（指數 ${fmtMax(idxRatio(), 2)}）</span>`}　波動 ${
+            (num(k.vol) * 100).toFixed(0)}%　三年 ${signed(num(k.cagr) * 100, 0)}%/年</span>`
+        : ''; })()}
       ${isNum(v.ytd_eps) ? `<span class="item-sub">${esc(String(v.ytd_fy))} 前 ${esc(String(v.ytd_q))} 季已實現 EPS ${
         fmtMax(v.ytd_eps, 2)}${isNum(v.ytd_pct)
           ? `　<b class="${num(v.ytd_pct) < 40 ? 'loss' : ''}">達成率 ${fmtMax(v.ytd_pct, 0)}%</b>` : ''}</span>` : ''}
@@ -2026,7 +2046,9 @@ function valuationCard() {
       標 ⚠ 的代表樣本太少或沒有具名機構，那格請當它是傳聞不是預估。
       <b>達成率</b>是年初至今已實現 EPS ÷ 當年度預估：半年報時應該在 50% 上下，
       明顯偏低就代表那個預估在賭下半年大爆發，這件事光看本益比是看不出來的。
-      預估本益比的分母是別人的猜測，不同券商的 2028 年 EPS 可以差一倍，別當成事實看。</p>
+      預估本益比的分母是別人的猜測，不同券商的 2028 年 EPS 可以差一倍，別當成事實看。
+      <b>報酬/波動</b>是三年年化報酬除以年化波動，及格線是加權指數。低於指數代表你承受的波動
+      換不到相稱的報酬，那不如直接開槓桿買指數，還省下選錯的風險。</p>
   </div>`;
 }
 
@@ -2468,6 +2490,12 @@ function renderThemes(el) {
           <span>${fmt(t.members)} 檔・實際營收年增</span>
         </div>
         <div class="row-between sub muted">
+          <span>報酬/波動 ${tv && isNum(tv.ratio_median)
+            ? `<b class="${num(tv.ratio_median) > idxRatio() ? 'gain' : ''}">${fmtMax(tv.ratio_median, 2)}</b>` : '–'}${
+            tv && isNum(tv.vol_median) ? `　波動 ${(num(tv.vol_median) * 100).toFixed(0)}%` : ''}</span>
+          <span>${tv ? `${fmt(tv.beat_idx)}/${fmt(tv.total)} 檔贏過指數` : ''}</span>
+        </div>
+        <div class="row-between sub muted">
           <span>本益比 近四季 ${tv && isNum(tv.pe_median) ? `<b>${fmtMax(tv.pe_median, 1)}x</b>` : '–'}${
             tv && isNum(tv.pe1_median) ? `　${String(tv.fy1).slice(2)}F <b>${fmtMax(tv.pe1_median, 1)}x</b>` : ''}${
             tv && isNum(tv.pe2_median) ? `　${String(tv.fy2).slice(2)}F <b>${fmtMax(tv.pe2_median, 1)}x</b>` : ''}</span>
@@ -2502,6 +2530,11 @@ function renderThemes(el) {
       <b>預估本益比 = 現價 ÷ 分析師預估 EPS</b>，預估值自動抓自 stockanalysis.com 的共識，
       股價每天更新所以比值每天變。台股只有大約六成的公司有人在報，「無人覆蓋」是常態不是錯誤，
       分析師兩位以下會標 ⚠。族群的「N/M 檔有預估」如果分母遠大於分子，那個中位數就別太當真。
+      <b>報酬/波動</b>是三年年化報酬除以年化波動，及格線是加權指數的
+      ${isNum(idxRatio()) ? fmtMax(idxRatio(), 2) : '–'}。低於這條線的個股，
+      承受的波動換不到相稱的報酬，<b>不如直接開槓桿買指數</b>。
+      回測實例：金居三年漲 7.79 倍看起來很猛，但波動 52% 讓風險等價槓桿只能開 0.81 倍，
+      套上同一條交易規則後只有 4.03 倍，反而輸給指數的 7.75 倍。漲得多不等於賺得多。
       營收成長不等於股價會漲，這頁看的是產業景氣的轉折。</p>`;
 
   $$('.theme-card', el).forEach((card) => {
@@ -2531,6 +2564,14 @@ function renderThemes(el) {
               <span>${isNum(m.an1)
                 ? `${fmt(m.an1)} 位分析師${num(m.an1) <= 2 ? '<span class="warn-mark">⚠</span>' : ''}`
                 : '<span class="muted">無人覆蓋</span>'}</span>
+            </div>
+            <div class="row-between sub muted">
+              <span>${isNum(m.ratio)
+                ? `報酬/波動 <b class="${beatsIdx(m.ratio) ? 'gain' : ''}">${fmtMax(m.ratio, 2)}</b>${
+                    beatsIdx(m.ratio) ? '<span class="badge day-badge">贏指數</span>' : ''}`
+                : '報酬/波動 –'}</span>
+              <span>${isNum(m.vol) ? `波動 ${(num(m.vol) * 100).toFixed(0)}%` : ''}${
+                isNum(m.cagr) ? `　年化 ${signed(num(m.cagr) * 100, 0)}%` : ''}</span>
             </div>
           </div>`).join('')
         : '<p class="muted">沒有成分股資料。</p>');

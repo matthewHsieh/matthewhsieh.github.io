@@ -898,7 +898,8 @@ create or replace function public.theme_members(p_ym text default null)
 returns table (theme text, symbol text, name text, ym text,
                amount numeric, last_year numeric, yoy numeric, pe numeric,
                fy1 smallint, eps1 numeric, pe1 numeric, an1 smallint,
-               fy2 smallint, eps2 numeric, pe2 numeric)
+               fy2 smallint, eps2 numeric, pe2 numeric,
+               ratio numeric, vol numeric, cagr numeric)
 language sql stable security definer set search_path = public as $fn$
   with target as (
     select coalesce(p_ym, (select max(ym) from public.revenue)) as ym
@@ -925,7 +926,8 @@ language sql stable security definer set search_path = public as $fn$
          case when ep.eps1 > 0 and mp.price > 0 then round(mp.price / ep.eps1, 1) end,
          ep.an1::smallint,
          (ep.fy1 + 1)::smallint, ep.eps2,
-         case when ep.eps2 > 0 and mp.price > 0 then round(mp.price / ep.eps2, 1) end
+         case when ep.eps2 > 0 and mp.price > 0 then round(mp.price / ep.eps2, 1) end,
+         k.ratio, k.vol, k.cagr
   from public.themes t
   cross join target g
   join public.revenue r on r.symbol = t.symbol and r.ym = g.ym
@@ -934,6 +936,7 @@ language sql stable security definer set search_path = public as $fn$
   left join public.valuation v on v.symbol = t.symbol
   left join public.market_prices mp on mp.market = 'tw' and mp.symbol = t.symbol
   left join ep on ep.symbol = t.symbol
+  left join public.risk_stats k on k.symbol = t.symbol
   order by t.theme, t.sort, coalesce(r.amount, 0) desc;
 $fn$;
 
@@ -1204,6 +1207,8 @@ begin
   perform public.refresh_financials();
   -- 分析師預估 EPS：190 檔約 40 秒，只有排程跑，手動更新分批
   perform public.refresh_estimates(400);
+  -- 報酬/波動計分：170 檔約 30 秒
+  perform public.refresh_risk_stats(400);
   perform public.sync_positions(null);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
@@ -1232,6 +1237,7 @@ begin
     when 'rev' then n := public.refresh_revenue();
     when 'fin' then n := public.refresh_financials();
     when 'est' then n := public.refresh_estimates(12);
+    when 'risk' then n := public.refresh_risk_stats(15);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;

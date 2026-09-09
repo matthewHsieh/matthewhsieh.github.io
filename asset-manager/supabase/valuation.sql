@@ -388,7 +388,8 @@ create or replace function public.theme_valuation()
 returns table (theme text, pe_median numeric, pb_median numeric, dy_median numeric,
                rated integer, loss integer,
                fy1 smallint, pe1_median numeric, fy2 smallint, pe2_median numeric,
-               covered integer, total integer)
+               covered integer, total integer,
+               ratio_median numeric, vol_median numeric, beat_idx integer)
 language sql stable security definer set search_path = public as $fn$
   with er as (select * from public.eps_resolved() where eps > 0),
   yr as (
@@ -415,10 +416,16 @@ language sql stable security definer set search_path = public as $fn$
          ((select fy1 from yr) + 1)::smallint,
          round(percentile_cont(0.5) within group (order by f.pe2)::numeric, 1),
          count(f.pe1)::int,
-         count(*)::int
+         count(*)::int,
+         round(percentile_cont(0.5) within group (order by k.ratio)::numeric, 2),
+         round(percentile_cont(0.5) within group (order by k.vol)::numeric, 3),
+         -- 有幾檔的報酬/波動贏過加權指數。輸給指數的，不如直接開槓桿買指數。
+         count(*) filter (where k.ratio > (select ratio from public.risk_stats
+                                           where symbol = 'TAIEX'))::int
   from public.themes t
   left join public.valuation v on v.symbol = t.symbol
   left join fwd f on f.theme = t.theme and f.symbol = t.symbol
+  left join public.risk_stats k on k.symbol = t.symbol
   group by t.theme
   order by t.theme;
 $fn$;
