@@ -71,7 +71,7 @@ returns text language sql immutable as $$
            '&nbsp;?|&amp;|\s+', ' ', 'g')), '');
 $$;
 
-create or replace function public.refresh_company_profiles(p_limit integer default 200)
+create or replace function public.refresh_company_profiles(p_limit integer default 40)
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
 declare r record; html text; biz text; total integer := 0;
 begin
@@ -90,8 +90,10 @@ begin
   loop
     begin
       -- 打太快會被 MOPS 擋掉（回一頁沒有那個欄位的 HTML，不是 HTTP 錯誤，
-      -- 所以看起來像「這家公司沒填」）。間隔 0.4 秒實測就過得去。
-      perform pg_sleep(0.4);
+      -- 所以看起來像「這家公司沒填」）。而且**限流會累積**：
+      -- 0.4 秒間隔一開始 40 檔成功 37 檔，連續灌了一千多次之後掉到 60 檔只成功 9 檔。
+      -- 這件事不急（業務描述幾乎不會變），所以間隔拉到 1.5 秒，交給排程慢慢補。
+      perform pg_sleep(1.5);
       html := public.pm_post('https://mopsov.twse.com.tw/mops/web/ajax_t05st03',
         'encodeURIComponent=1&step=1&firstin=1&off=1&queryName=co_id&inpuType=co_id'
         || '&TYPEK=all&co_id=' || r.symbol);

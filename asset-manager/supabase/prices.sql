@@ -1330,12 +1330,12 @@ begin
   perform public.refresh_risk_stats(600);
 end $$;
 
--- 公司主要經營業務。MOPS 會限流，所以每檔之間有 0.4 秒間隔，
--- 一批 60 檔約 55 秒。內容幾乎不會變，慢慢輪完就好。
+-- 公司主要經營業務。MOPS 會限流而且會累積，所以每檔間隔 1.5 秒、一批只做 40 檔
+--（約 80 秒，塞得進 cron 的 120 秒上限）。內容幾乎不會變，慢慢輪完就好。
 create or replace function public.update_profiles()
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  perform public.refresh_company_profiles(60);
+  perform public.refresh_company_profiles(40);
 end $$;
 
 -- 美股的報酬/波動，同樣分批。只打 Yahoo，不碰 stockanalysis。
@@ -1484,7 +1484,7 @@ begin
   perform cron.schedule('am-usrisk-3', '0 3 * * *',  $c$select public.update_us_risk()$c$);
   perform cron.schedule('am-usrisk-4', '0 5 * * *',  $c$select public.update_us_risk()$c$);
 
-  -- 公司業務描述：一批 60 檔、一天四班，兩週輪完一圈。內容幾乎不會變。
+  -- 公司業務描述：一批 40 檔、一天四班，約三週輪完一圈。內容幾乎不會變，慢沒關係。
   perform cron.schedule('am-profiles',   '30 9 * * *',  $c$select public.update_profiles()$c$);
   perform cron.schedule('am-profiles-2', '30 15 * * *', $c$select public.update_profiles()$c$);
   perform cron.schedule('am-profiles-3', '30 17 * * *', $c$select public.update_profiles()$c$);
