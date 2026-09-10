@@ -625,16 +625,25 @@ begin
 end $fn$;
 
 -- 權證每日報價（認購 + 認售）
-create or replace function public.refresh_warrant_prices()
+-- p_kind 給 null 就兩種都跑（排程用），指定一種則只跑那一種（互動用）。
+-- **為什麼要能拆**：兩種一起跑實測 6.4 秒，而 authenticated 的上限是 8 秒，
+-- 證交所偶爾限流（實測 0999P 曾經一次要 10.2 秒）就會直接逾時報錯。
+-- 拆開之後每次只有 3-4 秒，被限流一次也還有餘裕，而且另一種不受影響。
+create or replace function public.refresh_warrant_prices(p_kind text default null)
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
 declare n integer := 0; total integer := 0; payload jsonb; tbl jsonb;
-        d date; i integer; kind text; have date;
+        d date; i integer; kind text; have date; kinds text[]; did boolean := false;
 begin
   perform set_config('statement_timeout', '300s', true);
-  select max(as_of) into have from public.market_prices where market = 'war';
   d := (now() at time zone 'Asia/Taipei')::date;
+  kinds := case when p_kind is null then array['0999', '0999P'] else array[p_kind] end;
 
-  foreach kind in array array['0999', '0999P'] loop
+  foreach kind in array kinds loop
+    -- **一定要分認購認售各自判斷**。原本一起算最大 as_of，
+    -- 拆成兩階段之後認購先跑完把日期推到今天，認售就會誤以為已經有資料而跳過。
+    -- 靠 src 區分，所以下面寫入時 src 要帶上 kind。
+    select max(as_of) into have from public.market_prices
+     where market = 'war' and src = 'twse_warrant_' || kind;
     begin
       for i in 0..8 loop
         exit when have is not null and have >= (d - i);
@@ -655,7 +664,7 @@ begin
                    coalesce(public.pm_num(r ->> 9),
                             (public.pm_num(r ->> 12) + public.pm_num(r ->> 14)) / 2.0,
                             public.pm_num(r ->> 12)),
-                   d - i, 'twse_warrant', now()
+                   d - i, 'twse_warrant_' || kind, now()
             from jsonb_array_elements(tbl -> 'data') r
             where btrim(r ->> 1) ~ '^[0-9A-Z]{6}$'
               and coalesce(public.pm_num(r ->> 9),
@@ -675,6 +684,7 @@ begin
              where wi.code = z.code and wi.underlying is distinct from z.ul;
 
             perform public.pm_log('twse_warrant_' || kind || ' ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
+            did := true;
             exit;
           end if;
         end if;
@@ -683,6 +693,22 @@ begin
       perform public.pm_log('twse_warrant_' || kind, 0, false, sqlerrm);
     end;
   end loop;
+
+  -- 到期下市的權證不會再出現在行情檔裡，如果不清就會一直累積
+  -- （實測有 988 筆停在 2026-09-06 之前）。持有中的一律保留。
+  if did then
+    delete from public.market_prices mp
+     where mp.market = 'war'
+       and mp.as_of < (now() at time zone 'Asia/Taipei')::date - 30
+       and not exists (select 1 from public.warrants w
+                        where upper(btrim(w.code)) = mp.symbol);
+  end if;
+
+  -- 沒抓也要留紀錄。原本靜靜地跳過，執行紀錄裡完全看不到權證，
+  -- 會讓人以為是壞掉了（台股那段就有寫「略過，已有 ...」）。
+  if not did then
+    perform public.pm_log('twse_warrant(略過，已有 ' || coalesce(have::text, '無') || ')', 0, true, null);
+  end if;
   return total;
 end $fn$;
 
@@ -1238,7 +1264,8 @@ begin
     when 'tw'  then n := public.refresh_tw_prices();
     when 'fut' then n := public.refresh_futures_prices();
     when 'opt' then n := public.refresh_option_prices();
-    when 'war' then n := public.refresh_warrant_prices();
+    when 'war'  then n := public.refresh_warrant_prices('0999');   -- 認購
+    when 'warp' then n := public.refresh_warrant_prices('0999P');  -- 認售
     when 'fx'  then n := coalesce((public.refresh_fx() is not null)::int, 0);
     when 'us'  then n := public.refresh_us_prices();
     when 'val' then n := public.refresh_valuation();
@@ -1256,7 +1283,8 @@ begin
     'ms', round(extract(epoch from clock_timestamp() - t0) * 1000),
     'as_of', (select max(as_of) from public.market_prices
               where market = case p_kind when 'tw' then 'tw' when 'fut' then 'fut'
-                                         when 'opt' then 'opt' when 'war' then 'war'
+                                         when 'opt' then 'opt'
+                                         when 'war' then 'war' when 'warp' then 'war'
                                          when 'fx' then 'fx' when 'us' then 'us' else 'tw' end));
 end $fn$;
 
