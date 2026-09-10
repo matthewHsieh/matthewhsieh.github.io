@@ -1811,7 +1811,13 @@ const itemRow = (kind, id, title, sub, right, right2 = '') =>
     <span class="item-main"><span class="item-title">${title}</span><span class="item-sub">${sub}</span></span>
     <span class="item-right"><span>${right}</span><span class="item-sub">${right2}</span></span>
   </button>`;
-const tradeButton = () => `<button type="button" class="primary block" data-trade>＋ 記一筆交易（買 / 賣）</button>`;
+const tradeButton = () =>
+  `<button type="button" class="primary block" data-trade>＋ 記一筆交易（買 / 賣）</button>` +
+  // 轉倉本來只放在期貨卡片右下角，又小又暗還要往下捲，實測找不到。
+  // 它在使用者心裡是「一種交易」，就該放在記一筆交易旁邊。
+  (state.futures.length
+    ? `<button type="button" class="block roll-btn" data-roll>⇄ 期貨轉倉（先平近月，再建遠月）</button>`
+    : '');
 
 function bindListActions(el) {
   $$('[data-add]', el).forEach((b) => (b.onclick = () => {
@@ -1827,6 +1833,7 @@ function bindListActions(el) {
     : b.dataset.edit === 'warrant' ? editWarrant(b.dataset.id)
     : editItem(b.dataset.edit, b.dataset.id)));
   $$('[data-trade]', el).forEach((b) => (b.onclick = () => logTrade()));
+  $$('[data-roll]', el).forEach((b) => (b.onclick = () => rollFutures(b.dataset.roll || null)));
 }
 
 const MARKET_NAME = { tw: '台股', fut: '指數期貨', us: '美股', fx: '匯率' };
@@ -2398,7 +2405,7 @@ function renderHoldings(el) {
       `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
         ? '<span class="muted">填了平均成本才會顯示損益</span>'
         : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}` +
-      (state.futures.length ? '<br><button type="button" class="small" data-roll>期貨轉倉</button>' : '')) +
+      (state.futures.length ? '<br><button type="button" class="small" data-roll>⇄ 轉倉</button>' : '')) +
     section('權證', 'warrant', warRows,
       `市值 ${fmt(c.warMarket)}　delta 曝險 ${fmt(c.warExp)}　最大損失 ${fmt(c.warMaxLoss)}${
         c.warProfit === null ? '' : `　<span class="${plClass(c.warProfit)}">${signed(c.warProfit)}</span>`}${
@@ -2418,8 +2425,6 @@ function renderHoldings(el) {
       delta 由期交所結算價每天自動反推，不用手動填。</p>`;
   bindListActions(el);
   $$('[data-eps]', el).forEach((b) => (b.onclick = () => editEps(b.dataset.eps, b.dataset.nm)));
-  const rollBtn = $('[data-roll]', el);
-  if (rollBtn) rollBtn.onclick = () => rollFutures(null);
 }
 
 function renderFunds(el) {

@@ -416,3 +416,10 @@ textarea.journal-input {
 
 /* 族群頁的市場切換 */
 .market-seg { margin-bottom: 12px; }
+
+/* 期貨轉倉：放在「記一筆交易」下面，要看得見但不搶主按鈕 */
+.roll-btn {
+  margin-top: 8px;
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--primary);
+}
