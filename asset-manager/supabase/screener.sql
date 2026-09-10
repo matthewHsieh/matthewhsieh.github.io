@@ -101,10 +101,13 @@ language sql stable security definer set search_path = public as $fn$
            s.rev_g_next,
            (select string_agg(t.theme, '・' order by t.theme)
               from public.us_themes t where t.symbol = u.symbol),
-           u.sector,
+           -- 公司業務描述優先，沒有才退回 Nasdaq 給的 sector。
+           -- 搜尋吃的是這一欄，所以有描述才搜得到 "liquid cooling" 這種說法。
+           coalesce(cp.business, u.sector),
            null
     from public.stock_universe u
     left join public.us_stats s on s.symbol = u.symbol
+    left join public.company_profile cp on cp.symbol = u.symbol and cp.market = 'us'
     where (select m from mk) = 'us' and u.market = 'us'
   ),
   scored as (

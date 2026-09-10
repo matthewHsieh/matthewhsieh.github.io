@@ -136,14 +136,24 @@ alter table public.company_profile add column if not exists market text not null
 -- 所以在正則裡寫那串會被解讀成角括號本身，反而配不到原文。
 -- 這裡用 chr(92) 把反斜線接出來，再用 replace()（不是正則）換回角括號，
 -- 之後就是一般的 HTML 解析。
+--
+-- **要抓前幾段不是只抓第一段。** 第一段通常只有一句「某某公司在某地區
+-- 提供某類服務」，真正能搜的產品字眼在第二、三段。Vertiv 的第一段沒有
+-- 「liquid cooling」，第二段才寫 AC/DC 電源、匯流排那些東西。
+-- 只存第一段的話，搜「liquid cooling」「thermal management」全部落空。
+-- 取前三段、上限 900 字，再多就是無關的樣板文字了。
 create or replace function public.pm_sa_desc(p_body text)
 returns text language sql immutable as $$
-  select nullif(btrim(regexp_replace(
-           (regexp_match(
-              replace(replace(coalesce(p_body, ''), chr(92) || 'u003C', '<'),
-                      chr(92) || 'u003E', '>'),
-              '<p>(.*?)</p>'))[1],
-           '<[^>]*>', '', 'g')), '');
+  with h as (
+    select replace(replace(coalesce(p_body, ''), chr(92) || 'u003C', '<'),
+                   chr(92) || 'u003E', '>') as s
+  ),
+  paras as (
+    select rn, regexp_replace(m[1], '<[^>]*>', '', 'g') as txt
+    from h, regexp_matches(h.s, '<p>(.*?)</p>', 'g') with ordinality as t(m, rn)
+    where rn <= 3
+  )
+  select nullif(btrim(left(string_agg(txt, ' ' order by rn), 900)), '') from paras;
 $$;
 
 create or replace function public.refresh_us_profiles(p_limit integer default 150)
