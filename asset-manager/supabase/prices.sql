@@ -1275,6 +1275,84 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
+-- 分段排程
+--
+-- **為什麼一定要拆。** postgresql.conf 把 statement_timeout 設成 120 秒，
+-- 而且那個值在語句開始時就鎖定了——函式裡再 set_config 也改不動已經在跑的語句。
+-- 全部串在一支 update_all_prices() 裡的結果是：
+--   1. 超過兩分鐘就被砍，實測 13 次排程有 6 次失敗；
+--   2. 整支是**一個交易**，被砍就全部 rollback——連前面已經抓好的行情
+--      和 price_runs 的日誌一起消失，所以事後看紀錄會以為那次根本沒跑。
+--
+-- 這正是使用者看到「金居永遠慢一天」的原因：櫃買的收盤檔大約台北 16:00 才更新，
+-- 而 16:00 之後的兩班（18:00、21:00）每次都在後面的美股階段被砍掉，
+-- 連帶把前面抓到的上櫃行情一起還原。上市走證交所、14:30 就有，所以只有上櫃看起來落後。
+--
+-- 拆開之後每一段都是獨立交易，慢的那段掛掉不會拖累快的那段。
+-- ------------------------------------------------------------
+
+-- 行情。最重要也最快（實測約 15 秒），所以一天跑最多次。
+create or replace function public.update_quotes()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_tw_prices();
+  perform public.refresh_futures_prices();
+  perform public.refresh_option_prices();
+  perform public.refresh_warrant_prices();
+  perform public.refresh_fx();
+  perform public.sync_positions(null);
+end $$;
+
+-- 基本面。官方每日／每月／每季公告，都很快。
+create or replace function public.update_fundamentals()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_valuation();
+  perform public.refresh_revenue();
+  perform public.refresh_financials();
+  perform public.refresh_alerts();
+end $$;
+
+-- 分析師預估。一檔一個請求，限量以免超過兩分鐘；挑最久沒更新的先跑，
+-- 所以連跑幾天就會輪完全部。
+create or replace function public.update_estimates()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_estimates(120);
+end $$;
+
+-- 報酬/波動。172 檔約 80 秒。
+create or replace function public.update_risk()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_risk_stats(400);
+end $$;
+
+-- 美股。一檔要打兩個請求（預估頁＋日線），所以一次只做一部分。
+create or replace function public.update_us()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_us_prices();
+  perform public.refresh_us_stats(60);
+end $$;
+
+-- 雜項。權證基本資料 20MB 要 50 秒，只在這裡跑。
+create or replace function public.update_housekeeping()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if (select coalesce(max(updated_at), '2000-01-01'::timestamptz) from public.warrant_info)
+       < now() - interval '2 days'
+     or exists (select 1 from public.warrants w
+                left join public.warrant_info wi on wi.code = upper(btrim(w.code))
+                where wi.code is null or w.ratio is null) then
+    perform public.refresh_warrant_info();
+  end if;
+  perform public.snapshot_month_end();
+  perform public.auto_snapshot();
+  delete from public.price_runs where ran_at < now() - interval '60 days';
+end $$;
+
+-- ------------------------------------------------------------
 -- 逐項更新（App 手動重新整理用）
 --   authenticated 角色的 statement_timeout 是 8 秒，
 --   七個來源一次跑完要 10 秒以上，一定逾時，所以拆成一次做一項。
@@ -1345,23 +1423,36 @@ revoke all on function public.auto_snapshot() from public, anon, authenticated;
 
 -- ------------------------------------------------------------
 -- 排程（時間為 UTC；台灣 = UTC+8）
---   08:00 UTC = 16:00 台灣 → 台股收盤、期交所結算價出來後
---   22:00 UTC = 06:00 台灣 → 美股收盤後
+--
+-- 每一段一個 job，理由見 update_quotes() 上面那段。
+-- **重點是 10:05 與 11:05 UTC（台北 18:05 / 19:05）那兩班**：
+-- 櫃買的收盤檔大約台北 16:00 才更新，證交所 14:30 就有，
+-- 沒有這兩班的話上櫃股票（例如金居）整個交易日都會停在前一天。
 -- ------------------------------------------------------------
 do $$
 begin
   perform cron.unschedule(jobname) from cron.job
    where jobname in ('asset-prices-tw', 'asset-prices-tw2', 'asset-prices-tw3',
-                     'asset-prices-tw4', 'asset-prices-us');
+                     'asset-prices-tw4', 'asset-prices-us',
+                     'am-quotes-1', 'am-quotes-2', 'am-quotes-3', 'am-quotes-4', 'am-quotes-5',
+                     'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping');
 
-  -- 台股：台北 14:30 / 16:00 / 18:00 / 21:00 各試一次。
-  -- 抓到當天資料後，後面幾次會被守則擋掉，不會重複打對方的 API。
-  -- 多跑幾次是為了避免「來源比排程晚發布」造成當天快照用到前一天的價格。
-  perform cron.schedule('asset-prices-tw',   '30 6 * * 1-5', $c$select public.update_all_prices(false)$c$);
-  perform cron.schedule('asset-prices-tw2',  '0 8 * * 1-5',  $c$select public.update_all_prices(false)$c$);
-  perform cron.schedule('asset-prices-tw3',  '0 10 * * 1-5', $c$select public.update_all_prices(false)$c$);
-  perform cron.schedule('asset-prices-tw4',  '0 13 * * 1-5', $c$select public.update_all_prices(false)$c$);
-  perform cron.schedule('asset-prices-us',   '0 22 * * 1-5', $c$select public.update_all_prices(true)$c$);
+  -- 行情：台北 14:35 / 16:05 / 18:05 / 19:05 / 21:05
+  -- 抓到當天資料後，後面幾班會被守則擋掉，不會重複打對方的 API。
+  perform cron.schedule('am-quotes-1', '35 6 * * 1-5',  $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-2', '5 8 * * 1-5',   $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-3', '5 10 * * 1-5',  $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-4', '5 11 * * 1-5',  $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-5', '5 13 * * 1-5',  $c$select public.update_quotes()$c$);
+
+  -- 基本面與研究：錯開，不要擠在同一分鐘
+  perform cron.schedule('am-fundamentals', '20 8 * * 1-5', $c$select public.update_fundamentals()$c$);
+  perform cron.schedule('am-estimates',    '40 8 * * 1-5', $c$select public.update_estimates()$c$);
+  perform cron.schedule('am-risk',         '0 9 * * 1-5',  $c$select public.update_risk()$c$);
+
+  -- 美股：台北 06:05，美股收盤之後
+  perform cron.schedule('am-us',           '5 22 * * 1-5', $c$select public.update_us()$c$);
+  perform cron.schedule('am-housekeeping', '40 22 * * 1-5', $c$select public.update_housekeeping()$c$);
 end $$;
 
 -- ------------------------------------------------------------

@@ -528,3 +528,9 @@ textarea.journal-input {
 .screen-num { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
 .screen-num input { width: 78px; flex: none; }
 .sort-seg { margin: 10px 0 6px; }
+
+/* ---------- 訪客模式 ---------- */
+.auth-guest { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.auth-guest .sub { margin: 8px 0 0; line-height: 1.55; }
+.topbar #login-btn { margin-left: auto; margin-right: 8px; }
+.bottom-nav button[hidden] { display: none; }

@@ -38,6 +38,7 @@ const state = {
   themeDay: [],    // 今天哪個族群在動
   alerts: [],      // 處置股與注意股
   screen: null,    // 選股條件
+  guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
   histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 波段 / 轉倉
@@ -985,7 +986,42 @@ const ENTITIES = {
 // ============================================================
 // 資料存取
 // ============================================================
+// 訪客模式：只有市場資料那幾張表對匿名開放（見 supabase/public_read.sql），
+// 個人資料表連查都不用查，查了也只會拿到空陣列。
+async function loadMarketOnly() {
+  const results = await Promise.all([
+    sb.rpc('theme_trend', { p_months: 1 }),
+    sb.rpc('theme_members', {}),
+    sb.from('theme_info').select('*'),
+    sb.rpc('theme_valuation', {}),
+    sb.from('risk_stats').select('symbol,ratio,vol,cagr,mdd,vol1y,days,hi52,lo52,hi3y,lo3y,last'),
+    sb.from('us_stats').select('symbol,ratio,vol,cagr,mdd,days,price,hi52,lo52,hi3y,lo3y'),
+    sb.rpc('us_theme_trend', {}),
+    sb.rpc('us_theme_members', {}),
+    sb.from('theme_meta').select('*'),
+    sb.from('theme_links').select('*'),
+    sb.rpc('theme_day', {}),
+    sb.rpc('active_alerts', { p_days: 10 }),
+  ]);
+  for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
+  const [trend, members, tinfo, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, alerts] = results;
+  state.settings = { ...DEFAULT_SETTINGS };
+  state.themeTrend = trend.data ?? [];
+  state.themeMembers = members.data ?? [];
+  state.themeInfo = tinfo.data ?? [];
+  state.themeVal = tval.data ?? [];
+  state.riskStats = risk.data ?? [];
+  state.usStats = ustat.data ?? [];
+  state.usThemeTrend = utrend.data ?? [];
+  state.usThemeMembers = umem.data ?? [];
+  state.themeMeta = tmeta.data ?? [];
+  state.themeLinks = tlinks.data ?? [];
+  state.themeDay = tday.data ?? [];
+  state.alerts = alerts.data ?? [];
+}
+
 async function loadAll() {
+  if (state.guest) return loadMarketOnly();
   const uid = state.user.id;
   const results = await Promise.all([
     sb.from('settings').select('*').eq('user_id', uid).maybeSingle(),
@@ -3274,7 +3310,7 @@ function stockCardHtml(mk, sym) {
       <div class="row-between sub muted">
         <span>${mk === 'us' ? '複委託 / 美股' : '台股'}${
           m0?.industry ? '・' + esc(m0.industry) : ''}<span data-sc-industry></span></span>
-        <span>${holds.length ? '持有中' : '未持有'}</span>
+        <span>${state.guest ? '' : (holds.length ? '持有中' : '未持有')}</span>
       </div>
     </div>
 
@@ -3301,15 +3337,16 @@ function stockCardHtml(mk, sym) {
 
     <div data-sc-day></div>
 
-    ${sec('我的部位', holds.length
+    ${state.guest ? '' : sec('我的部位', holds.length
       ? holds.map((h) => `${kv(h.how, `${h.qty}${
           isNum(h.expo) && num(h.expo) > 0
             ? `　曝險 ${h.ccy === 'USD' ? 'US$ ' : ''}${fmt(h.expo)}` : ''}`)}${
           isNum(h.cost) ? kv('　成本 / 現價', `${fmtMax(h.cost, 2)} → ${fmtMax(h.price, 2)}　<span class="${
             plClass(num(h.price) - num(h.cost))}">${signed((num(h.price) / num(h.cost) - 1) * 100, 1)}%</span>`) : ''}`).join('')
       : '<p class="sub muted">現在沒有部位。</p>')}
+    ${state.guest ? '<p class="sub muted">登入之後這裡會顯示你在這一檔的部位與歷史成績。</p>' : ''}
 
-    ${sec('我在這一檔的成績', rec.n
+    ${state.guest ? '' : sec('我在這一檔的成績', rec.n
       ? `${kv('已實現（扣成本後）', `<b class="${plClass(rec.net)}">${signed(rec.net)}</b>`)}
          ${kv('交易筆數', `${fmt(rec.n)} 筆　最後一筆 ${esc(rec.last || '')}`)}
          ${kv('手續費與稅', fmt(rec.cost))}
@@ -3366,8 +3403,8 @@ function stockCardHtml(mk, sym) {
         </div>`).join('')
       : '<p class="sub muted">沒有登記在任何族群裡。</p>')}
 
-    <p class="hint" data-sc-hint>價格與估值每天自動更新，區間與波動取自 Yahoo 三年日線。
-      「我在這一檔的成績」是這個帳號所有相關交易扣掉手續費與稅之後的淨額。</p>`;
+    <p class="hint" data-sc-hint>價格與估值每天自動更新，區間與波動取自 Yahoo 三年日線。${
+      state.guest ? '' : '「我在這一檔的成績」是這個帳號所有相關交易扣掉手續費與稅之後的淨額。'}</p>`;
 }
 
 // 任何列了股票的地方都可以掛這個：元素上寫 data-stock="tw:2330" 就能點開速覽
@@ -3706,6 +3743,7 @@ function screenUniverse() {
 
 function renderScreener(host) {
   const f = { ...SCREEN_DEFAULT, ...(state.screen || {}) };
+  if (state.guest) f.mine = false;
   state.screen = f;
   const bench = idxRatio();
   const held = heldSymbols();
@@ -3741,7 +3779,7 @@ function renderScreener(host) {
         ${chk('beat', '報酬/波動贏過指數', isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
         ${chk('covered', '至少三位分析師', '避開沒人看的')}
         ${chk('clean', '排除處置與注意股', '進去會卡住')}
-        ${chk('mine', '只看我有持股的族群', '')}
+        ${state.guest ? '' : chk('mine', '只看我有持股的族群', '')}
         <label class="screen-num">從三年高點至少跌
           <input type="number" data-sc-n="drop" value="${esc(f.drop)}" min="0" max="90" step="5" inputmode="decimal">%</label>
         <label class="screen-num">預估本益比上限
@@ -3960,11 +3998,21 @@ function renderSettings(el) {
 
 const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, themes: renderThemes, journal: renderJournal, history: renderHistory, settings: renderSettings };
 
+// 訪客看得到的分頁。其餘六頁全部跟他的錢有關，一律不給。
+const GUEST_TABS = ['themes'];
+
 function render() {
-  if (!state.user) return;
-  $$('.bottom-nav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
+  if (!state.user && !state.guest) return;
+  const allowed = (t) => !state.guest || GUEST_TABS.includes(t);
+  if (!allowed(state.tab)) state.tab = GUEST_TABS[0];
+  $$('.bottom-nav button').forEach((b) => {
+    b.hidden = !allowed(b.dataset.tab);
+    b.classList.toggle('active', b.dataset.tab === state.tab);
+  });
   $$('.tab-panel').forEach((p) => (p.hidden = p.dataset.tab !== state.tab));
   $('#topbar-title').textContent = TITLES[state.tab];
+  $('#refresh-btn').hidden = !!state.guest;   // 抓資料的 RPC 沒有開給匿名
+  $('#login-btn').hidden = !state.guest;
   RENDERERS[state.tab]($(`.tab-panel[data-tab="${state.tab}"]`));
 }
 
@@ -3973,6 +4021,11 @@ function bindNav() {
     b.onclick = () => { state.tab = b.dataset.tab; render(); window.scrollTo({ top: 0 }); };
   });
   $('#refresh-btn').onclick = refreshPrices;
+  $('#login-btn').onclick = () => {
+    state.guest = false;
+    $('#app-view').hidden = true;
+    $('#auth-view').hidden = false;
+  };
 }
 
 // ============================================================
@@ -4030,17 +4083,29 @@ function bindAuth() {
 async function setUser(user) {
   const changedUser = (user?.id ?? null) !== (state.user?.id ?? null);
   state.user = user;
-  $('#auth-view').hidden = !!user;
-  $('#app-view').hidden = !user;
+  if (user) state.guest = false;
+  $('#auth-view').hidden = !!user || state.guest;
+  $('#app-view').hidden = !user && !state.guest;
   if (user && changedUser) {
     state.tab = 'overview';
     await refresh();
   }
 }
 
+// 不登入也能看族群與產業地圖。個人資料一筆都不會載。
+async function enterGuest() {
+  state.guest = true;
+  state.user = null;
+  state.tab = GUEST_TABS[0];
+  $('#auth-view').hidden = true;
+  $('#app-view').hidden = false;
+  await refresh();
+}
+
 async function init() {
   bindAuth();
   bindNav();
+  $('#guest-btn').onclick = () => enterGuest().catch(fail);
   await loadTwStocks();
 
   if (!sb) {
@@ -4051,6 +4116,7 @@ async function init() {
 
   const { data: { session } } = await sb.auth.getSession();
   await setUser(session?.user ?? null);
+  if (!session?.user) $('#auth-view').hidden = false;
 
   sb.auth.onAuthStateChange((event, session) => {
     setTimeout(async () => {
@@ -4061,7 +4127,9 @@ async function init() {
           toast(error ? error.message : '密碼已更新');
         }
       }
+      if (!session?.user) state.guest = false;
       setUser(session?.user ?? null);
+      if (!session?.user) $('#auth-view').hidden = false;
     }, 0);
   });
 }

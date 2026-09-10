@@ -38,6 +38,10 @@
       <button type="button" class="link" id="auth-forgot">忘記密碼</button>
     </p>
     <p id="auth-msg" class="msg"></p>
+    <div class="auth-guest">
+      <button type="button" class="block" id="guest-btn">不登入，先看產業地圖</button>
+      <p class="sub muted">族群、產業鏈、今日漲跌、選股都看得到。持倉、交易紀錄與心得要登入。</p>
+    </div>
   </div>
 </section>
 
@@ -45,6 +49,7 @@
 <div id="app-view" hidden>
   <header class="topbar">
     <span id="topbar-title">總覽</span>
+    <button type="button" id="login-btn" class="small" hidden>登入</button>
     <button type="button" id="refresh-btn" class="icon" title="重新整理" aria-label="重新整理">↻</button>
   </header>
 
