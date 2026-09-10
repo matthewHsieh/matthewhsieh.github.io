@@ -125,10 +125,18 @@ declare r record; body text; suffix text; total integer := 0; got integer;
 begin
   perform set_config('statement_timeout', '900s', true);
 
+  -- 範圍是**全市場**（stock_universe，約 1,970 檔），不是只有族群成分股。
+  -- 選股如果只能在別人整理過的 171 檔裡挑，等於先幫自己把答案範圍縮小了。
+  -- 自己的持股與族群成分股一定包含在內（union 進來，就算不在營收名單也不會漏）。
+  --
+  -- 一檔一個 Yahoo 請求約 0.45 秒，全跑一輪要 15 分鐘，遠超過 cron 的 120 秒上限，
+  -- 所以**靠 order by updated_at nulls first 分批輪替**：每次只做最久沒更新的那批，
+  -- 排程每小時跑一次，一天就會輪完一圈。波動與三年報酬是月級的變化，這個頻率夠了。
   for r in
     select s.symbol, coalesce(v.src, 'twse') as src
     from (
-      select symbol from public.themes
+      select symbol from public.stock_universe where market = 'tw'
+      union select symbol from public.themes
       union select upper(btrim(symbol)) from public.stocks
       union select upper(btrim(symbol)) from public.futures where kind = 'stock' and symbol is not null
       union select upper(btrim(underlying)) from public.warrants where underlying is not null

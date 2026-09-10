@@ -43,6 +43,19 @@ language sql stable security definer set search_path = public as $fn$
                      'as_of', m.as_of)
              from public.market_prices m
              where s.mk = 'tw' and m.market = 'tw' and m.symbol = s.sym and m.chg is not null),
+    -- 報酬/波動與價格區間。**這個一定要由這支回**，不能靠前端整批載——
+    -- risk_stats 現在有 1,975 列，PostgREST 預設只回前 1,000 列，
+    -- 整批載會安靜地少掉一半，而且是「有些股票沒有風險數字」這種不好察覺的壞法。
+    'risk', (select jsonb_build_object(
+                      'ratio', k.ratio, 'vol', k.vol, 'cagr', k.cagr, 'mdd', k.mdd,
+                      'days', k.days, 'hi52', k.hi52, 'lo52', k.lo52,
+                      'hi3y', k.hi3y, 'lo3y', k.lo3y, 'last', k.last, 'as_of', k.as_of)
+              from public.risk_stats k where s.mk = 'tw' and k.symbol = s.sym),
+    'usrisk', (select jsonb_build_object(
+                      'ratio', k.ratio, 'vol', k.vol, 'cagr', k.cagr, 'mdd', k.mdd,
+                      'days', k.days, 'hi52', k.hi52, 'lo52', k.lo52,
+                      'hi3y', k.hi3y, 'lo3y', k.lo3y, 'price', k.price, 'as_of', k.as_of)
+                from public.us_stats k where s.mk = 'us' and k.symbol = s.sym),
     'val', (select jsonb_build_object('pe', v.pe, 'pb', v.pb, 'dy', v.dy,
                                       'as_of', v.as_of, 'src', v.src)
               from public.valuation v where v.symbol = s.sym),
@@ -78,3 +91,41 @@ language sql stable security definer set search_path = public as $fn$
 $fn$;
 
 grant execute on function public.stock_detail(text, text) to authenticated;
+
+-- ------------------------------------------------------------
+-- App 要整批載的風險數字，**只回真的用得到的那幾百檔**：
+-- 兩個基準指數、族群成分股、自己的持股。
+--
+-- 為什麼不直接 select 整張表：risk_stats 有 1,975 列、us_stats 2,064 列，
+-- PostgREST 預設上限 1,000 列，整批載會安靜地截斷。
+-- 截斷的症狀很難察覺——畫面不會報錯，只會有些股票的報酬/波動變成「–」。
+-- ------------------------------------------------------------
+create or replace function public.app_risk()
+returns table (market text, symbol text, ratio numeric, vol numeric, cagr numeric,
+               mdd numeric, days integer, hi52 numeric, lo52 numeric,
+               hi3y numeric, lo3y numeric, last numeric, price numeric)
+language sql stable security definer set search_path = public as $fn$
+  select 'tw', k.symbol, k.ratio, k.vol, k.cagr, k.mdd, k.days,
+         k.hi52, k.lo52, k.hi3y, k.lo3y, k.last, null::numeric
+  from public.risk_stats k
+  where k.symbol = 'TAIEX'
+     or k.symbol in (select t.symbol from public.themes t)
+     -- security definer 會繞過 RLS，所以持股這幾張表要自己加 auth.uid()，
+     -- 否則會把別人持有哪些代號一起回出去（匿名瀏覽時更明顯）
+     or k.symbol in (select upper(btrim(x.symbol)) from public.stocks x
+                      where x.user_id = auth.uid())
+     or k.symbol in (select upper(btrim(x.symbol)) from public.futures x
+                      where x.user_id = auth.uid() and x.kind = 'stock' and x.symbol is not null)
+     or k.symbol in (select upper(btrim(x.underlying)) from public.warrants x
+                      where x.user_id = auth.uid() and x.underlying is not null)
+  union all
+  select 'us', k.symbol, k.ratio, k.vol, k.cagr, k.mdd, k.days,
+         k.hi52, k.lo52, k.hi3y, k.lo3y, null::numeric, k.price
+  from public.us_stats k
+  where k.symbol = 'NDX'
+     or k.symbol in (select t.symbol from public.us_themes t)
+     or k.symbol in (select upper(btrim(x.symbol)) from public.us_stocks x
+                      where x.user_id = auth.uid());
+$fn$;
+
+grant execute on function public.app_risk() to authenticated, anon;

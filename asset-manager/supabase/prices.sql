@@ -1321,11 +1321,20 @@ begin
   perform public.refresh_estimates(120);
 end $$;
 
--- 報酬/波動。172 檔約 80 秒。
+-- 報酬/波動。**範圍是全市場約 1,970 檔**，一輪跑不完，靠分批輪替。
+-- 實測 300 檔約 50 秒，所以一班 600 檔剛好塞得進 120 秒的上限，
+-- 一天四班就能輪完一圈（波動與三年報酬是月級的變化，這個頻率夠了）。
 create or replace function public.update_risk()
 returns void language plpgsql security definer set search_path = public as $$
 begin
-  perform public.refresh_risk_stats(400);
+  perform public.refresh_risk_stats(600);
+end $$;
+
+-- 美股的報酬/波動，同樣分批。只打 Yahoo，不碰 stockanalysis。
+create or replace function public.update_us_risk()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_us_risk(600);
 end $$;
 
 -- 美股。一檔要打兩個請求（預估頁＋日線），所以一次只做一部分。
@@ -1347,6 +1356,9 @@ begin
                 where wi.code is null or w.ratio is null) then
     perform public.refresh_warrant_info();
   end if;
+  -- 股票池：台股跟著月營收名單走，美股重抓 Nasdaq 的流動性排行
+  perform public.refresh_universe_tw();
+  perform public.refresh_universe_us(20000000);
   perform public.snapshot_month_end();
   perform public.auto_snapshot();
   delete from public.price_runs where ran_at < now() - interval '60 days';
@@ -1377,7 +1389,8 @@ begin
     when 'rev' then n := public.refresh_revenue();
     when 'fin' then n := public.refresh_financials();
     when 'est' then n := public.refresh_estimates(12);
-    when 'risk' then n := public.refresh_risk_stats(15);
+    when 'risk' then n := public.refresh_risk_stats(120);
+    when 'usrisk' then n := public.refresh_us_risk(120);
     when 'usx' then n := public.refresh_us_stats(8);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
@@ -1435,7 +1448,9 @@ begin
    where jobname in ('asset-prices-tw', 'asset-prices-tw2', 'asset-prices-tw3',
                      'asset-prices-tw4', 'asset-prices-us',
                      'am-quotes-1', 'am-quotes-2', 'am-quotes-3', 'am-quotes-4', 'am-quotes-5',
-                     'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping');
+                     'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping',
+                     'am-risk-2', 'am-risk-3', 'am-risk-4',
+                     'am-usrisk', 'am-usrisk-2', 'am-usrisk-3', 'am-usrisk-4');
 
   -- 行情：台北 14:35 / 16:05 / 18:05 / 19:05 / 21:05
   -- 抓到當天資料後，後面幾班會被守則擋掉，不會重複打對方的 API。
@@ -1448,7 +1463,16 @@ begin
   -- 基本面與研究：錯開，不要擠在同一分鐘
   perform cron.schedule('am-fundamentals', '20 8 * * 1-5', $c$select public.update_fundamentals()$c$);
   perform cron.schedule('am-estimates',    '40 8 * * 1-5', $c$select public.update_estimates()$c$);
-  perform cron.schedule('am-risk',         '0 9 * * 1-5',  $c$select public.update_risk()$c$);
+  -- 報酬/波動要輪完 1,970 檔（台）與 2,060 檔（美），所以各排四班。
+  -- 這兩支不看盤，週末也跑沒關係，順便把週五收盤補進去。
+  perform cron.schedule('am-risk',    '0 9 * * *',  $c$select public.update_risk()$c$);
+  perform cron.schedule('am-risk-2',  '0 15 * * *', $c$select public.update_risk()$c$);
+  perform cron.schedule('am-risk-3',  '0 17 * * *', $c$select public.update_risk()$c$);
+  perform cron.schedule('am-risk-4',  '0 19 * * *', $c$select public.update_risk()$c$);
+  perform cron.schedule('am-usrisk',   '0 23 * * *', $c$select public.update_us_risk()$c$);
+  perform cron.schedule('am-usrisk-2', '0 1 * * *',  $c$select public.update_us_risk()$c$);
+  perform cron.schedule('am-usrisk-3', '0 3 * * *',  $c$select public.update_us_risk()$c$);
+  perform cron.schedule('am-usrisk-4', '0 5 * * *',  $c$select public.update_us_risk()$c$);
 
   -- 美股：台北 06:05，美股收盤之後
   perform cron.schedule('am-us',           '5 22 * * 1-5', $c$select public.update_us()$c$);

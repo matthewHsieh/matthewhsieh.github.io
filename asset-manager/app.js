@@ -38,6 +38,7 @@ const state = {
   themeDay: [],    // 今天哪個族群在動
   alerts: [],      // 處置股與注意股
   screen: null,    // 選股條件
+  screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -994,8 +995,7 @@ async function loadMarketOnly() {
     sb.rpc('theme_members', {}),
     sb.from('theme_info').select('*'),
     sb.rpc('theme_valuation', {}),
-    sb.from('risk_stats').select('symbol,ratio,vol,cagr,mdd,vol1y,days,hi52,lo52,hi3y,lo3y,last'),
-    sb.from('us_stats').select('symbol,ratio,vol,cagr,mdd,days,price,hi52,lo52,hi3y,lo3y'),
+    sb.rpc('app_risk', {}),
     sb.rpc('us_theme_trend', {}),
     sb.rpc('us_theme_members', {}),
     sb.from('theme_meta').select('*'),
@@ -1004,7 +1004,9 @@ async function loadMarketOnly() {
     sb.rpc('active_alerts', { p_days: 10 }),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [trend, members, tinfo, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, alerts] = results;
+  const [trend, members, tinfo, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts] = results;
+  const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
+  const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = { ...DEFAULT_SETTINGS };
   state.themeTrend = trend.data ?? [];
   state.themeMembers = members.data ?? [];
@@ -1040,8 +1042,10 @@ async function loadAll() {
     sb.from('theme_info').select('*'),
     sb.rpc('my_valuation', {}),
     sb.rpc('theme_valuation', {}),
-    sb.from('risk_stats').select('symbol,ratio,vol,cagr,mdd,vol1y,days,hi52,lo52,hi3y,lo3y,last'),
-    sb.from('us_stats').select('symbol,ratio,vol,cagr,mdd,days,price,hi52,lo52,hi3y,lo3y'),
+    // **不要整批 select risk_stats/us_stats**：它們現在各有兩千列，
+    // PostgREST 預設只回前 1,000 列，會安靜地截斷，
+    // 症狀是有些股票的報酬/波動莫名變成「–」。app_risk() 只回真的用得到的那幾百檔。
+    sb.rpc('app_risk', {}),
     sb.rpc('us_theme_trend', {}),
     sb.rpc('us_theme_members', {}),
     sb.from('theme_meta').select('*'),
@@ -1053,7 +1057,9 @@ async function loadAll() {
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, alerts, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, rules, jdays, prices] = results;
+  const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
+  const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -3271,6 +3277,37 @@ function rangeBar(lo, hi, px, label) {
 
 const CONF_LABEL = { high: '可信度高', mid: '可信度中', low: '可信度低' };
 
+// 區間帶與風險這兩塊拆出來，因為記憶體裡只有幾百檔的風險數字
+// （全市場四千檔不可能整批載，見 app_risk()），其餘的要等 stock_detail 回來才有。
+function rangeHtml(k, price) {
+  if (!k) return '';
+  return rangeBar(k.lo52, k.hi52, price, '近一年區間')
+    + rangeBar(k.lo3y, k.hi3y, price, '三年區間')
+    + (isNum(k.hi3y) && isNum(price) && num(k.hi3y) > 0
+      ? `<p class="sub muted sc-off">距三年高點 <b class="${
+          num(price) / num(k.hi3y) - 1 < -0.3 ? 'gain' : ''}">${
+          signed((num(price) / num(k.hi3y) - 1) * 100, 0)}%</b>${
+          isNum(k.lo3y) && num(k.lo3y) > 0
+            ? `　距三年低點 ${signed((num(price) / num(k.lo3y) - 1) * 100, 0)}%` : ''}</p>`
+      : '');
+}
+
+function riskHtml(k, bench, beats) {
+  if (!k) return '';
+  const kv = (a, b) => `<div class="row-between sub"><span class="muted">${a}</span><span>${b}</span></div>`;
+  return `<div class="sc-sec"><div class="sc-title">風險</div>
+    ${kv('報酬 / 波動', isNum(k.ratio)
+      ? `<b class="${beats(k.ratio) ? 'gain' : 'loss'}">${fmtMax(k.ratio, 2)}</b>　及格線 ${
+          isNum(bench) ? fmtMax(bench, 2) : '–'}`
+      : (num(k.days) > 0 ? `上市未滿兩年（${fmt(k.days)} 天）` : '–'))}
+    ${kv('三年年化報酬', isNum(k.cagr) ? signed(num(k.cagr) * 100, 0) + '%' : '–')}
+    ${kv('年化波動', isNum(k.vol) ? (num(k.vol) * 100).toFixed(0) + '%' : '–')}
+    ${kv('三年最大回撤', isNum(k.mdd) ? `<span class="loss">${(num(k.mdd) * 100).toFixed(0)}%</span>` : '–')}
+    ${isNum(k.vol) && num(k.vol) > 0 && isNum(bench)
+      ? `<p class="sub muted">用它的波動換到相稱的報酬，年化要有 <b>${
+          (num(k.vol) * bench * 100).toFixed(0)}%</b> 以上。</p>` : ''}</div>`;
+}
+
 function stockCardHtml(mk, sym) {
   const key = mk === 'us' ? norm(sym) : resolveTwSymbol(sym);
   const mem = (mk === 'us' ? state.usThemeMembers : state.themeMembers)
@@ -3305,7 +3342,8 @@ function stockCardHtml(mk, sym) {
     <div class="sc-head">
       <div class="row-between">
         <span class="sc-name"><b>${esc(key)}</b> ${esc(name)}</span>
-        <span class="sc-px">${cur}${fmtMax(price, 2)}</span>
+        <span class="sc-px" data-px="${isNum(price) && num(price) > 0 ? 1 : 0}">${
+          isNum(price) && num(price) > 0 ? cur + fmtMax(price, 2) : '…'}</span>
       </div>
       <div class="row-between sub muted">
         <span>${mk === 'us' ? '複委託 / 美股' : '台股'}${
@@ -3314,14 +3352,7 @@ function stockCardHtml(mk, sym) {
       </div>
     </div>
 
-    ${rangeBar(risk?.lo52, risk?.hi52, price, '近一年區間')}
-    ${rangeBar(risk?.lo3y, risk?.hi3y, price, '三年區間')}
-    ${isNum(risk?.hi3y) && isNum(price) && num(risk.hi3y) > 0
-      ? `<p class="sub muted sc-off">距三年高點 <b class="${
-          num(price) / num(risk.hi3y) - 1 < -0.3 ? 'gain' : ''}">${
-          signed((num(price) / num(risk.hi3y) - 1) * 100, 0)}%</b>${
-          isNum(risk.lo3y) && num(risk.lo3y) > 0
-            ? `　距三年低點 ${signed((num(price) / num(risk.lo3y) - 1) * 100, 0)}%` : ''}</p>` : ''}
+    <div data-sc-range>${rangeHtml(risk, price)}</div>
 
     ${mk === 'tw' && alertOf(key) ? (() => {
       const a = alertOf(key);
@@ -3368,17 +3399,7 @@ function stockCardHtml(mk, sym) {
             ? `${fmt(m0.an1)} 位${num(m0.an1) <= 2 ? ' ⚠ 樣本少' : ''}` : '無人覆蓋')}`)
       + '<div data-sc-val></div>'}
 
-    ${sec('風險', `
-      ${kv('報酬 / 波動', isNum(risk?.ratio)
-        ? `<b class="${beats(risk.ratio) ? 'gain' : 'loss'}">${fmtMax(risk.ratio, 2)}</b>　及格線 ${
-            isNum(bench) ? fmtMax(bench, 2) : '–'}`
-        : (num(risk?.days) > 0 ? `上市未滿兩年（${fmt(risk.days)} 天）` : '–'))}
-      ${kv('三年年化報酬', isNum(risk?.cagr) ? signed(num(risk.cagr) * 100, 0) + '%' : '–')}
-      ${kv('年化波動', isNum(risk?.vol) ? (num(risk.vol) * 100).toFixed(0) + '%' : '–')}
-      ${kv('三年最大回撤', isNum(risk?.mdd) ? `<span class="loss">${(num(risk.mdd) * 100).toFixed(0)}%</span>` : '–')}
-      ${isNum(risk?.vol) && num(risk.vol) > 0 && isNum(bench)
-        ? `<p class="sub muted">用它的波動換到相稱的報酬，年化要有 <b>${
-            (num(risk.vol) * bench * 100).toFixed(0)}%</b> 以上。</p>` : ''}`)}
+    <div data-sc-risk>${riskHtml(risk, bench, beats)}</div>
 
     ${sec(mk === 'us' ? '營收預估' : '月營收', mk === 'us'
       ? `${kv('本年營收', `${usdB(m0?.rev_this)}美元　<span class="${plClass(num(m0?.rev_g))}">${
@@ -3437,6 +3458,23 @@ async function openStock(mk, sym) {
 
   const ind = $('[data-sc-industry]', body);
   if (ind && d.industry) ind.textContent = '・' + d.industry;
+
+  // 記憶體裡只有幾百檔的風險數字，全市場其他四千檔要靠這裡補。
+  // 價格也一樣：沒持有、又不在族群裡的股票，前端沒有它的收盤價。
+  const k = market === 'us' ? d.usrisk : d.risk;
+  if (k) {
+    const px = num(d.day?.price) || num(k.price) || num(k.last);
+    const bench2 = market === 'us' ? usIdxRatio() : idxRatio();
+    const beats2 = market === 'us' ? usBeats : beatsIdx;
+    const rg = $('[data-sc-range]', body);
+    if (rg && !rg.innerHTML.trim()) rg.innerHTML = rangeHtml(k, px);
+    const rk = $('[data-sc-risk]', body);
+    if (rk && !rk.innerHTML.trim()) rk.innerHTML = riskHtml(k, bench2, beats2);
+    const pxEl = $('.sc-px', body);
+    if (pxEl && isNum(px) && num(px) > 0 && !num(pxEl.dataset.px)) {
+      pxEl.textContent = (market === 'us' ? '$' : '') + fmtMax(px, 2);
+    }
+  }
   const rn = $('[data-sc-revnext]', body);
   if (rn && isNum(d.us?.rev_next)) rn.textContent = usdB(d.us.rev_next) + '美元　';
 
@@ -3693,78 +3731,57 @@ function renderThemeDay(host) {
 // 選股
 //   他自己講過策略：「不能做動能，現在適合反市場，在下跌中買入好公司，
 //   拉起來回檔後加碼」。那句話拆開就是三個條件：
-//     好公司  = 報酬/波動贏得過指數（不然不如直接開槓桿買指數）
+//     好公司  = 報酬/波動贏得過大盤（不然不如直接開槓桿買指數）
 //     在下跌 = 離三年高點夠遠
 //     不是地雷 = 有人在報、而且沒被交易所盯上
 //   這頁就是把那三件事變成可以按的東西。
 //
-//   資料全部來自登入時已經載好的 themeMembers / riskStats / alerts，
-//   不打任何一次網路，所以拉桿是即時的。
+//   **池子是全市場**：台股約 1,970 檔（所有有公告月營收的普通股），
+//   美股約 2,000 檔（日成交額 2,000 萬美元以上，進得去也出得來的）。
+//   四千列不可能每次登入都載下來，所以篩選與排序都在資料庫做，
+//   一次只回前 60 檔。代價是拉桿要等一次往返，所以要防連點。
 // ------------------------------------------------------------
 const SCREEN_DEFAULT = {
-  beat: true,        // 報酬/波動要贏過指數
+  beat: true,        // 報酬/波動要贏過大盤
   covered: false,    // 至少三位分析師
   clean: true,       // 排除處置與注意股
-  mine: false,       // 只看我有持股的族群
   drop: 20,          // 至少從三年高點跌下來幾 %
-  peMax: 0,          // 預估本益比上限，0 = 不限
+  peMax: 0,          // 本益比上限，0 = 不限
+  growth: null,      // 營收年增下限
   sort: 'drop',
 };
 const SCREEN_SORT = [
   ['drop', '跌最多'],
   ['ratio', '報酬/波動'],
   ['pe', '本益比'],
-  ['yoy', '營收年增'],
+  ['growth', '營收成長'],
 ];
 
-// themeMembers 是一檔一族群一列，同一檔可能出現好幾次，先併成一檔一列
-function screenUniverse() {
-  const by = new Map();
-  for (const m of state.themeMembers) {
-    const k = norm(m.symbol);
-    if (!by.has(k)) by.set(k, { ...m, symbol: k, themes: [] });
-    by.get(k).themes.push(m.theme);
-  }
-  const out = [];
-  for (const [k, m] of by) {
-    const r = state.riskStats.find((x) => norm(x.symbol) === k);
-    const px = num(r?.last);
-    out.push({
-      ...m,
-      price: px,
-      hi3y: r?.hi3y, lo3y: r?.lo3y, mdd: r?.mdd, days: r?.days,
-      // 離三年高點多遠。負得越多代表跌得越深
-      drop: isNum(r?.hi3y) && num(r.hi3y) > 0 && px > 0 ? px / num(r.hi3y) - 1 : null,
-      alert: alertOf(k),
-    });
-  }
-  return out;
+let screenSeq = 0;   // 連點時只認最後一次的結果
+
+async function runScreen(mk, f) {
+  const { data, error } = await sb.rpc('screen_stocks', {
+    p_market: mk,
+    p_beat: !!f.beat,
+    p_covered: !!f.covered,
+    p_clean: !!f.clean,
+    p_drop: num(f.drop),
+    p_pe_max: num(f.peMax),
+    p_growth: isNum(f.growth) && f.growth !== '' ? num(f.growth) : null,
+    p_sort: f.sort,
+    p_limit: 60,
+  });
+  if (error) throw error;
+  return data ?? [];
 }
 
-function renderScreener(host) {
+function renderScreener(host, mk) {
   const f = { ...SCREEN_DEFAULT, ...(state.screen || {}) };
-  if (state.guest) f.mine = false;
   state.screen = f;
-  const bench = idxRatio();
-  const held = heldSymbols();
-  const myThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
-
-  let rows = screenUniverse();
-  const total = rows.length;
-  if (f.beat) rows = rows.filter((r) => isNum(r.ratio) && num(r.ratio) > bench);
-  if (f.covered) rows = rows.filter((r) => num(r.an1) >= 3);
-  if (f.clean) rows = rows.filter((r) => !r.alert);
-  if (f.mine) rows = rows.filter((r) => r.themes.some((t) => myThemes.has(t)));
-  if (num(f.drop) > 0) rows = rows.filter((r) => isNum(r.drop) && num(r.drop) <= -num(f.drop) / 100);
-  if (num(f.peMax) > 0) rows = rows.filter((r) => isNum(r.pe1) && num(r.pe1) <= num(f.peMax));
-
-  const key = {
-    drop: (r) => (isNum(r.drop) ? num(r.drop) : 9),
-    ratio: (r) => -(isNum(r.ratio) ? num(r.ratio) : -9),
-    pe: (r) => (isNum(r.pe1) ? num(r.pe1) : 9e9),
-    yoy: (r) => -(isNum(r.yoy) ? num(r.yoy) : -9),
-  }[f.sort] || ((r) => 0);
-  rows.sort((a, b) => key(a) - key(b));
+  const held = mk === 'us' ? new Set(state.us.map((s) => norm(s.symbol))) : heldSymbols();
+  const bench = mk === 'us' ? usIdxRatio() : idxRatio();
+  const rows = state.screenRows || [];
+  const total = rows.length ? num(rows[0].total) : 0;
 
   const chk = (k, label, hint) => `<label class="screen-chk">
     <input type="checkbox" data-sc="${k}" ${f[k] ? 'checked' : ''}>
@@ -3772,65 +3789,106 @@ function renderScreener(host) {
 
   host.innerHTML = `
     <div class="card">
-      <div class="list-title">選股</div>
+      <div class="list-title">選股<span class="muted sub">　${mk === 'us' ? '美股' : '台股'}全市場</span></div>
       <p class="sub muted">你說過的策略是<b>在下跌中買好公司</b>。這頁就是那句話的三個條件：
-        贏得過指數、離高點夠遠、有人在報而且沒被盯上。全部從已經載好的資料算，拉了就變。</p>
+        贏得過大盤、離高點夠遠、有人在報而且沒被盯上。
+        ${mk === 'us'
+          ? '池子是日成交額 <b>2,000 萬美元</b>以上的股票，成長率是<b>明年營收預估</b>（前瞻）。'
+          : '池子是<b>全市場</b>有公告月營收的普通股，成長率是<b>月營收年增</b>（已發生）。'}</p>
       <div class="screen-form">
-        ${chk('beat', '報酬/波動贏過指數', isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
+        ${chk('beat', `報酬/波動贏過${mk === 'us' ? '那斯達克 100' : '加權指數'}`,
+              isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
         ${chk('covered', '至少三位分析師', '避開沒人看的')}
-        ${chk('clean', '排除處置與注意股', '進去會卡住')}
-        ${state.guest ? '' : chk('mine', '只看我有持股的族群', '')}
+        ${mk === 'tw' ? chk('clean', '排除處置與注意股', '進去會卡住') : ''}
         <label class="screen-num">從三年高點至少跌
           <input type="number" data-sc-n="drop" value="${esc(f.drop)}" min="0" max="90" step="5" inputmode="decimal">%</label>
-        <label class="screen-num">預估本益比上限
+        <label class="screen-num">本益比上限
           <input type="number" data-sc-n="peMax" value="${esc(f.peMax)}" min="0" step="5" inputmode="decimal">
           <span class="sub muted">0 = 不限</span></label>
+        <label class="screen-num">營收年增至少
+          <input type="number" data-sc-n="growth" value="${f.growth === null ? '' : esc(f.growth)}" step="10" inputmode="decimal" placeholder="不限">%</label>
       </div>
       <div class="seg sort-seg">${SCREEN_SORT.map(([v, l]) =>
         `<label><input type="radio" name="scsort" value="${v}" ${
           f.sort === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
-      <p class="sub muted">${fmt(rows.length)} 檔符合，全市場族群成分股共 ${fmt(total)} 檔。</p>
+      <p class="sub muted" data-screen-count>${state.screenBusy ? '篩選中…'
+        : `${fmt(total)} 檔符合${total > rows.length ? `，顯示前 ${fmt(rows.length)} 檔` : ''}。`}</p>
     </div>
-    ${rows.length ? `<div class="card list">${rows.slice(0, 60).map((r) => `
-      <div class="line member" role="button" tabindex="0" data-stock="tw:${esc(r.symbol)}">
+    ${rows.length ? `<div class="card list">${rows.map((r) => `
+      <div class="line member" role="button" tabindex="0" data-stock="${mk}:${esc(norm(r.symbol))}">
         <div class="row-between">
           <span>${esc(r.symbol)} ${esc(r.name || '')}${
-            held.has(r.symbol) ? '<span class="badge day-badge">持有</span>' : ''}${alertBadge(r.alert)}</span>
-          <span class="${plClass(num(r.drop))}">${
-            isNum(r.drop) ? signed(num(r.drop) * 100, 0) + '%' : '–'}<span class="sub muted"> 距高點</span></span>
+            held.has(norm(r.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}${
+            r.alert_kind ? `<span class="badge alert-${esc(r.alert_kind)}">${
+              ALERT_LABEL[r.alert_kind] || ''}</span>` : ''}</span>
+          <span class="${plClass(num(r.drop_pct))}">${
+            isNum(r.drop_pct) ? signed(num(r.drop_pct) * 100, 0) + '%' : '–'}<span class="sub muted"> 距高點</span></span>
         </div>
         <div class="row-between sub muted">
-          <span>${fmtMax(r.price, 2)}　三年區間 ${fmtMax(r.lo3y, 1)}–${fmtMax(r.hi3y, 1)}</span>
-          <span>報酬/波動 <b class="${beatsIdx(r.ratio) ? 'gain' : ''}">${fmtMax(r.ratio, 2)}</b></span>
+          <span>${mk === 'us' ? '$' : ''}${fmtMax(r.price, 2)}　三年區間 ${
+            fmtMax(r.lo3y, 1)}–${fmtMax(r.hi3y, 1)}</span>
+          <span>報酬/波動 <b class="${isNum(r.ratio) && isNum(bench) && num(r.ratio) > bench ? 'gain' : ''}">${
+            fmtMax(r.ratio, 2)}</b></span>
         </div>
         <div class="row-between sub muted">
-          <span>${isNum(r.pe1) ? `${String(r.fy1).slice(2)}F ${fmtMax(r.pe1, 1)}x` : '無預估'}${
-            num(r.an1) > 0 ? `　${fmt(r.an1)} 位` : '　無人覆蓋'}</span>
-          <span>營收年增 <span class="${plClass(num(r.yoy))}">${
-            isNum(r.yoy) ? signed(num(r.yoy) * 100, 0) + '%' : '–'}</span></span>
+          <span>${isNum(r.pe)
+            ? `本益比 ${fmtMax(r.pe, 1)}x<span class="muted">（${esc(r.pe_src || '')}${
+                r.fy ? ' ' + String(r.fy).slice(2) : ''}）</span>`
+            : '無本益比'}${num(r.analysts) > 0 ? `　${fmt(r.analysts)} 位` : ''}</span>
+          <span>${mk === 'us' ? '明年營收' : '營收年增'} <span class="${plClass(num(r.growth))}">${
+            isNum(r.growth) ? signed(num(r.growth) * 100, 0) + '%' : '–'}</span></span>
         </div>
-        <div class="sub muted">${esc(r.themes.join('・'))}</div>
-      </div>`).join('')}${rows.length > 60
-        ? `<p class="sub muted">只顯示前 60 檔，把條件收緊一點。</p>` : ''}</div>`
-      : '<div class="card"><p class="muted">沒有符合的。條件放寬一點——通常是「跌幅」設太深了。</p></div>'}
+        <div class="sub muted">${esc(r.themes || r.industry || '')}</div>
+      </div>`).join('')}</div>`
+      : `<div class="card"><p class="muted">${state.screenBusy ? '篩選中…'
+        : '沒有符合的。條件放寬一點——通常是「跌幅」設太深了。'}</p></div>`}
     <p class="hint"><b>這頁挑出來的是候選，不是買進訊號。</b>
       跌得深有兩種原因：被錯殺，或是基本面真的壞了，這頁分不出來，要自己點進去看營收與預估。
       「距高點」用的是三年最高收盤，跟波動、報酬取自同一份 Yahoo 日線，所以一定一致。
-      預估本益比只有大約六成的台股有，勾「至少三位分析師」會少掉很多檔，那是正常的。</p>`;
+      ${mk === 'tw'
+        ? '本益比優先用分析師預估，沒有預估的退回官方每日公告的近四季，括號裡會標是哪一種。'
+          + '台股只有大約六成有人覆蓋，勾「至少三位分析師」會少掉很多檔，那是正常的。'
+        : '本益比是明年預估。池子已經先用流動性篩過，太冷門的不會出現在這裡。'}
+      報酬/波動需要三年日線，<b>上市未滿兩年的算不出來，會被「贏過大盤」這個條件濾掉</b>。</p>`;
 
+  const refire = () => renderScreener(host, mk);
   $$('[data-sc]', host).forEach((c) => (c.onchange = () => {
     state.screen = { ...state.screen, [c.dataset.sc]: c.checked };
-    renderScreener(host);
+    loadScreen(host, mk);
   }));
   $$('[data-sc-n]', host).forEach((i) => (i.onchange = () => {
-    state.screen = { ...state.screen, [i.dataset.scN]: num(i.value) };
-    renderScreener(host);
+    const v = i.value === '' ? null : num(i.value);
+    state.screen = { ...state.screen, [i.dataset.scN]: v };
+    loadScreen(host, mk);
   }));
   $$('input[name=scsort]', host).forEach((r) => (r.onchange = () => {
     state.screen = { ...state.screen, sort: r.value };
-    renderScreener(host);
+    loadScreen(host, mk);
   }));
   bindStockOpen(host);
+  return refire;
+}
+
+// 打一次 RPC 再重畫。連點時只認最後一次的結果，免得舊的蓋掉新的。
+async function loadScreen(host, mk) {
+  const seq = ++screenSeq;
+  state.screenBusy = true;
+  const count = $('[data-screen-count]', host);
+  if (count) count.textContent = '篩選中…';
+  try {
+    const rows = await runScreen(mk, state.screen || SCREEN_DEFAULT);
+    if (seq !== screenSeq) return;
+    state.screenRows = rows;
+  } catch (e) {
+    if (seq !== screenSeq) return;
+    state.screenRows = [];
+    toast(e.message || '篩選失敗');
+  } finally {
+    if (seq === screenSeq) {
+      state.screenBusy = false;
+      renderScreener(host, mk);
+    }
+  }
 }
 
 function renderThemes(el) {
@@ -3844,18 +3902,20 @@ function renderThemes(el) {
       <label><input type="radio" name="tvw" value="list" ${vw === 'list' ? 'checked' : ''}><span>清單</span></label>
       <label><input type="radio" name="tvw" value="tree" ${vw === 'tree' ? 'checked' : ''}><span>產業鏈</span></label>
       ${mk === 'tw'
-        ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>
-           <label><input type="radio" name="tvw" value="screen" ${vw === 'screen' ? 'checked' : ''}><span>選股</span></label>` : ''}
+        ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>` : ''}
+      <label><input type="radio" name="tvw" value="screen" ${vw === 'screen' ? 'checked' : ''}><span>選股</span></label>
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
   if (vw === 'day' && mk === 'tw') renderThemeDay(host);
-  else if (vw === 'screen' && mk === 'tw') renderScreener(host);
+  else if (vw === 'screen') { renderScreener(host, mk); loadScreen(host, mk); }
   else if (vw === 'tree') renderThemeTree(host, mk);
   else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
-    if (r.value === 'us' && ['day', 'screen'].includes(state.themeView)) state.themeView = 'list';
+    // 「今日」只有台股有；選股兩邊都有，但換市場要重篩
+    if (r.value === 'us' && state.themeView === 'day') state.themeView = 'list';
+    state.screenRows = [];
     renderThemes(el);
   }));
   $$('input[name=tvw]', el).forEach((r) => (r.onchange = () => {
