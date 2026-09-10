@@ -1338,6 +1338,14 @@ begin
   perform public.refresh_company_profiles(40);
 end $$;
 
+-- 美股的分析師預估與公司業務，同樣分批。
+create or replace function public.update_us_extra()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_us_est(120);
+  perform public.refresh_us_profiles(120);
+end $$;
+
 -- 美股的報酬/波動，同樣分批。只打 Yahoo，不碰 stockanalysis。
 create or replace function public.update_us_risk()
 returns void language plpgsql security definer set search_path = public as $$
@@ -1400,6 +1408,8 @@ begin
     when 'risk' then n := public.refresh_risk_stats(120);
     when 'usrisk' then n := public.refresh_us_risk(120);
     when 'prof' then n := public.refresh_company_profiles(8);
+    when 'usest' then n := public.refresh_us_est(30);
+    when 'usprof' then n := public.refresh_us_profiles(30);
     when 'usx' then n := public.refresh_us_stats(8);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
@@ -1460,7 +1470,8 @@ begin
                      'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping',
                      'am-risk-2', 'am-risk-3', 'am-risk-4',
                      'am-usrisk', 'am-usrisk-2', 'am-usrisk-3', 'am-usrisk-4',
-                     'am-profiles', 'am-profiles-2', 'am-profiles-3', 'am-profiles-4');
+                     'am-profiles', 'am-profiles-2', 'am-profiles-3', 'am-profiles-4',
+                     'am-usextra', 'am-usextra-2', 'am-usextra-3');
 
   -- 行情：台北 14:35 / 16:05 / 18:05 / 19:05 / 21:05
   -- 抓到當天資料後，後面幾班會被守則擋掉，不會重複打對方的 API。
@@ -1484,7 +1495,12 @@ begin
   perform cron.schedule('am-usrisk-3', '0 3 * * *',  $c$select public.update_us_risk()$c$);
   perform cron.schedule('am-usrisk-4', '0 5 * * *',  $c$select public.update_us_risk()$c$);
 
-  -- 公司業務描述：一批 40 檔、一天四班，約三週輪完一圈。內容幾乎不會變，慢沒關係。
+  -- 美股的預估與業務描述：stockanalysis 不像 MOPS 那樣限流，可以做多一點
+  perform cron.schedule('am-usextra',   '30 23 * * *', $c$select public.update_us_extra()$c$);
+  perform cron.schedule('am-usextra-2', '30 2 * * *',  $c$select public.update_us_extra()$c$);
+  perform cron.schedule('am-usextra-3', '30 4 * * *',  $c$select public.update_us_extra()$c$);
+
+  -- 台股的公司業務描述：一批 40 檔、一天四班，約三週輪完一圈。內容幾乎不會變，慢沒關係。
   perform cron.schedule('am-profiles',   '30 9 * * *',  $c$select public.update_profiles()$c$);
   perform cron.schedule('am-profiles-2', '30 15 * * *', $c$select public.update_profiles()$c$);
   perform cron.schedule('am-profiles-3', '30 17 * * *', $c$select public.update_profiles()$c$);

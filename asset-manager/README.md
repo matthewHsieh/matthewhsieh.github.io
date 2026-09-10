@@ -1037,6 +1037,38 @@ Supabase 的 `db-max-rows` 預設就是 1,000，不會報錯、不會警告。
 想啟用只要在 `update_all_prices` 與 `refresh_market('fut')` 各加一行。
 股票期貨的契約代號對照（台玻 1802 → KU → KUF，252 檔）在 `supabase/fut_codes.sql`。
 
+## 開放註冊
+
+### 要先在 Supabase 後台開兩個開關
+
+程式已經準備好了，但**專案層級的註冊是關的**（`disable_signup: true`），
+所以按「註冊」只會拿到錯誤。到 Supabase 後台 → Authentication → Sign In / Providers：
+
+| 開關 | 要設成 | 為什麼 |
+|---|---|---|
+| **Allow new users to sign up** | 開 | 不開就完全註冊不了 |
+| **Confirm email** | **關** | 這個專案沒有設定自訂 SMTP，內建信箱**一小時只寄得出兩封**（`rate_limit_email_sent: 2`），要求 Email 確認等於註冊不完 |
+
+關掉 Email 確認代表沒有驗證信箱真偽。以這個 App 來說可以接受——
+每個帳號只看得到自己的資料，RLS 擋著。但**忘記密碼也是靠寄信**，
+同樣會被那個一小時兩封的上限卡住。真的要開放給多人用，就要接自訂 SMTP。
+
+錯誤訊息已經全部翻成中文並講清楚下一步，`Signups not allowed for this instance`
+會顯示成「這個站台目前沒有開放註冊。若這是你自己的專案，到 Supabase 後台…」，
+而不是丟一句英文讓人一直重試。
+
+### 新帳號的起始狀態
+
+註冊完直接進來會看到一個空的「心得」頁——沒有任何紀律規則，那頁的自動檢查
+就完全沒作用。`bootstrap_me()` 在**登入後發現一條規則都沒有**時補一組通用的起手式：
+當沖一次一檔、每檔上限、一律分批，加一條「不放空當天強勢股」的提醒。
+
+給的是通用版**不是把原本那個帳號的規則複製過去**——「戒掉 buy call」
+是他自己的教訓，不是別人的。使用者可以改、可以刪、可以自己加。
+
+用 RPC 不用 `auth.users` 的 trigger：trigger 要動 auth schema，權限與備份都麻煩，
+而且之後要調整預設規則得重建。RPC 本身會擋重複呼叫，所以前端可以放心叫。
+
 ## 免登入瀏覽
 
 登入畫面最下面有「不登入，先看產業地圖」。訪客只看得到**族群**那一頁
@@ -1109,7 +1141,8 @@ asset-manager/
     ├── alerts.sql          處置股與注意股（六個來源，含公告原文解析）
     ├── public_read.sql     免登入可讀的範圍，以及函式權限的收斂
     ├── universe.sql        可選股的股票池（台股全市場、美股流動性門檻）
-    ├── company_profile.sql 公司主要經營業務（MOPS，用來補產業別的不足）
+    ├── company_profile.sql 公司主要經營業務（台股走 MOPS、美股走 stockanalysis）
+    ├── onboarding.sql      新帳號的起始紀律規則
     └── screener.sql        伺服器端選股（篩選＋排序＋關鍵字＋只回前 60 檔）
 ```
 

@@ -116,3 +116,69 @@ begin
 end $fn$;
 
 revoke all on function public.refresh_company_profiles(integer) from public, anon;
+
+-- ============================================================
+-- 美股的公司業務
+--
+-- 台股用公開資訊觀測站，美股用 stockanalysis 的 company 頁。
+-- 這邊反過來——**美股用 stockanalysis 很完整，台股才是覆蓋不全**
+--（金居在 stockanalysis 上是 404，見這個檔案開頭）。
+--
+-- 代號不會撞：台股是數字開頭、美股是字母開頭，所以共用同一張表。
+-- ============================================================
+
+alter table public.company_profile add column if not exists market text not null default 'tw';
+
+-- __data.json 裡的角括號是 JSON 跳脫過的，原文是「反斜線 u003C p 反斜線 u003E」
+-- 這六七個字元，不是真的 < 與 >。
+--
+-- **兩個都不能用正則直接寫。** Postgres 的正則把 uXXXX 形式當成字元跳脫，
+-- 所以在正則裡寫那串會被解讀成角括號本身，反而配不到原文。
+-- 這裡用 chr(92) 把反斜線接出來，再用 replace()（不是正則）換回角括號，
+-- 之後就是一般的 HTML 解析。
+create or replace function public.pm_sa_desc(p_body text)
+returns text language sql immutable as $$
+  select nullif(btrim(regexp_replace(
+           (regexp_match(
+              replace(replace(coalesce(p_body, ''), chr(92) || 'u003C', '<'),
+                      chr(92) || 'u003E', '>'),
+              '<p>(.*?)</p>'))[1],
+           '<[^>]*>', '', 'g')), '');
+$$;
+
+create or replace function public.refresh_us_profiles(p_limit integer default 150)
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare r record; body text; biz text; total integer := 0;
+begin
+  perform set_config('statement_timeout', '900s', true);
+
+  for r in
+    select u.symbol, u.name
+    from public.stock_universe u
+    left join public.company_profile c on c.symbol = u.symbol
+    where u.market = 'us' and u.symbol ~ '^[A-Z]{1,5}$'
+    order by (c.business is not null), c.updated_at nulls first
+    limit p_limit
+  loop
+    begin
+      body := public.pm_fetch('https://stockanalysis.com/stocks/'
+                              || lower(r.symbol) || '/company/__data.json');
+      biz := public.pm_sa_desc(body);
+      insert into public.company_profile (symbol, market, name, business, as_of, updated_at)
+      values (r.symbol, 'us', r.name, biz, current_date, now())
+      on conflict (symbol) do update
+        set market = 'us',
+            name = coalesce(excluded.name, company_profile.name),
+            business = coalesce(excluded.business, company_profile.business),
+            as_of = excluded.as_of, updated_at = now();
+      if biz is not null then total := total + 1; end if;
+    exception when others then
+      perform public.pm_log('us_profile ' || r.symbol, 0, false, sqlerrm);
+    end;
+  end loop;
+
+  perform public.pm_log('us_profile', total, true, null);
+  return total;
+end $fn$;
+
+revoke all on function public.refresh_us_profiles(integer) from public, anon;

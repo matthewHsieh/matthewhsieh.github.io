@@ -39,6 +39,7 @@ const state = {
   alerts: [],      // 處置股與注意股
   screen: null,    // 選股條件
   screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
+  screenOpen: false,                  // 選股條件面板要不要展開
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -1296,7 +1297,7 @@ function openFuturesForm(existing) {
     <label data-row="size">規格<select name="size">${STOCK_FUT_SIZES
       .map((s) => `<option value="${s.size}" ${num(v.size) === s.size ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
     <label data-row="mult">每點價值<input name="mult" type="number" step="any" inputmode="decimal" value="${esc(num(v.size))}" readonly></label>
-    <div class="seg">
+    <div class="seg side-seg">
       <label><input type="radio" name="side" value="long" ${v.side !== 'short' ? 'checked' : ''}><span>多單</span></label>
       <label><input type="radio" name="side" value="short" ${v.side === 'short' ? 'checked' : ''}><span>空單</span></label>
     </div>
@@ -1384,7 +1385,7 @@ function openOptionsForm(existing) {
       <option value="call" ${v.cp !== 'put' ? 'selected' : ''}>買權 Call</option>
       <option value="put" ${v.cp === 'put' ? 'selected' : ''}>賣權 Put</option>
     </select></label>
-    <div class="seg">
+    <div class="seg side-seg">
       <label><input type="radio" name="side" value="long" ${v.side !== 'short' ? 'checked' : ''}><span>買方</span></label>
       <label><input type="radio" name="side" value="short" ${v.side === 'short' ? 'checked' : ''}><span>賣方</span></label>
     </div>
@@ -1673,7 +1674,7 @@ function openTradeForm(defaults = {}) {
   const html = `
     <label>市場<select name="kind">${Object.entries(TRADE_KINDS)
       .map(([k, m]) => `<option value="${k}" ${defaults.kindKey === k ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label>
-    <div class="seg">
+    <div class="seg side-seg">
       <label><input type="radio" name="side" value="buy" checked><span>買進</span></label>
       <label><input type="radio" name="side" value="sell"><span>賣出</span></label>
     </div>
@@ -2598,7 +2599,7 @@ function renderHistory(el) {
           return `${fmt(n)} 筆`;
         })()}</span>
       </div>
-      <div class="seg hist-seg">${[['all', '全部'], ['day', '當沖'], ['swing', '波段'], ['roll', '轉倉']]
+      <div class="seg nav-seg hist-seg">${[['all', '全部'], ['day', '當沖'], ['swing', '波段'], ['roll', '轉倉']]
         .map(([v, l]) => {
           const n = trades.filter((t) => v === 'all' || tradeCategory(t) === v).length;
           return `<label><input type="radio" name="histf" value="${v}" ${
@@ -3797,38 +3798,58 @@ function renderScreener(host, mk) {
     <input type="checkbox" data-sc="${k}" ${f[k] ? 'checked' : ''}>
     <span>${label}${hint ? `<span class="sub muted">　${hint}</span>` : ''}</span></label>`;
 
+  // 條件面板預設收起來。**原本展開時第一筆結果落在 969px、手機視窗只有 844px**，
+  // 等於每次進來都要先捲過整個表單才看得到任何一檔。收起來之後條件變成一行摘要，
+  // 要改再點開。搜尋框留在外面，因為那是最常用的。
+  const open = !!state.screenOpen;
+  const summary = [
+    f.beat ? `贏過${mk === 'us' ? 'NDX' : '大盤'}` : null,
+    num(f.drop) > 0 ? `跌${fmt(f.drop)}%以上` : null,
+    f.covered ? '有分析師' : null,
+    mk === 'tw' && f.clean ? '排除警示' : null,
+    num(f.peMax) > 0 ? `本益比≤${fmt(f.peMax)}` : null,
+    isNum(f.growth) && f.growth !== null && f.growth !== '' ? `成長≥${fmt(f.growth)}%` : null,
+  ].filter(Boolean);
+
   host.innerHTML = `
     <div class="card">
-      <div class="list-title">選股<span class="muted sub">　${mk === 'us' ? '美股' : '台股'}全市場</span></div>
-      <p class="sub muted">你說過的策略是<b>在下跌中買好公司</b>。這頁就是那句話的三個條件：
-        贏得過大盤、離高點夠遠、有人在報而且沒被盯上。
-        ${mk === 'us'
-          ? '池子是日成交額 <b>2,000 萬美元</b>以上的股票，成長率是<b>明年營收預估</b>（前瞻）。'
-          : '池子是<b>全市場</b>有公告月營收的普通股，成長率是<b>月營收年增</b>（已發生）。'}</p>
+      <div class="row-between">
+        <span class="list-title">選股<span class="muted sub">　${mk === 'us' ? '美股' : '台股'}全市場</span></span>
+        <span class="sub muted" data-screen-count>${state.screenBusy ? '篩選中…'
+          : `${fmt(total)} 檔符合${total > rows.length ? `，顯示前 ${fmt(rows.length)} 檔` : ''}`}</span>
+      </div>
       <label class="screen-q">
         <input type="search" data-sc-q value="${esc(f.q || '')}" enterkeyhint="search"
-          placeholder="${mk === 'us' ? '搜尋代號、名稱、族群、產業' : '搜尋代號、名稱、族群、主要經營業務'}">
+          placeholder="${mk === 'us' ? '搜尋代號、名稱、族群、產業、業務' : '搜尋代號、名稱、族群、主要經營業務'}">
       </label>
-      ${mk === 'tw' ? `<p class="sub muted screen-q-hint">市場上的綽號查不到，但公司申報的業務查得到——
-        想找「小金居」就搜<b>銅箔</b>，4989 榮科的業務寫著「電解銅箔之製造及銷售」。</p>` : ''}
-      <div class="screen-form">
+      <button type="button" class="screen-toggle" data-sc-open aria-expanded="${open}">
+        <span>${summary.length ? esc(summary.join('・')) : '沒有設任何條件'}</span>
+        <span class="chev">${open ? '收起' : '改條件'}</span>
+      </button>
+      <div class="screen-form" ${open ? '' : 'hidden'}>
         ${chk('beat', `報酬/波動贏過${mk === 'us' ? '那斯達克 100' : '加權指數'}`,
               isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
         ${chk('covered', '至少三位分析師', '避開沒人看的')}
         ${mk === 'tw' ? chk('clean', '排除處置與注意股', '進去會卡住') : ''}
-        <label class="screen-num">從三年高點至少跌
-          <input type="number" data-sc-n="drop" value="${esc(f.drop)}" min="0" max="90" step="5" inputmode="decimal">%</label>
-        <label class="screen-num">本益比上限
-          <input type="number" data-sc-n="peMax" value="${esc(f.peMax)}" min="0" step="5" inputmode="decimal">
-          <span class="sub muted">0 = 不限</span></label>
-        <label class="screen-num">營收年增至少
-          <input type="number" data-sc-n="growth" value="${f.growth === null ? '' : esc(f.growth)}" step="10" inputmode="decimal" placeholder="不限">%</label>
+        <div class="screen-nums">
+          <label>離高點跌<input type="number" data-sc-n="drop" value="${esc(f.drop)}"
+            min="0" max="90" step="5" inputmode="decimal"><span>%</span></label>
+          <label>本益比≤<input type="number" data-sc-n="peMax" value="${esc(f.peMax)}"
+            min="0" step="5" inputmode="decimal" placeholder="不限"><span>x</span></label>
+          <label>成長≥<input type="number" data-sc-n="growth"
+            value="${f.growth === null ? '' : esc(f.growth)}" step="10" inputmode="decimal"
+            placeholder="不限"><span>%</span></label>
+        </div>
+        <p class="sub muted">你說過的策略是<b>在下跌中買好公司</b>——贏得過大盤、離高點夠遠、
+          有人在報而且沒被盯上，就是這三格。
+          ${mk === 'us'
+            ? '池子是日成交額 <b>2,000 萬美元</b>以上的股票，成長率是<b>明年營收預估</b>（前瞻）。'
+            : '池子是<b>全市場</b>有公告月營收的普通股，成長率是<b>月營收年增</b>（已發生）。'}
+          ${mk === 'tw' ? '搜尋吃的是公司申報的業務，所以想找「小金居」就搜<b>銅箔</b>。' : ''}</p>
       </div>
-      <div class="seg sort-seg">${SCREEN_SORT.map(([v, l]) =>
+      <div class="seg nav-seg sort-seg">${SCREEN_SORT.map(([v, l]) =>
         `<label><input type="radio" name="scsort" value="${v}" ${
           f.sort === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
-      <p class="sub muted" data-screen-count>${state.screenBusy ? '篩選中…'
-        : `${fmt(total)} 檔符合${total > rows.length ? `，顯示前 ${fmt(rows.length)} 檔` : ''}。`}</p>
     </div>
     ${rows.length ? `<div class="card list">${rows.map((r) => `
       <div class="line member" role="button" tabindex="0" data-stock="${mk}:${esc(norm(r.symbol))}">
@@ -3854,8 +3875,13 @@ function renderScreener(host, mk) {
           <span>${mk === 'us' ? '明年營收' : '營收年增'} <span class="${plClass(num(r.growth))}">${
             isNum(r.growth) ? signed(num(r.growth) * 100, 0) + '%' : '–'}</span></span>
         </div>
-        <div class="sub muted">${esc(r.themes || '')}${
-          r.themes && r.business ? '　' : ''}${esc((r.business || r.industry || '').slice(0, 48))}</div>
+        <div class="sub muted ellip">${(() => {
+          // 族群與業務原本會黏在一起（「玻纖布電子零組件業」），
+          // 是因為分隔符只在 business 有值時才插，但實際顯示的是 business ?? industry。
+          const desc = (r.business || r.industry || '').trim();
+          const parts = [r.themes, desc.length > 30 ? desc.slice(0, 30) + '…' : desc].filter(Boolean);
+          return esc(parts.join('　'));
+        })()}</div>
       </div>`).join('')}</div>`
       : `<div class="card"><p class="muted">${state.screenBusy ? '篩選中…'
         : '沒有符合的。條件放寬一點——通常是「跌幅」設太深了。'}</p></div>`}
@@ -3882,6 +3908,8 @@ function renderScreener(host, mk) {
     state.screen = { ...state.screen, sort: r.value };
     loadScreen(host, mk);
   }));
+  const tg = $('[data-sc-open]', host);
+  if (tg) tg.onclick = () => { state.screenOpen = !state.screenOpen; refire(); };
   const q = $('[data-sc-q]', host);
   if (q) {
     // 打字每一個字都送會打爆資料庫，停 400ms 才送；Enter 立刻送
@@ -3927,11 +3955,11 @@ async function loadScreen(host, mk, after) {
 function renderThemes(el) {
   const mk = state.themeMarket === 'us' ? 'us' : 'tw';
   const vw = ['tree', 'day', 'screen'].includes(state.themeView) ? state.themeView : 'list';
-  el.innerHTML = `<div class="seg market-seg">
+  el.innerHTML = `<div class="seg nav-seg market-seg">
       <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
       <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
     </div>
-    <div class="seg view-seg">
+    <div class="seg nav-seg view-seg">
       <label><input type="radio" name="tvw" value="list" ${vw === 'list' ? 'checked' : ''}><span>清單</span></label>
       <label><input type="radio" name="tvw" value="tree" ${vw === 'tree' ? 'checked' : ''}><span>產業鏈</span></label>
       ${mk === 'tw'
@@ -4124,6 +4152,32 @@ function bindNav() {
 // ============================================================
 // 登入 / 註冊
 // ============================================================
+// Supabase 的錯誤訊息是英文而且很技術，直接丟給使用者看沒有幫助。
+// **「Signups not allowed」要特別處理**：那不是使用者做錯什麼，
+// 是專案後台把註冊關掉了，訊息要講清楚不然只會一直重試。
+const AUTH_ERRORS = [
+  [/invalid login credentials/i, 'Email 或密碼錯誤'],
+  [/signups? not allowed|signup is disabled/i,
+   '這個站台目前沒有開放註冊。若這是你自己的專案，到 Supabase 後台的 Authentication → Sign In / Providers 打開 Allow new users to sign up。'],
+  [/user already registered|already been registered/i, '這個 Email 已經註冊過了，直接登入即可。'],
+  [/password should be at least (\d+)/i, '密碼至少要 $1 碼'],
+  [/email address .* is invalid|unable to validate email/i, 'Email 格式不正確'],
+  [/email rate limit exceeded|over_email_send_rate_limit/i,
+   '寄信次數達到上限（內建信箱一小時只有兩封），請稍後再試。'],
+  [/for security purposes.*(\d+) seconds/i, '動作太頻繁，請等 $1 秒再試。'],
+  [/email not confirmed/i, '這個帳號還沒有完成 Email 確認。'],
+  [/network|failed to fetch/i, '連不上伺服器，檢查一下網路。'],
+];
+
+function authError(err) {
+  const m = String(err?.message || err || '');
+  for (const [re, out] of AUTH_ERRORS) {
+    const hit = m.match(re);
+    if (hit) return out.replace('$1', hit[1] ?? '');
+  }
+  return m;
+}
+
 function bindAuth() {
   const form = $('#auth-form');
   const submit = $('#auth-submit');
@@ -4152,13 +4206,19 @@ function bindAuth() {
       if (state.authMode === 'signup') {
         const { data, error } = await sb.auth.signUp({ email, password });
         if (error) throw error;
-        if (!data.session) msg.textContent = '註冊成功！請到信箱點確認連結，再回來登入。';
+        if (!data.session) {
+          // 沒有直接拿到 session 代表後台要求 Email 確認。
+          // 但這個專案沒有設定 SMTP，內建信箱一小時只寄得出兩封，
+          // 所以與其叫使用者去收信，不如講清楚實際狀況。
+          msg.textContent = '註冊成功，但這個站台要求 Email 確認。'
+            + '若沒收到信，請站台管理者到 Supabase 後台把 Confirm email 關掉。';
+        }
       } else {
         const { error } = await sb.auth.signInWithPassword({ email, password });
         if (error) throw error;
       }
     } catch (err) {
-      msg.textContent = err.message === 'Invalid login credentials' ? 'Email 或密碼錯誤' : err.message;
+      msg.textContent = authError(err);
     } finally {
       submit.disabled = false;
     }
@@ -4169,7 +4229,8 @@ function bindAuth() {
     const email = form.email.value.trim();
     if (!email) return (msg.textContent = '請先輸入 Email');
     const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.href.split('#')[0] });
-    msg.textContent = error ? error.message : '已寄出重設密碼信，點信裡的連結回到這裡後會請你輸入新密碼。';
+    msg.textContent = error ? authError(error)
+      : '已寄出重設密碼信。（提醒：內建信箱一小時只寄得出兩封，沒收到就是被限流了。）';
   };
 }
 
@@ -4182,6 +4243,14 @@ async function setUser(user) {
   if (user && changedUser) {
     state.tab = 'overview';
     await refresh();
+    // 新帳號一條規則都沒有，「心得」頁的自動檢查會完全沒作用。
+    // bootstrap_me() 本身會擋重複，所以這裡放心叫。
+    if (!state.rules.length) {
+      try {
+        const { error } = await sb.rpc('bootstrap_me', {});
+        if (!error) await refresh();
+      } catch { /* 補不起來也不該擋住使用 */ }
+    }
   }
 }
 

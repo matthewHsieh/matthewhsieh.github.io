@@ -294,3 +294,64 @@ $fn$;
 
 grant execute on function public.us_theme_trend()   to authenticated;
 grant execute on function public.us_theme_members() to authenticated;
+
+-- ------------------------------------------------------------
+-- 分析師預估：擴到整個流動性池（約 2,060 檔），不只 AI 地圖那 126 檔。
+--
+-- **跟 refresh_us_stats 分開的理由跟 refresh_us_risk 一樣**：
+-- 那一支每檔要打兩個請求（stockanalysis 預估頁 ＋ Yahoo 日線），
+-- 2,000 檔就是 4,000 次。價格與報酬/波動已經由 refresh_us_risk 負責了，
+-- 這裡只打 stockanalysis 一次，**而且只寫預估欄位，不碰風險欄位**。
+--
+-- 本益比要用 us_stats 裡已經有的 price 去算，不要為了拿價格再打一次 Yahoo。
+-- 價格是 refresh_us_risk 寫的，最多差幾小時，對本益比來說無所謂。
+-- ------------------------------------------------------------
+create or replace function public.refresh_us_est(p_limit integer default 120)
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare r record; b1 text; total integer := 0; got integer;
+begin
+  perform set_config('statement_timeout', '900s', true);
+
+  for r in
+    select u.symbol, k.price
+    from (
+      select symbol from public.stock_universe where market = 'us'
+      union select symbol from public.us_themes
+      union select upper(btrim(symbol)) from public.us_stocks
+    ) u
+    left join public.us_stats k on k.symbol = u.symbol
+    where u.symbol ~ '^[A-Z.]{1,6}$'
+    -- 沒抓過預估的排最前面，其餘照最久沒更新輪替
+    order by (k.fy is not null), k.updated_at nulls first
+    limit p_limit
+  loop
+    begin
+      b1 := public.pm_fetch('https://stockanalysis.com/stocks/' || lower(r.symbol)
+                            || '/forecast/__data.json');
+      insert into public.us_stats (symbol, fy, analysts, rev_this, rev_next, rev_g, rev_g_next,
+                                   eps_this, eps_next, eps_g, pe_this, pe_next, as_of, updated_at)
+      select r.symbol, f.fy, f.analysts, f.rev_this, f.rev_next, f.rev_g, f.rev_g_next,
+             f.eps_this, f.eps_next, f.eps_g,
+             case when f.eps_this > 0 and r.price > 0 then round(r.price / f.eps_this, 1) end,
+             case when f.eps_next > 0 and r.price > 0 then round(r.price / f.eps_next, 1) end,
+             current_date, now()
+      from public.pm_sa_full(b1) f
+      on conflict (symbol) do update
+        set fy = excluded.fy, analysts = excluded.analysts,
+            rev_this = excluded.rev_this, rev_next = excluded.rev_next,
+            rev_g = excluded.rev_g, rev_g_next = excluded.rev_g_next,
+            eps_this = excluded.eps_this, eps_next = excluded.eps_next, eps_g = excluded.eps_g,
+            pe_this = excluded.pe_this, pe_next = excluded.pe_next,
+            updated_at = now();
+      get diagnostics got = row_count;
+      total := total + got;
+    exception when others then
+      perform public.pm_log('us_est ' || r.symbol, 0, false, sqlerrm);
+    end;
+  end loop;
+
+  perform public.pm_log('us_est', total, true, null);
+  return total;
+end $fn$;
+
+revoke all on function public.refresh_us_est(integer) from public, anon;

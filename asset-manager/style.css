@@ -117,7 +117,7 @@ label input, label select { color: var(--text); }
 .hero .big { font-size: 36px; font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; margin: 4px 0; }
 .label { font-size: 13px; color: var(--muted); }
 .sub { font-size: 13px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-bottom: 12px; }
 .grid2 .card { margin: 0; }
 .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -198,8 +198,19 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
   display: block; text-align: center; padding: 12px;
   border: 1px solid var(--border); border-radius: 10px; font-weight: 700; color: var(--text);
 }
-.seg label:nth-child(1) input:checked + span { background: var(--gain); border-color: var(--gain); color: #fff; }
-.seg label:nth-child(2) input:checked + span { background: var(--loss); border-color: var(--loss); color: #fff; }
+/* 預設的選中樣式。**原本只寫到 nth-child(2)**，所以四個選項的切換
+   （清單／產業鏈／今日／選股）第三、四個選中時完全看不出來。 */
+.seg input:checked + span {
+  background: var(--primary); border-color: var(--primary); color: var(--on-primary);
+}
+/* 買賣方向才用紅綠，那是台灣的漲跌慣例，不是通用的選中色 */
+.side-seg label:nth-child(1) input:checked + span { background: var(--gain); border-color: var(--gain); color: #fff; }
+.side-seg label:nth-child(2) input:checked + span { background: var(--loss); border-color: var(--loss); color: #fff; }
+
+/* 分頁式的切換：不是主要操作，不需要 12px 的點擊區。
+   兩排切換原本吃掉 110px，在 390×844 的手機上等於少看兩列結果。 */
+.nav-seg { gap: 6px; margin: 8px 0; }
+.nav-seg span { padding: 7px 6px; font-size: 14px; font-weight: 600; border-radius: 8px; }
 .qty-row { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
 .resolved { font-size: 14px; margin: -4px 0 6px; min-height: 1.3em; }
 .preview {
@@ -426,7 +437,11 @@ textarea.journal-input {
 
 /* 紀錄頁：分類篩選與按日分組 */
 .hist-seg { margin: 10px 0; }
-.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+/* **1fr 的最小寬度是 min-content，不是 0。** 「轉倉 -131,963」這種長數字
+   會把欄位撐開，整個格線就比視窗寬（實測紀錄頁溢出 4px）。
+   要能縮就得寫 minmax(0, 1fr)。 */
+.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.grid4 .mini { overflow: hidden; }
 .grid4 .mini .label { font-size: 12px; }
 .grid4 .mini .value { font-size: 16px; }
 .day-group { margin-top: 12px; }
@@ -543,3 +558,19 @@ textarea.journal-input {
   margin: 10px 0 0; padding: 8px 10px; border-radius: 8px;
   background: var(--bg); font-size: 13px; line-height: 1.6; color: var(--text);
 }
+
+/* ---------- 選股條件面板 ---------- */
+.screen-toggle {
+  display: flex; width: 100%; align-items: center; gap: 10px; margin: 6px 0 2px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 13px; text-align: left;
+}
+.screen-toggle > span:first-child { flex: 1; line-height: 1.4; }
+.screen-toggle .chev { color: var(--primary); font-size: 13px; white-space: nowrap; }
+.screen-nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 4px; }
+.screen-nums label {
+  display: flex; align-items: center; gap: 4px; margin: 0; font-size: 13px; color: var(--muted);
+}
+.screen-nums input { width: 100%; min-width: 0; padding: 7px 8px; }
+.screen-nums span { flex: none; }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
