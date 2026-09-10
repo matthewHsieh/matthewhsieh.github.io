@@ -34,7 +34,9 @@ const state = {
   themeVal: [],    // 各族群本益比中位數
   riskStats: [],   // 報酬/波動計分
   usStats: [], usThemeTrend: [], usThemeMembers: [],
+  themeMeta: [], themeLinks: [],   // 產業樹與供應鏈關係
   themeMarket: 'tw',   // 族群頁看台股還是美股
+  themeView: 'list',   // 族群頁：清單還是產業鏈
   histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 波段 / 轉倉
   rules: [],       // 自己定的紀律
   journalDays: [], // 每日心得＋戰績
@@ -1003,12 +1005,14 @@ async function loadAll() {
     sb.from('us_stats').select('symbol,ratio,vol,cagr'),
     sb.rpc('us_theme_trend', {}),
     sb.rpc('us_theme_members', {}),
+    sb.from('theme_meta').select('*'),
+    sb.from('theme_links').select('*'),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -1028,6 +1032,8 @@ async function loadAll() {
   state.usStats = ustat.data ?? [];
   state.usThemeTrend = utrend.data ?? [];
   state.usThemeMembers = umem.data ?? [];
+  state.themeMeta = tmeta.data ?? [];
+  state.themeLinks = tlinks.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -3048,16 +3054,148 @@ function renderUsThemes(host) {
 
 
 // 族群頁：台股看落後的月營收，美股看前瞻的營收預估，兩邊分開看
+// ------------------------------------------------------------
+// 產業樹與供應鏈
+//   平的清單看不出誰餵誰。攤成「大類 → 供應鏈位置 → 族群」之後，
+//   才看得出自己是不是把同一條鏈買了三次。
+//   點一個族群會展開它的上游與下游，可以順著鏈一路點下去。
+// ------------------------------------------------------------
+const STAGE_ORDER = { 上游: 0, 中游: 1, 下游: 2 };
+
+// 這個族群的上游與下游
+const chainOf = (mk, theme) => ({
+  up: state.themeLinks.filter((l) => l.market === mk && l.dst === theme),
+  down: state.themeLinks.filter((l) => l.market === mk && l.src === theme),
+});
+
+// 樹狀圖要用的數字，台股與美股取的欄位不同，這裡統一
+function treeStats(mk, theme) {
+  if (mk === 'tw') {
+    const t = state.themeTrend.find((x) => x.theme === theme);
+    const v = state.themeVal.find((x) => x.theme === theme);
+    return { members: t ? num(t.members) : (v ? num(v.total) : null),
+             growth: t ? num(t.yoy) : null,
+             ratio: v ? v.ratio_median : null, pe: v ? v.pe1_median : null };
+  }
+  const u = state.usThemeTrend.find((x) => x.theme === theme);
+  return { members: u ? num(u.members) : null,
+           growth: u ? num(u.growth_next) : null,
+           ratio: u ? u.ratio_median : null, pe: u ? u.pe_next_median : null };
+}
+
+function renderThemeTree(host, mk) {
+  const metas = state.themeMeta.filter((m) => m.market === mk);
+  if (!metas.length) {
+    host.innerHTML = '<div class="card"><p class="muted">還沒有產業分類資料。</p></div>';
+    return;
+  }
+  const held = mk === 'tw' ? heldSymbols() : new Set(state.us.map((s) => norm(s.symbol)));
+  const memberRows = mk === 'tw' ? state.themeMembers : state.usThemeMembers;
+  const mineThemes = new Set(memberRows.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+  const bench = mk === 'tw' ? idxRatio() : usIdxRatio();
+
+  // 大類 → 族群，族群內先按上中下游再按自訂順序
+  const groups = [];
+  for (const m of metas) {
+    let g = groups.find((x) => x.parent === m.parent);
+    if (!g) { g = { parent: m.parent, list: [] }; groups.push(g); }
+    g.list.push(m);
+  }
+  for (const g of groups) {
+    g.list.sort((a, b) => (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9)
+      || num(a.sort) - num(b.sort));
+  }
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">產業鏈</div>
+      <p class="sub muted">依<b>大類 → 供應鏈位置 → 族群</b>攤開，點一個族群看它的上游與下游。
+        ${mk === 'tw' ? '成長率是月營收年增（已發生）' : '成長率是明年營收預估（前瞻）'}，
+        報酬/波動的及格線是${mk === 'tw' ? '加權指數' : '那斯達克 100'}
+        ${isNum(bench) ? fmtMax(bench, 2) : '–'}。</p>
+    </div>
+    ${groups.map((g) => `
+      <div class="card tree-group">
+        <div class="list-title">${esc(g.parent)}<span class="muted sub">　${fmt(g.list.length)} 個族群</span></div>
+        ${g.list.map((m) => {
+          const s = treeStats(mk, m.theme);
+          const c = chainOf(mk, m.theme);
+          const mine = mineThemes.has(m.theme);
+          return `<div class="tree-node${mine ? ' mine' : ''}" data-node="${esc(m.theme)}">
+            <div class="row-between">
+              <span><span class="stage stage-${esc(m.stage || '')}">${esc(m.stage || '')}</span>
+                <b>${esc(m.theme)}</b>${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
+              <span class="${plClass(num(s.growth))}">${
+                isNum(s.growth) ? signed(num(s.growth) * 100, 1) + '%' : '–'}</span>
+            </div>
+            <div class="row-between sub muted">
+              <span>${fmt(s.members)} 檔${isNum(s.ratio)
+                ? `　報酬/波動 <b class="${num(s.ratio) > bench ? 'gain' : ''}">${fmtMax(s.ratio, 2)}</b>` : ''}${
+                isNum(s.pe) ? `　本益比 ${fmtMax(s.pe, 1)}x` : ''}</span>
+              <span>${c.up.length ? `上游 ${c.up.length}` : ''}${
+                c.up.length && c.down.length ? '・' : ''}${c.down.length ? `下游 ${c.down.length}` : ''}</span>
+            </div>
+            <div class="tree-body" hidden></div>
+          </div>`;
+        }).join('')}
+      </div>`).join('')}
+    <p class="hint">供應鏈關係是人工整理的，箭頭方向代表「出貨給」。
+      <b>攤開來看最大的用處是檢查自己有沒有把同一條鏈買了很多次。</b>
+      例如玻纖布 → CCL → PCB → 伺服器組裝是同一條，分開看像四個標的，實際上是一個賭注。</p>`;
+
+  $$('.tree-node', host).forEach((node) => {
+    node.onclick = (e) => {
+      if (e.target.closest('[data-jump]')) return;
+      const body = $('.tree-body', node);
+      if (!body.hidden) { body.hidden = true; return; }
+      $$('.tree-body', host).forEach((b) => (b.hidden = true));
+      const theme = node.dataset.node;
+      const c = chainOf(mk, theme);
+      const chip = (t, note, dir) =>
+        `<button type="button" class="chip" data-jump="${esc(t)}">${
+          dir === 'up' ? '↑' : '↓'} ${esc(t)}${note ? `<span class="muted">　${esc(note)}</span>` : ''}</button>`;
+      const rows = memberRows.filter((m) => m.theme === theme);
+      body.innerHTML =
+        (c.up.length ? `<div class="chain-row"><span class="chain-label">上游</span>${
+          c.up.map((l) => chip(l.src, l.note, 'up')).join('')}</div>` : '') +
+        (c.down.length ? `<div class="chain-row"><span class="chain-label">下游</span>${
+          c.down.map((l) => chip(l.dst, l.note, 'down')).join('')}</div>` : '') +
+        (!c.up.length && !c.down.length ? '<p class="sub muted">這個族群沒有登記上下游關係。</p>' : '') +
+        (rows.length ? `<div class="chain-row members">${rows.map((m) =>
+          `<span class="chip plain">${esc(m.symbol)} ${esc(m.name || TW_STOCKS[norm(m.symbol)] || '')}${
+            held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</span>`).join('')}</div>` : '');
+      body.hidden = false;
+      $$('[data-jump]', body).forEach((b) => (b.onclick = (ev) => {
+        ev.stopPropagation();
+        const target = $$('.tree-node', host).find((n) => n.dataset.node === b.dataset.jump);
+        if (!target) return;
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        target.click();
+      }));
+    };
+  });
+}
+
 function renderThemes(el) {
   const mk = state.themeMarket === 'us' ? 'us' : 'tw';
+  const vw = state.themeView === 'tree' ? 'tree' : 'list';
   el.innerHTML = `<div class="seg market-seg">
       <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
       <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
+    </div>
+    <div class="seg view-seg">
+      <label><input type="radio" name="tvw" value="list" ${vw === 'list' ? 'checked' : ''}><span>清單</span></label>
+      <label><input type="radio" name="tvw" value="tree" ${vw === 'tree' ? 'checked' : ''}><span>產業鏈</span></label>
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
-  (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
+  if (vw === 'tree') renderThemeTree(host, mk);
+  else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
+    renderThemes(el);
+  }));
+  $$('input[name=tvw]', el).forEach((r) => (r.onchange = () => {
+    state.themeView = r.value;
     renderThemes(el);
   }));
 }

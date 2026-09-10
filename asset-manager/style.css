@@ -434,3 +434,27 @@ textarea.journal-input {
   padding: 6px 0; border-bottom: 1px solid var(--border);
   font-size: 14px; position: sticky; top: 0; background: var(--card); z-index: 1;
 }
+
+/* ---------- 產業樹 ---------- */
+.view-seg { margin-bottom: 12px; }
+.tree-group .list-title { margin-bottom: 6px; }
+.tree-node {
+  padding: 8px 0 8px 10px; border-left: 2px solid var(--border);
+  margin: 4px 0; cursor: pointer;
+}
+.tree-node.mine { border-left-color: var(--primary); }
+.stage {
+  display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  margin-right: 6px; background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+}
+.stage-上游 { color: var(--series-1); }
+.stage-中游 { color: var(--series-2); }
+.stage-下游 { color: var(--series-3); }
+.chain-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.chain-label { font-size: 12px; color: var(--muted); min-width: 30px; }
+.chip {
+  font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 999px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); cursor: pointer;
+}
+.chip.plain { cursor: default; }
+.chain-row.members { border-top: 1px solid var(--border); padding-top: 8px; }
