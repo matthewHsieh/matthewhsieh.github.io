@@ -49,7 +49,9 @@ create table if not exists public.rules (
   amount     numeric,           -- 給有金額上限的規則用
   scope      text,              -- tw / futures / option / all
   active     boolean not null default true,
-  started_on date not null default current_date,
+  -- **不要用 current_date**：那是 UTC，台北早上八點前建立的規則會標成昨天，
+  -- 畫面上就變成「剛建好的規則已經守了 1 天」。
+  started_on date not null default (now() at time zone 'Asia/Taipei')::date,
   sort       smallint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
