@@ -26,6 +26,14 @@ create table if not exists public.risk_stats (
   as_of       date,
   updated_at  timestamptz not null default now()
 );
+-- 價格區間。**跟現價比才知道現在站在哪裡。**
+-- 使用者的策略是「在下跌中買好公司」，那就需要一個「現在離高點多遠」的數字，
+-- 而不是只有報酬與波動。這些值 Yahoo 的三年日線裡本來就有，順手算完不用多打一次請求。
+alter table public.risk_stats add column if not exists hi52 numeric;   -- 近一年最高收盤
+alter table public.risk_stats add column if not exists lo52 numeric;   -- 近一年最低收盤
+alter table public.risk_stats add column if not exists hi3y numeric;   -- 三年最高收盤
+alter table public.risk_stats add column if not exists lo3y numeric;   -- 三年最低收盤
+alter table public.risk_stats add column if not exists last numeric;   -- 這次抓到的最後收盤（跟 hi/lo 同一份資料）
 alter table public.risk_stats enable row level security;
 drop policy if exists "read risk stats" on public.risk_stats;
 create policy "read risk stats" on public.risk_stats for select to authenticated using (true);
@@ -33,9 +41,11 @@ create policy "read risk stats" on public.risk_stats for select to authenticated
 -- ------------------------------------------------------------
 -- 解析 Yahoo chart JSON 並算出統計量
 -- ------------------------------------------------------------
+drop function if exists public.pm_risk_calc(text);
 create or replace function public.pm_risk_calc(p_body text)
 returns table (vol numeric, cagr numeric, ratio numeric, mdd numeric,
-               vol1y numeric, days integer)
+               vol1y numeric, days integer,
+               hi52 numeric, lo52 numeric, hi3y numeric, lo3y numeric, last numeric)
 language plpgsql immutable as $fn$
 declare
   arr jsonb; e jsonb;
@@ -45,6 +55,8 @@ declare
   s1 double precision := 0; s21 double precision := 0; n1 integer := 0;
   first_p numeric := null; last_p numeric := null;
   peak numeric := null; dd numeric := 0; worst numeric := 0;
+  h52 numeric := null; l52 numeric := null;
+  h3 numeric := null; l3 numeric := null;
   total integer; idx integer := 0; cut integer;
   r double precision; sd double precision; sd1 double precision;
 begin
@@ -61,6 +73,12 @@ begin
     if first_p is null then first_p := p; peak := p; end if;
     last_p := p;
     if peak < p then peak := p; end if;
+    if h3 is null or p > h3 then h3 := p; end if;
+    if l3 is null or p < l3 then l3 := p; end if;
+    if idx > cut then
+      if h52 is null or p > h52 then h52 := p; end if;
+      if l52 is null or p < l52 then l52 := p; end if;
+    end if;
     dd := p / peak - 1;
     if dd < worst then worst := dd; end if;
     if prev is not null then
@@ -91,6 +109,7 @@ begin
     vol1y := round((sd1 * sqrt(252.0))::numeric, 4);
   end if;
   days := n;
+  hi52 := h52; lo52 := l52; hi3y := h3; lo3y := l3; last := last_p;
   return next;
 exception when others then
   return;
@@ -124,12 +143,16 @@ begin
     begin
       body := public.pm_fetch('https://query1.finance.yahoo.com/v8/finance/chart/'
                               || r.symbol || suffix || '?interval=1d&range=3y');
-      insert into public.risk_stats (symbol, vol, cagr, ratio, mdd, vol1y, days, as_of, updated_at)
-      select r.symbol, c.vol, c.cagr, c.ratio, c.mdd, c.vol1y, c.days, current_date, now()
+      insert into public.risk_stats (symbol, vol, cagr, ratio, mdd, vol1y, days,
+                                     hi52, lo52, hi3y, lo3y, last, as_of, updated_at)
+      select r.symbol, c.vol, c.cagr, c.ratio, c.mdd, c.vol1y, c.days,
+             c.hi52, c.lo52, c.hi3y, c.lo3y, c.last, current_date, now()
       from public.pm_risk_calc(body) c
       on conflict (symbol) do update
         set vol = excluded.vol, cagr = excluded.cagr, ratio = excluded.ratio,
             mdd = excluded.mdd, vol1y = excluded.vol1y, days = excluded.days,
+            hi52 = excluded.hi52, lo52 = excluded.lo52,
+            hi3y = excluded.hi3y, lo3y = excluded.lo3y, last = excluded.last,
             as_of = excluded.as_of, updated_at = now();
       get diagnostics got = row_count;
       total := total + got;
@@ -148,12 +171,16 @@ begin
   begin
     body := public.pm_fetch(
       'https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=3y');
-    insert into public.risk_stats (symbol, vol, cagr, ratio, mdd, vol1y, days, as_of, updated_at)
-    select 'TAIEX', c.vol, c.cagr, c.ratio, c.mdd, c.vol1y, c.days, current_date, now()
+    insert into public.risk_stats (symbol, vol, cagr, ratio, mdd, vol1y, days,
+                                  hi52, lo52, hi3y, lo3y, last, as_of, updated_at)
+    select 'TAIEX', c.vol, c.cagr, c.ratio, c.mdd, c.vol1y, c.days,
+           c.hi52, c.lo52, c.hi3y, c.lo3y, c.last, current_date, now()
     from public.pm_risk_calc(body) c
     on conflict (symbol) do update
       set vol = excluded.vol, cagr = excluded.cagr, ratio = excluded.ratio,
           mdd = excluded.mdd, vol1y = excluded.vol1y, days = excluded.days,
+          hi52 = excluded.hi52, lo52 = excluded.lo52,
+          hi3y = excluded.hi3y, lo3y = excluded.lo3y, last = excluded.last,
           as_of = excluded.as_of, updated_at = now();
   exception when others then
     perform public.pm_log('risk TAIEX', 0, false, sqlerrm);

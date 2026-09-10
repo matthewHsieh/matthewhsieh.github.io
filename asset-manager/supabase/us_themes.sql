@@ -50,6 +50,11 @@ create table if not exists public.us_stats (
 );
 -- create table if not exists 不會幫既有的表加欄位，新欄位一律用 alter
 alter table public.us_stats add column if not exists days integer;
+-- 價格區間，跟台股的 risk_stats 同一套定義（見 risk_stats.sql）
+alter table public.us_stats add column if not exists hi52 numeric;
+alter table public.us_stats add column if not exists lo52 numeric;
+alter table public.us_stats add column if not exists hi3y numeric;
+alter table public.us_stats add column if not exists lo3y numeric;
 
 alter table public.us_stats enable row level security;
 drop policy if exists "read us stats" on public.us_stats;
@@ -181,13 +186,15 @@ begin
                             || r.symbol || '?interval=1d&range=3y');
       insert into public.us_stats (symbol, fy, analysts, rev_this, rev_next, rev_g, rev_g_next,
                                    eps_this, eps_next, eps_g, price, pe_this, pe_next,
-                                   vol, cagr, ratio, mdd, days, as_of, updated_at)
+                                   vol, cagr, ratio, mdd, days,
+                                   hi52, lo52, hi3y, lo3y, as_of, updated_at)
       select r.symbol, f.fy, f.analysts, f.rev_this, f.rev_next, f.rev_g, f.rev_g_next,
              f.eps_this, f.eps_next, f.eps_g,
              public.pm_yahoo_last(b2),
              case when f.eps_this > 0 then round(public.pm_yahoo_last(b2) / f.eps_this, 1) end,
              case when f.eps_next > 0 then round(public.pm_yahoo_last(b2) / f.eps_next, 1) end,
-             c.vol, c.cagr, c.ratio, c.mdd, c.days, current_date, now()
+             c.vol, c.cagr, c.ratio, c.mdd, c.days,
+             c.hi52, c.lo52, c.hi3y, c.lo3y, current_date, now()
       from public.pm_sa_full(b1) f
       left join lateral public.pm_risk_calc(b2) c on true
       on conflict (symbol) do update
@@ -197,7 +204,10 @@ begin
             eps_this = excluded.eps_this, eps_next = excluded.eps_next, eps_g = excluded.eps_g,
             price = excluded.price, pe_this = excluded.pe_this, pe_next = excluded.pe_next,
             vol = excluded.vol, cagr = excluded.cagr, ratio = excluded.ratio, mdd = excluded.mdd,
-            days = excluded.days, as_of = excluded.as_of, updated_at = now();
+            days = excluded.days,
+            hi52 = excluded.hi52, lo52 = excluded.lo52,
+            hi3y = excluded.hi3y, lo3y = excluded.lo3y,
+            as_of = excluded.as_of, updated_at = now();
       get diagnostics got = row_count;
       total := total + got;
       if got = 0 then
@@ -215,12 +225,16 @@ begin
   begin
     b2 := public.pm_fetch(
       'https://query1.finance.yahoo.com/v8/finance/chart/%5ENDX?interval=1d&range=3y');
-    insert into public.us_stats (symbol, price, vol, cagr, ratio, mdd, days, as_of, updated_at)
-    select 'NDX', public.pm_yahoo_last(b2), c.vol, c.cagr, c.ratio, c.mdd, c.days, current_date, now()
+    insert into public.us_stats (symbol, price, vol, cagr, ratio, mdd, days,
+                                hi52, lo52, hi3y, lo3y, as_of, updated_at)
+    select 'NDX', public.pm_yahoo_last(b2), c.vol, c.cagr, c.ratio, c.mdd, c.days,
+           c.hi52, c.lo52, c.hi3y, c.lo3y, current_date, now()
     from public.pm_risk_calc(b2) c
     on conflict (symbol) do update
       set price = excluded.price, vol = excluded.vol, cagr = excluded.cagr,
           ratio = excluded.ratio, mdd = excluded.mdd, days = excluded.days,
+          hi52 = excluded.hi52, lo52 = excluded.lo52,
+          hi3y = excluded.hi3y, lo3y = excluded.lo3y,
           as_of = excluded.as_of, updated_at = now();
   exception when others then
     perform public.pm_log('us_stats NDX', 0, false, sqlerrm);
