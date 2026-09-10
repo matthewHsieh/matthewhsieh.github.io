@@ -36,6 +36,8 @@ const state = {
   usStats: [], usThemeTrend: [], usThemeMembers: [],
   themeMeta: [], themeLinks: [],   // 產業樹與供應鏈關係
   themeDay: [],    // 今天哪個族群在動
+  alerts: [],      // 處置股與注意股
+  screen: null,    // 選股條件
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
   histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 波段 / 轉倉
@@ -1009,12 +1011,13 @@ async function loadAll() {
     sb.from('theme_meta').select('*'),
     sb.from('theme_links').select('*'),
     sb.rpc('theme_day', {}),
+    sb.rpc('active_alerts', { p_days: 10 }),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, alerts, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -1037,6 +1040,7 @@ async function loadAll() {
   state.themeMeta = tmeta.data ?? [];
   state.themeLinks = tlinks.data ?? [];
   state.themeDay = tday.data ?? [];
+  state.alerts = alerts.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -1919,6 +1923,24 @@ function renderOverview(el) {
       ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), c.netAssets > 0 ? '總資產 ÷ 淨資產' : '淨資產不為正，無法計算')}
       ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), '總曝險 ÷ 總資產')}
     </div>
+    ${(() => {
+      // 持倉裡有被交易所盯上的就要先講。等他自己去點開個股才發現就太晚了。
+      const as = heldAlerts();
+      if (!as.length) return '';
+      return `<div class="card alert-card">
+        <div class="list-title">交易所警示　<span class="sub muted">${fmt(as.length)} 檔</span></div>
+        ${as.map((a) => `<div class="row-between alert-row" role="button" tabindex="0"
+            data-stock="tw:${esc(norm(a.symbol))}">
+          <span>${alertBadge(a)}<b>${esc(a.symbol)}</b> ${esc(a.name || '')}</span>
+          <span class="sub muted">${esc(a.kind === 'punish'
+            ? `${a.start_d || ''}～${a.end_d || ''}`
+            : num(a.notices) > 0 ? `近 30 天 ${fmt(a.notices)} 次注意` : ALERT_LABEL[a.kind])}</span>
+        </div>`).join('')}
+        <p class="hint">處置期間改成<b>人工撮合</b>，間隔從 2 分鐘到 45 分鐘都有；
+          達到門檻的委託還要<b>圈存</b>——買進先付全部價金、賣出先有券，
+          <b>當沖等於做不成</b>。門檻與間隔每一檔不一樣，點一列看那一檔的公告原文。</p>
+      </div>`;
+    })()}
     <div class="card">
       <div class="row-between"><span class="list-title">目標金額</span><span>${c.target > 0 ? fmt(c.target) : '<span class="muted">未設定</span>'}</span></div>
       <div class="bar"><div class="bar-fill" style="width:${progressWidth}%"></div></div>
@@ -2008,6 +2030,7 @@ function renderOverview(el) {
 
   $('#snap-btn', el).onclick = saveSnapshot;
   bindListActions(el);
+  bindStockOpen(el);
 }
 
 // ------------------------------------------------------------
@@ -2369,7 +2392,8 @@ function renderHoldings(el) {
     const v = num(s.shares) * num(s.price);
     const pl = isNum(s.cost) ? v - num(s.shares) * num(s.cost) : null;
     return itemRow('stock', s.id,
-      `${esc(s.symbol)} ${esc(s.name || '')}${twKnown(s.symbol) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
+      `${esc(s.symbol)} ${esc(s.name || '')}${alertBadge(alertOf(s.symbol))}${
+        twKnown(s.symbol) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
       `${fmtQty('tw', s.shares)} × ${fmtMax(s.price, 2)}${isNum(s.cost) ? `　均價 ${fmtMax(s.cost, 2)}` : ''}`,
       fmt(v),
       pl === null ? '' : `<span class="${plClass(pl)}">${signed(pl)}</span>`,
@@ -2380,6 +2404,7 @@ function renderHoldings(el) {
     const pl = futPl(f);
     return itemRow('future', f.id,
       `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}<span class="badge">${f.side === 'short' ? '空' : '多'}</span>${
+        isStock ? alertBadge(alertOf(f.symbol)) : ''}${
         autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
       `${fmtMax(f.lots, 2)} 口 × ${fmtMax(f.price, 2)} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}${
         isNum(f.cost) ? `　均價 ${fmtMax(f.cost, 2)}` : ''}`,
@@ -3082,6 +3107,57 @@ function renderUsThemes(host) {
 
 
 // ------------------------------------------------------------
+// 處置股與注意股
+//   為什麼要擺在顯眼的地方：他一次只沖一檔、每檔上限 100 萬。
+//   **第二次處置是全額圈存**——買進要先付全部價金、賣出要先有券，
+//   當沖等於做不成；撮合又變成人工約每兩分鐘一次，想跑的時候排不進去。
+//   這是進場前就該知道的事。
+// ------------------------------------------------------------
+const ALERT_LABEL = { punish: '處置中', near: '快達處置標準', notice: '注意股' };
+
+const alertOf = (sym) => {
+  const k = resolveTwSymbol(sym);
+  return k ? state.alerts.find((a) => norm(a.symbol) === k) || null : null;
+};
+
+// 「所以我會被限制什麼」。
+// **數字一律照抄公告，不要自己歸納。** 撮合間隔實測有 2/5/20/45 分鐘四種，
+// 圈存門檻有的是全部委託、有的要單筆 10 張以上才算，寫死任何一種都會錯。
+function alertLine(a) {
+  if (a.kind === 'punish') {
+    const days = a.end_d
+      ? Math.round((new Date(a.end_d + 'T00:00:00') - new Date(todayISO() + 'T00:00:00')) / 86400000)
+      : null;
+    const left = days === null ? ''
+      : days < 0 ? '（已結束）' : days === 0 ? '（今天最後一天）' : `（還有 ${fmt(days)} 天）`;
+    const bits = [`${a.start_d || ''} ～ ${a.end_d || ''}${left}`];
+    if (isNum(a.match_min)) bits.push(`人工撮合，約每 ${fmt(a.match_min)} 分鐘一次`);
+    else bits.push('人工撮合');
+    bits.push(num(a.prepay_lots) > 0
+      ? `單筆 ${fmt(a.prepay_lots)} 張以上要圈存（先付全部價金／先有券）`
+      : '所有委託都要圈存（先付全部價金／先有券）');
+    return bits.join('　');
+  }
+  if (a.kind === 'near') return a.reason || '注意次數已經逼近處置門檻，隨時可能被處置';
+  return num(a.notices) > 0
+    ? `最近 30 天上過 ${fmt(a.notices)} 次注意${num(a.notices) >= 4 ? '，再一次就可能處置' : ''}`
+    : (a.reason || '最近上過注意交易資訊');
+}
+
+const alertBadge = (a) => (a
+  ? `<span class="badge alert-${esc(a.kind)}">${ALERT_LABEL[a.kind] || '警示'}</span>` : '');
+
+// 持倉裡有沒有被盯上的，總覽要先講這個，不能等他自己去點
+function heldAlerts() {
+  const out = [];
+  for (const sym of heldSymbols()) {
+    const a = alertOf(sym);
+    if (a) out.push(a);
+  }
+  return out.sort((x, y) => (y.kind === 'punish') - (x.kind === 'punish'));
+}
+
+// ------------------------------------------------------------
 // 個股速覽
 //   在任何地方看到一檔股票，點下去就要能知道它「現在大概是什麼狀態」。
 //   絕大部分數字登入時就整批載好了，所以先用記憶體畫出來、立刻看得到，
@@ -3210,6 +3286,18 @@ function stockCardHtml(mk, sym) {
           signed((num(price) / num(risk.hi3y) - 1) * 100, 0)}%</b>${
           isNum(risk.lo3y) && num(risk.lo3y) > 0
             ? `　距三年低點 ${signed((num(price) / num(risk.lo3y) - 1) * 100, 0)}%` : ''}</p>` : ''}
+
+    ${mk === 'tw' && alertOf(key) ? (() => {
+      const a = alertOf(key);
+      return `<div class="alert-box alert-${esc(a.kind)}">
+        <div class="row-between"><b>${ALERT_LABEL[a.kind] || '警示'}</b>
+          <span class="sub">${esc(a.name || '')}</span></div>
+        <div class="sub">${esc(alertLine(a))}</div>
+        ${a.reason ? `<div class="sub muted">${esc(a.reason)}</div>` : ''}
+        ${a.detail ? `<details class="sc-note"><summary>交易所公告原文</summary><p>${
+          esc(a.detail)}</p></details>` : ''}
+      </div>`;
+    })() : ''}
 
     <div data-sc-day></div>
 
@@ -3564,9 +3652,152 @@ function renderThemeDay(host) {
   bindStockOpen(host);
 }
 
+// ------------------------------------------------------------
+// 選股
+//   他自己講過策略：「不能做動能，現在適合反市場，在下跌中買入好公司，
+//   拉起來回檔後加碼」。那句話拆開就是三個條件：
+//     好公司  = 報酬/波動贏得過指數（不然不如直接開槓桿買指數）
+//     在下跌 = 離三年高點夠遠
+//     不是地雷 = 有人在報、而且沒被交易所盯上
+//   這頁就是把那三件事變成可以按的東西。
+//
+//   資料全部來自登入時已經載好的 themeMembers / riskStats / alerts，
+//   不打任何一次網路，所以拉桿是即時的。
+// ------------------------------------------------------------
+const SCREEN_DEFAULT = {
+  beat: true,        // 報酬/波動要贏過指數
+  covered: false,    // 至少三位分析師
+  clean: true,       // 排除處置與注意股
+  mine: false,       // 只看我有持股的族群
+  drop: 20,          // 至少從三年高點跌下來幾 %
+  peMax: 0,          // 預估本益比上限，0 = 不限
+  sort: 'drop',
+};
+const SCREEN_SORT = [
+  ['drop', '跌最多'],
+  ['ratio', '報酬/波動'],
+  ['pe', '本益比'],
+  ['yoy', '營收年增'],
+];
+
+// themeMembers 是一檔一族群一列，同一檔可能出現好幾次，先併成一檔一列
+function screenUniverse() {
+  const by = new Map();
+  for (const m of state.themeMembers) {
+    const k = norm(m.symbol);
+    if (!by.has(k)) by.set(k, { ...m, symbol: k, themes: [] });
+    by.get(k).themes.push(m.theme);
+  }
+  const out = [];
+  for (const [k, m] of by) {
+    const r = state.riskStats.find((x) => norm(x.symbol) === k);
+    const px = num(r?.last);
+    out.push({
+      ...m,
+      price: px,
+      hi3y: r?.hi3y, lo3y: r?.lo3y, mdd: r?.mdd, days: r?.days,
+      // 離三年高點多遠。負得越多代表跌得越深
+      drop: isNum(r?.hi3y) && num(r.hi3y) > 0 && px > 0 ? px / num(r.hi3y) - 1 : null,
+      alert: alertOf(k),
+    });
+  }
+  return out;
+}
+
+function renderScreener(host) {
+  const f = { ...SCREEN_DEFAULT, ...(state.screen || {}) };
+  state.screen = f;
+  const bench = idxRatio();
+  const held = heldSymbols();
+  const myThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+
+  let rows = screenUniverse();
+  const total = rows.length;
+  if (f.beat) rows = rows.filter((r) => isNum(r.ratio) && num(r.ratio) > bench);
+  if (f.covered) rows = rows.filter((r) => num(r.an1) >= 3);
+  if (f.clean) rows = rows.filter((r) => !r.alert);
+  if (f.mine) rows = rows.filter((r) => r.themes.some((t) => myThemes.has(t)));
+  if (num(f.drop) > 0) rows = rows.filter((r) => isNum(r.drop) && num(r.drop) <= -num(f.drop) / 100);
+  if (num(f.peMax) > 0) rows = rows.filter((r) => isNum(r.pe1) && num(r.pe1) <= num(f.peMax));
+
+  const key = {
+    drop: (r) => (isNum(r.drop) ? num(r.drop) : 9),
+    ratio: (r) => -(isNum(r.ratio) ? num(r.ratio) : -9),
+    pe: (r) => (isNum(r.pe1) ? num(r.pe1) : 9e9),
+    yoy: (r) => -(isNum(r.yoy) ? num(r.yoy) : -9),
+  }[f.sort] || ((r) => 0);
+  rows.sort((a, b) => key(a) - key(b));
+
+  const chk = (k, label, hint) => `<label class="screen-chk">
+    <input type="checkbox" data-sc="${k}" ${f[k] ? 'checked' : ''}>
+    <span>${label}${hint ? `<span class="sub muted">　${hint}</span>` : ''}</span></label>`;
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">選股</div>
+      <p class="sub muted">你說過的策略是<b>在下跌中買好公司</b>。這頁就是那句話的三個條件：
+        贏得過指數、離高點夠遠、有人在報而且沒被盯上。全部從已經載好的資料算，拉了就變。</p>
+      <div class="screen-form">
+        ${chk('beat', '報酬/波動贏過指數', isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
+        ${chk('covered', '至少三位分析師', '避開沒人看的')}
+        ${chk('clean', '排除處置與注意股', '進去會卡住')}
+        ${chk('mine', '只看我有持股的族群', '')}
+        <label class="screen-num">從三年高點至少跌
+          <input type="number" data-sc-n="drop" value="${esc(f.drop)}" min="0" max="90" step="5" inputmode="decimal">%</label>
+        <label class="screen-num">預估本益比上限
+          <input type="number" data-sc-n="peMax" value="${esc(f.peMax)}" min="0" step="5" inputmode="decimal">
+          <span class="sub muted">0 = 不限</span></label>
+      </div>
+      <div class="seg sort-seg">${SCREEN_SORT.map(([v, l]) =>
+        `<label><input type="radio" name="scsort" value="${v}" ${
+          f.sort === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>
+      <p class="sub muted">${fmt(rows.length)} 檔符合，全市場族群成分股共 ${fmt(total)} 檔。</p>
+    </div>
+    ${rows.length ? `<div class="card list">${rows.slice(0, 60).map((r) => `
+      <div class="line member" role="button" tabindex="0" data-stock="tw:${esc(r.symbol)}">
+        <div class="row-between">
+          <span>${esc(r.symbol)} ${esc(r.name || '')}${
+            held.has(r.symbol) ? '<span class="badge day-badge">持有</span>' : ''}${alertBadge(r.alert)}</span>
+          <span class="${plClass(num(r.drop))}">${
+            isNum(r.drop) ? signed(num(r.drop) * 100, 0) + '%' : '–'}<span class="sub muted"> 距高點</span></span>
+        </div>
+        <div class="row-between sub muted">
+          <span>${fmtMax(r.price, 2)}　三年區間 ${fmtMax(r.lo3y, 1)}–${fmtMax(r.hi3y, 1)}</span>
+          <span>報酬/波動 <b class="${beatsIdx(r.ratio) ? 'gain' : ''}">${fmtMax(r.ratio, 2)}</b></span>
+        </div>
+        <div class="row-between sub muted">
+          <span>${isNum(r.pe1) ? `${String(r.fy1).slice(2)}F ${fmtMax(r.pe1, 1)}x` : '無預估'}${
+            num(r.an1) > 0 ? `　${fmt(r.an1)} 位` : '　無人覆蓋'}</span>
+          <span>營收年增 <span class="${plClass(num(r.yoy))}">${
+            isNum(r.yoy) ? signed(num(r.yoy) * 100, 0) + '%' : '–'}</span></span>
+        </div>
+        <div class="sub muted">${esc(r.themes.join('・'))}</div>
+      </div>`).join('')}${rows.length > 60
+        ? `<p class="sub muted">只顯示前 60 檔，把條件收緊一點。</p>` : ''}</div>`
+      : '<div class="card"><p class="muted">沒有符合的。條件放寬一點——通常是「跌幅」設太深了。</p></div>'}
+    <p class="hint"><b>這頁挑出來的是候選，不是買進訊號。</b>
+      跌得深有兩種原因：被錯殺，或是基本面真的壞了，這頁分不出來，要自己點進去看營收與預估。
+      「距高點」用的是三年最高收盤，跟波動、報酬取自同一份 Yahoo 日線，所以一定一致。
+      預估本益比只有大約六成的台股有，勾「至少三位分析師」會少掉很多檔，那是正常的。</p>`;
+
+  $$('[data-sc]', host).forEach((c) => (c.onchange = () => {
+    state.screen = { ...state.screen, [c.dataset.sc]: c.checked };
+    renderScreener(host);
+  }));
+  $$('[data-sc-n]', host).forEach((i) => (i.onchange = () => {
+    state.screen = { ...state.screen, [i.dataset.scN]: num(i.value) };
+    renderScreener(host);
+  }));
+  $$('input[name=scsort]', host).forEach((r) => (r.onchange = () => {
+    state.screen = { ...state.screen, sort: r.value };
+    renderScreener(host);
+  }));
+  bindStockOpen(host);
+}
+
 function renderThemes(el) {
   const mk = state.themeMarket === 'us' ? 'us' : 'tw';
-  const vw = ['tree', 'day'].includes(state.themeView) ? state.themeView : 'list';
+  const vw = ['tree', 'day', 'screen'].includes(state.themeView) ? state.themeView : 'list';
   el.innerHTML = `<div class="seg market-seg">
       <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
       <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
@@ -3575,16 +3806,18 @@ function renderThemes(el) {
       <label><input type="radio" name="tvw" value="list" ${vw === 'list' ? 'checked' : ''}><span>清單</span></label>
       <label><input type="radio" name="tvw" value="tree" ${vw === 'tree' ? 'checked' : ''}><span>產業鏈</span></label>
       ${mk === 'tw'
-        ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>` : ''}
+        ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>
+           <label><input type="radio" name="tvw" value="screen" ${vw === 'screen' ? 'checked' : ''}><span>選股</span></label>` : ''}
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
   if (vw === 'day' && mk === 'tw') renderThemeDay(host);
+  else if (vw === 'screen' && mk === 'tw') renderScreener(host);
   else if (vw === 'tree') renderThemeTree(host, mk);
   else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
-    if (r.value === 'us' && state.themeView === 'day') state.themeView = 'list';
+    if (r.value === 'us' && ['day', 'screen'].includes(state.themeView)) state.themeView = 'list';
     renderThemes(el);
   }));
   $$('input[name=tvw]', el).forEach((r) => (r.onchange = () => {

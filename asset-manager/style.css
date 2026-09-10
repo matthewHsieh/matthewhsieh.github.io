@@ -505,3 +505,26 @@ textarea.journal-input {
 }
 .warn-text { color: var(--gain); margin: 8px 0 0; line-height: 1.6; }
 .link { color: var(--primary); cursor: pointer; }
+
+/* ---------- 交易所警示 ---------- */
+.alert-card { border: 1px solid var(--gain); }
+.alert-row { padding: 7px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.alert-row:last-of-type { border-bottom: none; }
+.badge.alert-punish { background: var(--gain); color: #fff; }
+.badge.alert-near   { background: #b45309; color: #fff; }
+.badge.alert-notice { background: var(--border); color: var(--text); }
+.alert-box {
+  margin-top: 12px; padding: 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg);
+}
+.alert-box.alert-punish { border-color: var(--gain); }
+.alert-box.alert-near   { border-color: #b45309; }
+.alert-box .sub { margin-top: 3px; line-height: 1.55; }
+
+/* ---------- 選股 ---------- */
+.screen-form { margin: 10px 0 4px; }
+.screen-chk { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
+.screen-chk input { width: 18px; height: 18px; flex: none; }
+.screen-num { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; }
+.screen-num input { width: 78px; flex: none; }
+.sort-seg { margin: 10px 0 6px; }

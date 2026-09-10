@@ -1255,6 +1255,8 @@ begin
   if p_include_us then perform public.refresh_us_prices(); end if;
   -- 估值（官方每日公告的本益比/淨值比/殖利率）
   perform public.refresh_valuation();
+  -- 處置股與注意股：六個來源，全部很快。進場前才知道就來不及了
+  perform public.refresh_alerts();
   -- 月營收：每月 10 日前後才會變，但天天跑很快，而且漏掉一天就整個月是舊的
   perform public.refresh_revenue();
   -- 季報 EPS：每季才變，跟著月營收一起跑
@@ -1293,6 +1295,7 @@ begin
     when 'fx'  then n := coalesce((public.refresh_fx() is not null)::int, 0);
     when 'us'  then n := public.refresh_us_prices();
     when 'val' then n := public.refresh_valuation();
+    when 'alert' then n := public.refresh_alerts();
     when 'rev' then n := public.refresh_revenue();
     when 'fin' then n := public.refresh_financials();
     when 'est' then n := public.refresh_estimates(12);
