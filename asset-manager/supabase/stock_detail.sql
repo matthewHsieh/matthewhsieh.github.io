@@ -33,6 +33,9 @@ language sql stable security definer set search_path = public as $fn$
     -- 產業別是證交所公告月營收時附的，比自己分的族群粗，但可以當交叉檢查
     'industry', (select r.industry from public.revenue r
                   where r.symbol = s.sym and r.industry is not null order by r.ym desc limit 1),
+    -- 公司自己在公開資訊觀測站申報的「主要經營業務」。
+    -- 產業別分不出銅箔與 MLCC，這一行分得出來。
+    'business', (select c.business from public.company_profile c where c.symbol = s.sym),
     -- 今天的開高低與漲跌。**「從當日低點拉起多少」才是判斷強弱的數字**，
     -- 不是對昨收的漲跌幅，理由見 theme_day.sql。
     'day', (select jsonb_build_object('price', m.price, 'chg', m.chg,

@@ -24,7 +24,7 @@ begin
     -- 族群與產業地圖
     'themes', 'theme_info', 'theme_meta', 'theme_links', 'us_themes',
     -- 交易所警示、契約對照
-    'trade_alerts', 'fut_codes', 'fut_months', 'stock_universe',
+    'trade_alerts', 'fut_codes', 'fut_months', 'stock_universe', 'company_profile',
     -- 更新狀態（只有市場名稱與日期，沒有任何個人資料）
     'price_runs'
   ] loop
@@ -79,7 +79,8 @@ grant execute on function public.theme_tree(text)          to anon;
 grant execute on function public.theme_chain(text, text)   to anon;
 grant execute on function public.active_alerts(integer)    to anon;
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
-                                               numeric, numeric, numeric, text, integer) to anon;
+                                               numeric, numeric, numeric, text, text, integer) to anon;
+grant execute on function public.app_risk()                to anon;
 
 -- stock_detail 內部會呼叫 eps_resolved()，而 eps_resolved 讀 eps_override
 -- 時是用 auth.uid() 過濾的。匿名時 auth.uid() 是 null，所以拿不到任何人的自填值，
@@ -109,7 +110,8 @@ grant execute on function public.refresh_market(text)      to authenticated;
 grant execute on function public.refresh_prices(boolean)   to authenticated;
 grant execute on function public.sync_my_positions()       to authenticated;
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
-                                               numeric, numeric, numeric, text, integer) to authenticated;
+                                               numeric, numeric, numeric, text, text, integer) to authenticated;
+grant execute on function public.app_risk()                to authenticated;
 
 -- ------------------------------------------------------------
 -- 驗一次：對外開放的函式清單要跟預期一模一樣。
@@ -125,7 +127,7 @@ begin
     and p.proname not in ('theme_trend', 'theme_members', 'theme_valuation', 'theme_day',
                           'stock_day', 'us_theme_trend', 'us_theme_members',
                           'theme_tree', 'theme_chain', 'active_alerts',
-                          'eps_resolved', 'stock_detail', 'screen_stocks');
+                          'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk');
   if extra is not null then
     raise exception '這些函式不該開給匿名：%', extra;
   end if;

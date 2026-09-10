@@ -1330,6 +1330,14 @@ begin
   perform public.refresh_risk_stats(600);
 end $$;
 
+-- 公司主要經營業務。MOPS 會限流，所以每檔之間有 0.4 秒間隔，
+-- 一批 60 檔約 55 秒。內容幾乎不會變，慢慢輪完就好。
+create or replace function public.update_profiles()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.refresh_company_profiles(60);
+end $$;
+
 -- 美股的報酬/波動，同樣分批。只打 Yahoo，不碰 stockanalysis。
 create or replace function public.update_us_risk()
 returns void language plpgsql security definer set search_path = public as $$
@@ -1391,6 +1399,7 @@ begin
     when 'est' then n := public.refresh_estimates(12);
     when 'risk' then n := public.refresh_risk_stats(120);
     when 'usrisk' then n := public.refresh_us_risk(120);
+    when 'prof' then n := public.refresh_company_profiles(8);
     when 'usx' then n := public.refresh_us_stats(8);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
@@ -1450,7 +1459,8 @@ begin
                      'am-quotes-1', 'am-quotes-2', 'am-quotes-3', 'am-quotes-4', 'am-quotes-5',
                      'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping',
                      'am-risk-2', 'am-risk-3', 'am-risk-4',
-                     'am-usrisk', 'am-usrisk-2', 'am-usrisk-3', 'am-usrisk-4');
+                     'am-usrisk', 'am-usrisk-2', 'am-usrisk-3', 'am-usrisk-4',
+                     'am-profiles', 'am-profiles-2', 'am-profiles-3', 'am-profiles-4');
 
   -- 行情：台北 14:35 / 16:05 / 18:05 / 19:05 / 21:05
   -- 抓到當天資料後，後面幾班會被守則擋掉，不會重複打對方的 API。
@@ -1473,6 +1483,12 @@ begin
   perform cron.schedule('am-usrisk-2', '0 1 * * *',  $c$select public.update_us_risk()$c$);
   perform cron.schedule('am-usrisk-3', '0 3 * * *',  $c$select public.update_us_risk()$c$);
   perform cron.schedule('am-usrisk-4', '0 5 * * *',  $c$select public.update_us_risk()$c$);
+
+  -- 公司業務描述：一批 60 檔、一天四班，兩週輪完一圈。內容幾乎不會變。
+  perform cron.schedule('am-profiles',   '30 9 * * *',  $c$select public.update_profiles()$c$);
+  perform cron.schedule('am-profiles-2', '30 15 * * *', $c$select public.update_profiles()$c$);
+  perform cron.schedule('am-profiles-3', '30 17 * * *', $c$select public.update_profiles()$c$);
+  perform cron.schedule('am-profiles-4', '30 19 * * *', $c$select public.update_profiles()$c$);
 
   -- 美股：台北 06:05，美股收盤之後
   perform cron.schedule('am-us',           '5 22 * * 1-5', $c$select public.update_us()$c$);

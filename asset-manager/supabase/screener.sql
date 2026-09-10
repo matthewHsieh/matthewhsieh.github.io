@@ -19,6 +19,7 @@ create or replace function public.screen_stocks(
   p_drop     numeric default 20,        -- 從三年高點至少跌幾 %
   p_pe_max   numeric default 0,         -- 本益比上限，0 = 不限
   p_growth   numeric default null,      -- 營收年增至少幾 %
+  p_q        text    default null,      -- 關鍵字：代號／名稱／族群／產業別／主要經營業務
   p_sort     text    default 'drop',    -- drop / ratio / pe / growth
   p_limit    integer default 60
 )
@@ -27,7 +28,7 @@ returns table (
   price numeric, drop_pct numeric, lo3y numeric, hi3y numeric,
   ratio numeric, vol numeric, cagr numeric, days integer,
   pe numeric, pe_src text, fy smallint, analysts smallint,
-  growth numeric, themes text, alert_kind text, total integer
+  growth numeric, themes text, business text, alert_kind text, total integer
 )
 language sql stable security definer set search_path = public as $fn$
   with mk as (select case when lower(coalesce(p_market, '')) = 'us' then 'us' else 'tw' end as m),
@@ -67,6 +68,7 @@ language sql stable security definer set search_path = public as $fn$
            r.yoy                                         as growth,
            (select string_agg(t.theme, '・' order by t.theme)
               from public.themes t where t.symbol = u.symbol) as themes,
+           cp.business,
            (select a.kind from public.trade_alerts a
              where a.symbol = u.symbol
                and ((a.kind = 'punish' and a.end_d >= current_date)
@@ -77,6 +79,7 @@ language sql stable security definer set search_path = public as $fn$
     left join public.market_prices mp on mp.market = 'tw' and mp.symbol = u.symbol
     left join public.risk_stats k on k.symbol = u.symbol
     left join public.valuation v on v.symbol = u.symbol
+    left join public.company_profile cp on cp.symbol = u.symbol
     left join eps e on e.symbol = u.symbol
     left join lateral (
       select case when ly.amount > 0 then cur.amount / ly.amount - 1 end as yoy
@@ -98,6 +101,7 @@ language sql stable security definer set search_path = public as $fn$
            s.rev_g_next,
            (select string_agg(t.theme, '・' order by t.theme)
               from public.us_themes t where t.symbol = u.symbol),
+           u.sector,
            null
     from public.stock_universe u
     left join public.us_stats s on s.symbol = u.symbol
@@ -116,12 +120,21 @@ language sql stable security definer set search_path = public as $fn$
       and (coalesce(p_drop, 0) <= 0 or (dp is not null and dp <= -p_drop / 100))
       and (coalesce(p_pe_max, 0) <= 0 or (pe is not null and pe > 0 and pe <= p_pe_max))
       and (p_growth is null or (growth is not null and growth >= p_growth / 100))
+      -- 關鍵字打在代號、名稱、族群、產業別、主要經營業務上。
+      -- **這是「特殊分類不好找」的解法**：市場叫 4989 榮科「小金居」，
+      -- 那個綽號查不到，但它申報的業務寫著「電解銅箔之製造及銷售」，搜「銅箔」就找得到。
+      and (p_q is null or btrim(p_q) = '' or
+           symbol ilike '%' || btrim(p_q) || '%' or
+           coalesce(name, '') ilike '%' || btrim(p_q) || '%' or
+           coalesce(themes, '') ilike '%' || btrim(p_q) || '%' or
+           coalesce(industry, '') ilike '%' || btrim(p_q) || '%' or
+           coalesce(business, '') ilike '%' || btrim(p_q) || '%')
   )
   select h.symbol, h.name, h.industry, h.price,
          round(h.dp, 4), h.lo3y, h.hi3y,
          h.ratio, h.vol, h.cagr, h.days,
          h.pe, h.pe_src, h.fy, h.analysts,
-         h.growth, h.themes, h.alert_kind,
+         h.growth, h.themes, h.business, h.alert_kind,
          (select count(*)::int from hit)
   from hit h
   order by
@@ -134,5 +147,5 @@ language sql stable security definer set search_path = public as $fn$
 $fn$;
 
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
-                                               numeric, numeric, numeric, text, integer)
+                                               numeric, numeric, numeric, text, text, integer)
   to authenticated, anon;

@@ -3352,6 +3352,7 @@ function stockCardHtml(mk, sym) {
       </div>
     </div>
 
+    <div data-sc-biz></div>
     <div data-sc-range>${rangeHtml(risk, price)}</div>
 
     ${mk === 'tw' && alertOf(key) ? (() => {
@@ -3475,6 +3476,13 @@ async function openStock(mk, sym) {
       pxEl.textContent = (market === 'us' ? '$' : '') + fmtMax(px, 2);
     }
   }
+  // 公司自己申報的主要經營業務。證交所的「產業別」把金居、國巨、台光電
+  // 全叫做電子零組件業，這一行才分得出誰在做什麼。
+  const bz = $('[data-sc-biz]', body);
+  if (bz && d.business) {
+    bz.innerHTML = `<p class="sc-biz">${esc(d.business)}</p>`;
+  }
+
   const rn = $('[data-sc-revnext]', body);
   if (rn && isNum(d.us?.rev_next)) rn.textContent = usdB(d.us.rev_next) + '美元　';
 
@@ -3748,6 +3756,7 @@ const SCREEN_DEFAULT = {
   drop: 20,          // 至少從三年高點跌下來幾 %
   peMax: 0,          // 本益比上限，0 = 不限
   growth: null,      // 營收年增下限
+  q: '',             // 關鍵字（代號／名稱／族群／產業別／主要經營業務）
   sort: 'drop',
 };
 const SCREEN_SORT = [
@@ -3768,6 +3777,7 @@ async function runScreen(mk, f) {
     p_drop: num(f.drop),
     p_pe_max: num(f.peMax),
     p_growth: isNum(f.growth) && f.growth !== '' ? num(f.growth) : null,
+    p_q: (f.q || '').trim() || null,
     p_sort: f.sort,
     p_limit: 60,
   });
@@ -3795,6 +3805,12 @@ function renderScreener(host, mk) {
         ${mk === 'us'
           ? '池子是日成交額 <b>2,000 萬美元</b>以上的股票，成長率是<b>明年營收預估</b>（前瞻）。'
           : '池子是<b>全市場</b>有公告月營收的普通股，成長率是<b>月營收年增</b>（已發生）。'}</p>
+      <label class="screen-q">
+        <input type="search" data-sc-q value="${esc(f.q || '')}" enterkeyhint="search"
+          placeholder="${mk === 'us' ? '搜尋代號、名稱、族群、產業' : '搜尋代號、名稱、族群、主要經營業務'}">
+      </label>
+      ${mk === 'tw' ? `<p class="sub muted screen-q-hint">市場上的綽號查不到，但公司申報的業務查得到——
+        想找「小金居」就搜<b>銅箔</b>，4989 榮科的業務寫著「電解銅箔之製造及銷售」。</p>` : ''}
       <div class="screen-form">
         ${chk('beat', `報酬/波動贏過${mk === 'us' ? '那斯達克 100' : '加權指數'}`,
               isNum(bench) ? `>${fmtMax(bench, 2)}` : '')}
@@ -3838,7 +3854,8 @@ function renderScreener(host, mk) {
           <span>${mk === 'us' ? '明年營收' : '營收年增'} <span class="${plClass(num(r.growth))}">${
             isNum(r.growth) ? signed(num(r.growth) * 100, 0) + '%' : '–'}</span></span>
         </div>
-        <div class="sub muted">${esc(r.themes || r.industry || '')}</div>
+        <div class="sub muted">${esc(r.themes || '')}${
+          r.themes && r.business ? '　' : ''}${esc((r.business || r.industry || '').slice(0, 48))}</div>
       </div>`).join('')}</div>`
       : `<div class="card"><p class="muted">${state.screenBusy ? '篩選中…'
         : '沒有符合的。條件放寬一點——通常是「跌幅」設太深了。'}</p></div>`}
@@ -3865,12 +3882,27 @@ function renderScreener(host, mk) {
     state.screen = { ...state.screen, sort: r.value };
     loadScreen(host, mk);
   }));
+  const q = $('[data-sc-q]', host);
+  if (q) {
+    // 打字每一個字都送會打爆資料庫，停 400ms 才送；Enter 立刻送
+    let timer = null;
+    const fire = () => {
+      clearTimeout(timer);
+      state.screen = { ...state.screen, q: q.value };
+      loadScreen(host, mk, () => {
+        const el = $('[data-sc-q]', host);
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    };
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(fire, 400); };
+    q.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); fire(); } };
+  }
   bindStockOpen(host);
   return refire;
 }
 
 // 打一次 RPC 再重畫。連點時只認最後一次的結果，免得舊的蓋掉新的。
-async function loadScreen(host, mk) {
+async function loadScreen(host, mk, after) {
   const seq = ++screenSeq;
   state.screenBusy = true;
   const count = $('[data-screen-count]', host);
@@ -3887,6 +3919,7 @@ async function loadScreen(host, mk) {
     if (seq === screenSeq) {
       state.screenBusy = false;
       renderScreener(host, mk);
+      if (after) after();
     }
   }
 }
