@@ -2202,6 +2202,121 @@ function breaksOn(dateISO) {
   return out;
 }
 
+// ------------------------------------------------------------
+// 期貨轉倉
+//   轉倉的本質：**部位沒有變，但成本基礎重設，而且近月的損益要實現。**
+//   多單轉倉 = 賣掉近月 + 買進遠月，口數一樣；空單反過來。
+//   順序有差，要先平倉再建倉，否則均價會算錯。
+//
+//   要分清楚兩件常被混為一談的事：
+//     平倉實現損益  這筆虧損早就存在了（未實現），轉倉只是讓它變成已實現。
+//     轉倉真正的成本  只有「遠月與近月的價差」加上兩邊的手續費與交易稅。
+//   把 8 萬的實現虧損說成「轉倉成本」會嚇到自己，而且是錯的。
+// ------------------------------------------------------------
+function rollPreview(v) {
+  const dir = v.isLong ? 1 : -1;
+  const notionalNear = v.lots * v.nearPx * v.size;
+  const notionalFar = v.lots * v.farPx * v.size;
+  // 平倉那筆的實現損益：多單是（賣價 − 成本），空單相反
+  const realized = isNum(v.cost) ? (v.nearPx - v.cost) * dir * v.lots * v.size : null;
+  // 轉倉價差：多單要賣近月買遠月，遠月比近月貴就是成本
+  const spread = (v.farPx - v.nearPx) * dir * v.lots * v.size;
+  const legClose = tradeCost({ market: 'futures', quantity: v.lots, price: v.nearPx,
+                               fut_size: v.size, side: v.isLong ? 'sell' : 'buy' }, false);
+  const legOpen = tradeCost({ market: 'futures', quantity: v.lots, price: v.farPx,
+                              fut_size: v.size, side: v.isLong ? 'buy' : 'sell' }, false);
+  const fee = legClose.fee + legOpen.fee;
+  const tax = legClose.tax + legOpen.tax;
+  return { realized, spread, fee, tax, cost: spread + fee + tax, notionalNear, notionalFar };
+}
+
+async function rollFutures(preId) {
+  const list = state.futures;
+  if (!list.length) return toast('沒有期貨部位可以轉倉', 3000);
+
+  const opt = (f) => {
+    const nm = f.contract || futDisplayName(f.kind, f.symbol, f.size);
+    return `<option value="${esc(f.id)}">${esc(nm)}　${f.side === 'short' ? '空' : '多'} ${
+      fmtMax(f.lots, 2)} 口</option>`;
+  };
+  const html = `
+    <label>要轉倉的部位<select name="pid">${list.map(opt).join('')}</select></label>
+    <label>口數（可以只轉一部分）<input name="lots" type="number" step="any" inputmode="decimal" required min="0"></label>
+    <label>近月成交價（平倉這一邊）<input name="near" type="number" step="any" inputmode="decimal" required></label>
+    <label>遠月成交價（建倉這一邊）<input name="far" type="number" step="any" inputmode="decimal" required></label>
+    <label>日期<input name="trade_date" type="date" value="${todayISO()}" required></label>
+    <label>備註<input name="note" type="text" placeholder="例如 9 月轉 10 月" autocomplete="off"></label>
+    <div class="preview" data-preview hidden></div>`;
+
+  const res = await openDialog({
+    title: '期貨轉倉',
+    html,
+    onMount: (form) => {
+      const preview = $('[data-preview]', form);
+      const cur = () => list.find((x) => String(x.id) === String(form.pid.value)) || list[0];
+      const syncLots = () => { form.lots.value = num(cur().lots); };
+      const draw = () => {
+        const f = cur();
+        const lots = num(form.lots.value), near = num(form.near.value), far = num(form.far.value);
+        if (!(lots > 0) || !(near > 0) || !(far > 0)) { preview.hidden = true; return; }
+        const v = { isLong: f.side !== 'short', lots, size: num(f.size),
+                    cost: isNum(f.cost) ? num(f.cost) : null, nearPx: near, farPx: far };
+        const p = rollPreview(v);
+        const over = lots > num(f.lots) + 1e-9;
+        preview.hidden = false;
+        preview.classList.toggle('err', over);
+        preview.innerHTML = over
+          ? `口數超過持有的 ${fmtMax(f.lots, 2)} 口`
+          : `${v.isLong ? '賣出' : '買回'}近月 ${fmtMax(lots, 2)} 口 @ ${fmtMax(near, 2)}，` +
+            `再${v.isLong ? '買進' : '賣出'}遠月 @ ${fmtMax(far, 2)}<br>` +
+            `<b>轉倉成本 ${fmt(p.cost)} 元</b>` +
+            `<span class="muted">（價差 ${signed(p.spread)}　手續費 ${fmt(p.fee)}　交易稅 ${fmt(p.tax)}）</span><br>` +
+            (p.realized === null
+              ? '<span class="muted">原部位沒填成本，不會產生實現損益</span>'
+              : `同時實現原本的未實現損益 <span class="${plClass(p.realized)}">${signed(p.realized)}</span>` +
+                `<span class="muted">（均價 ${fmtMax(v.cost, 2)} → ${fmtMax(far, 2)}）</span>`) +
+            `<br><span class="muted">部位不變，仍是 ${f.side === 'short' ? '空' : '多'} ${
+              fmtMax(f.lots, 2)} 口。實現損益早就存在，轉倉只是讓它入帳；真正的成本只有上面那一行。</span>`;
+      };
+      form.pid.onchange = () => { syncLots(); draw(); };
+      $$('input', form).forEach((i) => (i.oninput = draw));
+      syncLots();
+      if (preId) { form.pid.value = String(preId); syncLots(); }
+      draw();
+    },
+    collect: (fd) => {
+      const f = list.find((x) => String(x.id) === String(fd.get('pid')));
+      const lots = num(fd.get('lots'));
+      if (!f || !(lots > 0)) return undefined;
+      if (lots > num(f.lots) + 1e-9) { toast('口數超過持有量', 3000); return undefined; }
+      return { f, lots, near: num(fd.get('near')), far: num(fd.get('far')),
+               trade_date: fd.get('trade_date') || todayISO(),
+               note: String(fd.get('note') || '').trim() || null };
+    },
+  });
+  if (!res || res.action !== 'save') return;
+
+  const { f, lots, near, far, trade_date, note } = res.values;
+  const isLong = f.side !== 'short';
+  const base = {
+    kindKey: f.kind === 'stock' ? 'fut_stock' : 'fut_index',
+    market: 'futures', fut_kind: f.kind, fut_size: num(f.size),
+    is_day_trade: false, trade_date,
+    symbol: f.symbol, name: f.name || null, quantity: lots,
+  };
+  try {
+    // **順序不能反。**先平倉才會用舊均價算出實現損益，
+    // 先建倉的話均價會先被拉走，實現損益就錯了。
+    await saveTrade({ ...base, side: isLong ? 'sell' : 'buy', price: near,
+                      note: note ? `轉倉平倉・${note}` : '轉倉平倉' });
+    await saveTrade({ ...base, side: isLong ? 'buy' : 'sell', price: far,
+                      note: note ? `轉倉建倉・${note}` : '轉倉建倉' });
+    toast('轉倉完成，已記錄兩筆', 3000);
+  } catch (e) {
+    fail(e);
+  }
+}
+
 function renderHoldings(el) {
   const c = compute();
   const stockRows = state.stocks.map((s) => {
@@ -2282,7 +2397,8 @@ function renderHoldings(el) {
     section('期貨部位（指數 + 個股）', 'future', futRows,
       `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
         ? '<span class="muted">填了平均成本才會顯示損益</span>'
-        : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}`) +
+        : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}` +
+      (state.futures.length ? '<br><button type="button" class="small" data-roll>期貨轉倉</button>' : '')) +
     section('權證', 'warrant', warRows,
       `市值 ${fmt(c.warMarket)}　delta 曝險 ${fmt(c.warExp)}　最大損失 ${fmt(c.warMaxLoss)}${
         c.warProfit === null ? '' : `　<span class="${plClass(c.warProfit)}">${signed(c.warProfit)}</span>`}${
@@ -2302,6 +2418,8 @@ function renderHoldings(el) {
       delta 由期交所結算價每天自動反推，不用手動填。</p>`;
   bindListActions(el);
   $$('[data-eps]', el).forEach((b) => (b.onclick = () => editEps(b.dataset.eps, b.dataset.nm)));
+  const rollBtn = $('[data-roll]', el);
+  if (rollBtn) rollBtn.onclick = () => rollFutures(null);
 }
 
 function renderFunds(el) {
