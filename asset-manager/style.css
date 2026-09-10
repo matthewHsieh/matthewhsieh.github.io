@@ -423,3 +423,14 @@ textarea.journal-input {
   background: var(--card); color: var(--text);
   border: 1px solid var(--primary);
 }
+
+/* 紀錄頁：分類篩選與按日分組 */
+.hist-seg { margin: 10px 0; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.grid4 .mini .label { font-size: 12px; }
+.grid4 .mini .value { font-size: 16px; }
+.day-group { margin-top: 12px; }
+.day-head {
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  font-size: 14px; position: sticky; top: 0; background: var(--card); z-index: 1;
+}

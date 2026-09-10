@@ -35,6 +35,7 @@ const state = {
   riskStats: [],   // 報酬/波動計分
   usStats: [], usThemeTrend: [], usThemeMembers: [],
   themeMarket: 'tw',   // 族群頁看台股還是美股
+  histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 波段 / 轉倉
   rules: [],       // 自己定的紀律
   journalDays: [], // 每日心得＋戰績
   openTheme: null,
@@ -433,12 +434,30 @@ function matchDayTrades(trades, extra) {
   return { perTrade, openLeft };
 }
 
+// 一筆交易屬於哪一類。轉倉要獨立出來，因為它的「已實現損益」
+// 只是把原本就存在的未實現損益入帳，不是今天做出來的績效。
+// 實例：2026-09-10 台玻轉倉一筆就 -130,020，跟當天當沖 +34,500 混在一起看，
+// 會誤以為當沖在虧錢，其實剛好相反。
+const tradeCategory = (t) =>
+  String(t.note || '').startsWith('轉倉') ? 'roll'
+    : t.is_day_trade ? 'day' : 'swing';
+
+const CAT_LABEL = { day: '當沖', swing: '波段', roll: '轉倉' };
+
+// 一筆交易的淨損益（已扣手續費與交易稅）
+function tradeNet(t, rs) {
+  const c = costTwd(t, !!t.is_day_trade);
+  const m = t.is_day_trade ? rs.perTrade.get(t.id) : null;
+  const r = m ? m.pl * (m.ccy === 'USD' ? num(state.settings.usd_twd) : 1) : realizedTwd(t);
+  return { net: (r ?? 0) - c, cost: c, matched: m };
+}
+
 function realizedSummary() {
   const { perTrade, openLeft } = matchDayTrades(state.trades);
   const byDate = new Map();
   const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
   const twd = (v, ccy) => v * (ccy === 'USD' ? num(state.settings.usd_twd) : 1);
-  let gross = 0, dayNet = 0, swingNet = 0, closes = 0, cost = 0;
+  let gross = 0, dayNet = 0, swingNet = 0, rollNet = 0, closes = 0, cost = 0;
 
   for (const t of state.trades) {
     // 損益：當沖看 FIFO 配對結果，其餘看當初存下來的值
@@ -451,20 +470,22 @@ function realizedSummary() {
     }
     if (v !== null) {
       closes += 1; gross += v;
-      if (t.is_day_trade) dayNet += v; else swingNet += v;
+      const cat = tradeCategory(t);
+      if (cat === 'day') dayNet += v; else if (cat === 'roll') rollNet += v; else swingNet += v;
       add(t.trade_date, v);
     }
     // 成本：每一筆都算，買進也有手續費
     const c = costTwd(t, !!t.is_day_trade);
     cost += c;
     add(t.trade_date, -c);
-    if (t.is_day_trade) dayNet -= c; else swingNet -= c;
+    const cc = tradeCategory(t);
+    if (cc === 'day') dayNet -= c; else if (cc === 'roll') rollNet -= c; else swingNet -= c;
   }
 
   const dates = [...byDate.keys()].sort();
   let cum = 0;
   const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
-  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, closes, series,
+  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, roll: rollNet, closes, series,
            dayKeys: dayTradeKeys(state.trades), perTrade, openLeft };
 }
 
@@ -2309,7 +2330,7 @@ async function rollFutures(preId) {
     kindKey: f.kind === 'stock' ? 'fut_stock' : 'fut_index',
     market: 'futures', fut_kind: f.kind, fut_size: num(f.size),
     is_day_trade: false, trade_date,
-    symbol: f.symbol, name: f.name || null, quantity: lots,
+    symbol: f.symbol, name: f.name || TW_STOCKS[norm(f.symbol)] || null, quantity: lots,
   };
   try {
     // **順序不能反。**先平倉才會用舊均價算出實現損益，
@@ -2458,11 +2479,14 @@ function renderHistory(el) {
     <div class="card" id="chart-lev"><div class="list-title">槓桿走勢</div></div>
     <div class="card">
       <div class="list-title">買賣收益（已實現）</div>
-      <div class="grid3">
+      <div class="grid4">
         <div class="mini"><div class="label">淨損益</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
-        <div class="mini"><div class="label">當沖（淨）</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
-        <div class="mini"><div class="label">波段（淨）</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
+        <div class="mini"><div class="label">當沖</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
+        <div class="mini"><div class="label">波段</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
+        <div class="mini"><div class="label">轉倉</div><div class="value ${plClass(rs.roll)}">${signed(rs.roll)}</div></div>
       </div>
+      <p class="sub muted" style="margin-top:6px">轉倉單獨一格，因為它的已實現損益只是把
+        <b>原本就存在的未實現損益入帳</b>，不是那天做出來的績效。混在波段裡會看錯。</p>
       <div class="row-between line"><span>已實現損益（未扣成本）</span><span class="${plClass(rs.gross)}">${signed(rs.gross)}</span></div>
       <div class="row-between line"><span>手續費 ＋ 交易稅</span><span class="loss">${signed(-rs.cost)}</span></div>
       <div class="row-between line"><span><b>淨損益</b></span><span class="${plClass(rs.total)}"><b>${signed(rs.total)}</b></span></div>
@@ -2476,32 +2500,67 @@ function renderHistory(el) {
     </div>
     ${tradeButton()}
     <div class="card list">
-      <div class="list-title">歷史交易紀錄</div>
-      ${trades.length
-        ? trades.map((t) => `<button type="button" class="item" data-del-trade="${t.id}">
-            <span class="item-main">
-              <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
-                t.market === 'option' ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}` : `${esc(t.symbol)} ${esc(t.name || '')}`}${
-                t.is_day_trade ? '<span class="badge day-badge">當沖</span>' : ''}</span>
-              <span class="item-sub">${(() => {
-                const m = t.is_day_trade ? rs.perTrade.get(t.id) : null;
-                return m ? `沖銷 ${fmtQty(t.market, m.qty)} @ ${fmtMax(m.openAvg, 2)} → ${fmtMax(t.price, 2)}・` : '';
-              })()}${esc(t.trade_date)}・${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
-                t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${t.note ? '・' + esc(t.note) : ''}</span>
-            </span>
-            <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
-              <span class="item-sub">@ ${fmtMax(t.price, 2)}</span>
-              <span class="item-sub">${(() => {
-                const c = costTwd(t, !!t.is_day_trade);
-                const m = t.is_day_trade ? rs.perTrade.get(t.id) : null;
-                const r = m ? m.pl * (m.ccy === 'USD' ? num(state.settings.usd_twd) : 1) : realizedTwd(t);
-                const net = (r ?? 0) - c;
-                return `<span class="${plClass(net)}">${signed(net)}</span>` +
-                       `<span class="muted"> 　成本 ${fmt(c)}</span>`;
-              })()}</span></span>
-          </button>`).join('')
-        : '<p class="muted">尚無交易。按上方「記一筆交易」開始。</p>'}
-      ${trades.length ? '<p class="hint">點一筆可刪除並還原部位。要修改請刪除後重新記錄。</p>' : ''}
+      <div class="row-between">
+        <span class="list-title">歷史交易紀錄</span>
+        <span class="sub muted">${(() => {
+          const f = state.histFilter || 'all';
+          const n = trades.filter((t) => f === 'all' || tradeCategory(t) === f).length;
+          return `${fmt(n)} 筆`;
+        })()}</span>
+      </div>
+      <div class="seg hist-seg">${[['all', '全部'], ['day', '當沖'], ['swing', '波段'], ['roll', '轉倉']]
+        .map(([v, l]) => {
+          const n = trades.filter((t) => v === 'all' || tradeCategory(t) === v).length;
+          return `<label><input type="radio" name="histf" value="${v}" ${
+            (state.histFilter || 'all') === v ? 'checked' : ''}><span>${l} ${fmt(n)}</span></label>`;
+        }).join('')}</div>
+      ${(() => {
+        const f = state.histFilter || 'all';
+        const shown = trades.filter((t) => f === 'all' || tradeCategory(t) === f);
+        if (!shown.length) return '<p class="muted">這個分類沒有紀錄。</p>';
+        // 依日期分組，每天給小計。原本全部混在一起，
+        // 台玻轉倉的 -130,020 跟當天當沖 +34,500 疊在一起完全看不出發生什麼事。
+        const days = [];
+        for (const t of shown) {
+          if (!days.length || days[days.length - 1].d !== t.trade_date) days.push({ d: t.trade_date, list: [] });
+          days[days.length - 1].list.push(t);
+        }
+        return days.map((g) => {
+          const sub = g.list.reduce((a, t) => a + tradeNet(t, rs).net, 0);
+          return `<div class="day-group">
+            <div class="row-between day-head">
+              <span><b>${esc(g.d)}</b><span class="muted">　${fmt(g.list.length)} 筆</span></span>
+              <span class="${plClass(sub)}">${signed(sub)}</span>
+            </div>
+            ${g.list.map((t) => {
+              const { net, cost, matched } = tradeNet(t, rs);
+              const cat = tradeCategory(t);
+              return `<button type="button" class="item" data-del-trade="${t.id}">
+                <span class="item-main">
+                  <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
+                    t.market === 'option'
+                      ? `TXO ${esc(t.opt_expiry)} ${strikeText(t.opt_strike)} ${cpLabel(t.opt_cp)}`
+                      : `${esc(t.symbol)} ${esc(t.name || TW_STOCKS[norm(t.symbol)] || '')}`}${
+                    cat === 'day' ? '<span class="badge day-badge">當沖</span>'
+                    : cat === 'roll' ? '<span class="badge">轉倉</span>' : ''}</span>
+                  <span class="item-sub">${matched
+                    ? `沖銷 ${fmtQty(t.market, matched.qty)} @ ${fmtMax(matched.openAvg, 2)} → ${fmtMax(t.price, 2)}・` : ''
+                  }${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
+                    t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${
+                    t.note ? '・' + esc(t.note) : ''}</span>
+                </span>
+                <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
+                  <span class="item-sub">@ ${fmtMax(t.price, 2)}</span>
+                  <span class="item-sub"><span class="${plClass(net)}">${signed(net)}</span>
+                    <span class="muted"> 　成本 ${fmt(cost)}</span></span></span>
+              </button>`;
+            }).join('')}
+          </div>`;
+        }).join('');
+      })()}
+      <p class="hint">上面四個分類可以切換。<b>轉倉</b>的損益是把原本的未實現入帳，不是那天的績效；
+        <b>波段</b>是用當時的平均成本結算；<b>當沖</b>是同一組買賣直接配對，不碰長期部位。
+        每天右邊是<b>當日該分類的小計</b>。點一筆可刪除並還原部位，要修改請刪除後重新記錄。</p>
     </div>
     <div class="card">
       <div class="row-between">
@@ -2567,6 +2626,10 @@ function renderHistory(el) {
   $('#snap-btn2', el).onclick = saveSnapshot;
   $$('[data-del-snap]', el).forEach((b) => (b.onclick = () => deleteSnapshot(b.dataset.delSnap)));
   $$('[data-del-trade]', el).forEach((b) => (b.onclick = () => deleteTrade(b.dataset.delTrade)));
+  $$('input[name=histf]', el).forEach((r) => (r.onchange = () => {
+    state.histFilter = r.value;
+    renderHistory(el);
+  }));
   bindListActions(el);
 }
 
@@ -2848,8 +2911,10 @@ function renderJournal(el) {
           </div>`).join('')
         : '<p class="muted">還沒有規則。</p>'}
       <p class="hint">規則不會擋住你存檔，那是你的錢、你的帳。
-        但違規會被記下來，每天在這一頁攤開。
-        手癢是在下單那一刻發生的，不是晚上寫日誌的時候，所以記交易時就會跳出來提醒。</p>
+        <b>系統跟券商的下單 App 沒有連線</b>，所以擋不到你下單，只能在你回來記錄時算給你看。
+        像「選擇權只做避險」「當沖一次一檔」「單檔上限」這種，
+        從記錄下來的資料就算得出來，會標「今天違反」並累計；
+        而「不放空當天強勢股」這種要看盤中強弱的，事後無從判斷，只能當提醒靠自己記得。</p>
     </div>
 
     <div class="card">
