@@ -99,6 +99,15 @@ $$;
 --   兩邊各自判斷「是不是已經有今天的資料」，已經有就跳過，
 --   所以一天可以安全地跑很多次，不會重複打對方的 API。
 -- ------------------------------------------------------------
+-- 當天的開高低與漲跌。**跟收盤價同一個請求裡本來就有，不必多打。**
+-- 為什麼特地存「最低價」：使用者的紀律是「不放空當天強勢的股票」，
+-- 而判斷強弱要看它從當日低點拉了多少，不是看對昨收漲跌——
+-- 華新科 2026-09-10 對昨收是跌的，但已經從低點 303 拉了 14 塊，他在那裡放空賠了 42,000。
+alter table public.market_prices add column if not exists chg  numeric;  -- 對昨收的漲跌價差
+alter table public.market_prices add column if not exists open numeric;
+alter table public.market_prices add column if not exists high numeric;
+alter table public.market_prices add column if not exists low  numeric;
+
 create or replace function public.refresh_tw_prices()
 returns integer language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -141,12 +150,21 @@ begin
           where t ->> 'title' like '%每日收盤行情%' limit 1;
 
           if tbl is not null and jsonb_array_length(coalesce(tbl -> 'data', '[]'::jsonb)) > 0 then
-            insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
-            select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1), public.pm_num(r ->> 8), d - i, 'twse', now()
+            -- 第 9 欄是漲跌方向，證交所把它包在 HTML 裡（<p style= color:green>-</p>），
+            -- 所以判斷負號要用字串比對，第 10 欄才是絕對值
+            insert into public.market_prices (market, symbol, name, price,
+                                              chg, open, high, low, as_of, src, updated_at)
+            select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1), public.pm_num(r ->> 8),
+                   case when position('-' in coalesce(r ->> 9, '')) > 0
+                        then -public.pm_num(r ->> 10) else public.pm_num(r ->> 10) end,
+                   public.pm_num(r ->> 5), public.pm_num(r ->> 6), public.pm_num(r ->> 7),
+                   d - i, 'twse', now()
             from jsonb_array_elements(tbl -> 'data') r
             where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(r ->> 8) > 0
             on conflict (market, symbol) do update
               set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+                  chg = excluded.chg, open = excluded.open,
+                  high = excluded.high, low = excluded.low,
                   as_of = excluded.as_of, src = excluded.src, updated_at = now();
             get diagnostics n = row_count; total := total + n;
             perform public.pm_log('twse_mi_index ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
@@ -192,13 +210,19 @@ begin
   else
     begin
       payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')::jsonb;
-      insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+      -- 櫃買的 Change 已經帶正負號，不用像證交所那樣拆
+      insert into public.market_prices (market, symbol, name, price,
+                                        chg, open, high, low, as_of, src, updated_at)
       select 'tw', upper(btrim(e ->> 'SecuritiesCompanyCode')), btrim(e ->> 'CompanyName'),
-             public.pm_num(e ->> 'Close'), public.pm_roc_date(e ->> 'Date'), 'tpex', now()
+             public.pm_num(e ->> 'Close'), public.pm_num(e ->> 'Change'),
+             public.pm_num(e ->> 'Open'), public.pm_num(e ->> 'High'), public.pm_num(e ->> 'Low'),
+             public.pm_roc_date(e ->> 'Date'), 'tpex', now()
       from jsonb_array_elements(payload) e
       where btrim(e ->> 'SecuritiesCompanyCode') ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(e ->> 'Close') > 0
       on conflict (market, symbol) do update
         set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
+            chg = excluded.chg, open = excluded.open,
+            high = excluded.high, low = excluded.low,
             as_of = excluded.as_of, src = excluded.src, updated_at = now();
       get diagnostics n = row_count; total := total + n;
       perform public.pm_log('tpex', n, true, null);

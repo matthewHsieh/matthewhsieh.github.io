@@ -33,6 +33,16 @@ language sql stable security definer set search_path = public as $fn$
     -- 產業別是證交所公告月營收時附的，比自己分的族群粗，但可以當交叉檢查
     'industry', (select r.industry from public.revenue r
                   where r.symbol = s.sym and r.industry is not null order by r.ym desc limit 1),
+    -- 今天的開高低與漲跌。**「從當日低點拉起多少」才是判斷強弱的數字**，
+    -- 不是對昨收的漲跌幅，理由見 theme_day.sql。
+    'day', (select jsonb_build_object('price', m.price, 'chg', m.chg,
+                     'chg_pct', case when m.price - coalesce(m.chg, 0) > 0
+                                     then m.chg / (m.price - m.chg) end,
+                     'open', m.open, 'high', m.high, 'low', m.low,
+                     'off_low', case when m.low > 0 then m.price / m.low - 1 end,
+                     'as_of', m.as_of)
+             from public.market_prices m
+             where s.mk = 'tw' and m.market = 'tw' and m.symbol = s.sym and m.chg is not null),
     'val', (select jsonb_build_object('pe', v.pe, 'pb', v.pb, 'dy', v.dy,
                                       'as_of', v.as_of, 'src', v.src)
               from public.valuation v where v.symbol = s.sym),

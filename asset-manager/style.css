@@ -493,3 +493,15 @@ textarea.journal-input {
 }
 .info-dot:hover, .info-dot:focus { color: var(--primary); }
 .line.member { cursor: pointer; }
+
+/* ---------- 今日族群漲跌 ---------- */
+.day-theme { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.day-theme:last-child { border-bottom: none; }
+.day-theme.mine { border-left: 2px solid var(--primary); padding-left: 8px; }
+/* 「整群在漲」＝不能去空的族群，所以要跳出來 */
+.day-theme.hot {
+  border-left: 2px solid var(--gain); padding-left: 8px;
+  background: color-mix(in srgb, var(--gain) 6%, transparent);
+}
+.warn-text { color: var(--gain); margin: 8px 0 0; line-height: 1.6; }
+.link { color: var(--primary); cursor: pointer; }

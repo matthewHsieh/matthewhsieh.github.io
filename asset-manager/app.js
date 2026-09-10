@@ -35,6 +35,7 @@ const state = {
   riskStats: [],   // 報酬/波動計分
   usStats: [], usThemeTrend: [], usThemeMembers: [],
   themeMeta: [], themeLinks: [],   // 產業樹與供應鏈關係
+  themeDay: [],    // 今天哪個族群在動
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
   histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 波段 / 轉倉
@@ -1007,12 +1008,13 @@ async function loadAll() {
     sb.rpc('us_theme_members', {}),
     sb.from('theme_meta').select('*'),
     sb.from('theme_links').select('*'),
+    sb.rpc('theme_day', {}),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, risk, ustat, utrend, umem, tmeta, tlinks, tday, rules, jdays, prices] = results;
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
   state.stocks = stocks.data ?? [];
   state.futures = futures.data ?? [];
@@ -1034,6 +1036,7 @@ async function loadAll() {
   state.usThemeMembers = umem.data ?? [];
   state.themeMeta = tmeta.data ?? [];
   state.themeLinks = tlinks.data ?? [];
+  state.themeDay = tday.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -3208,6 +3211,8 @@ function stockCardHtml(mk, sym) {
           isNum(risk.lo3y) && num(risk.lo3y) > 0
             ? `　距三年低點 ${signed((num(price) / num(risk.lo3y) - 1) * 100, 0)}%` : ''}</p>` : ''}
 
+    <div data-sc-day></div>
+
     ${sec('我的部位', holds.length
       ? holds.map((h) => `${kv(h.how, `${h.qty}${
           isNum(h.expo) && num(h.expo) > 0
@@ -3309,6 +3314,21 @@ async function openStock(mk, sym) {
   if (ind && d.industry) ind.textContent = '・' + d.industry;
   const rn = $('[data-sc-revnext]', body);
   if (rn && isNum(d.us?.rev_next)) rn.textContent = usdB(d.us.rev_next) + '美元　';
+
+  // 今天的表現。**「從當日低點拉起多少」才是強弱**，不是對昨收的漲跌幅。
+  // 華新科 2026-09-10 對昨收 +4.5% 看起來還好，但它從低點 303 拉到 334 是 +10.2%。
+  const dh = $('[data-sc-day]', body);
+  if (dh && d.day && isNum(d.day.chg)) {
+    const strong = num(d.day.off_low) > 0.05;
+    dh.innerHTML = `<div class="sc-sec"><div class="sc-title">今日（${esc(d.day.as_of || '')} 收盤）</div>
+      ${kv('對昨收', `<b class="${plClass(num(d.day.chg_pct))}">${
+        signed(num(d.day.chg_pct) * 100, 2)}%</b>　${signed(num(d.day.chg), 2)}`)}
+      ${kv('從當日低點拉起', `<b class="${strong ? 'gain' : ''}">${
+        signed(num(d.day.off_low) * 100, 1)}%</b>${strong ? '　⚠ 今天是強勢股' : ''}`)}
+      ${kv('開 / 高 / 低', `${fmtMax(d.day.open, 2)} / ${fmtMax(d.day.high, 2)} / ${fmtMax(d.day.low, 2)}`)}
+      ${strong ? '<p class="sub warn-text">今天從低點拉起超過 5%。你的紀律是<b>不放空當天強勢的股票</b>，'
+        + '尤其族群一起漲的時候。</p>' : ''}</div>`;
+  }
 
   const vh = $('[data-sc-val]', body);
   if (vh && d.val) {
@@ -3484,9 +3504,69 @@ function renderThemeTree(host, mk) {
   });
 }
 
+// ------------------------------------------------------------
+// 今日：哪個族群在動
+//   這頁是為了「永遠不要放空當天強勢的股票」那條紀律做的。
+//   要能執行那條規則，得先看得到「今天是不是整群在漲」，
+//   以及每一檔「從當日低點拉了多少」——那才是判斷強弱的數字。
+//
+//   華新科 2026-09-10 是活教材：對昨收 +4.5% 看起來還好，
+//   但它從低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天最強的族群。
+//   使用者在 317.5 空 2 口、328 回補，賠了 42,000。
+//
+//   這是收盤資料，用途是隔天回頭看自己做了什麼，不是盤中攔截。
+// ------------------------------------------------------------
+function renderThemeDay(host) {
+  const rows = state.themeDay.filter((t) => isNum(t.chg_med));
+  if (!rows.length) {
+    host.innerHTML = '<div class="card"><p class="muted">還沒有當日漲跌資料，按右上角 ↻ 更新。</p></div>';
+    return;
+  }
+  const held = heldSymbols();
+  const mineThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+  const asOf = rows.map((t) => t.as_of).filter(Boolean).sort().pop();
+  // 整群在漲才叫族群性大漲：中位數為正、而且上漲家數佔多數
+  const hot = (t) => num(t.chg_med) > 0.02 && num(t.up) > num(t.members) / 2;
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">今日族群漲跌</div>
+      <p class="sub muted">${esc(asOf || '')} 收盤。取<b>中位數</b>不取平均，一檔漲停就會把平均拉爛。
+        <b>整群在漲</b>（中位數 &gt;2% 且過半上漲）的會標紅框——
+        <b>那是不能去空的族群。</b></p>
+    </div>
+    <div class="card list">
+      ${rows.map((t) => `<div class="day-theme${hot(t) ? ' hot' : ''}${
+        mineThemes.has(t.theme) ? ' mine' : ''}">
+        <div class="row-between">
+          <span class="list-title">${esc(t.theme)}${
+            mineThemes.has(t.theme) ? '<span class="badge day-badge">持有</span>' : ''}${
+            hot(t) ? '<span class="badge warn-badge">整群在漲</span>' : ''}</span>
+          <span class="theme-yoy ${plClass(num(t.chg_med))}">${signed(num(t.chg_med) * 100, 2)}%</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>${fmt(t.members)} 檔　<span class="gain">漲 ${fmt(t.up)}</span>　<span class="loss">跌 ${fmt(t.down)}</span></span>
+          <span>從低點拉起 <b class="${num(t.off_low_med) > 0.03 ? 'gain' : ''}">${
+            isNum(t.off_low_med) ? signed(num(t.off_low_med) * 100, 1) + '%' : '–'}</b></span>
+        </div>
+        ${t.top_symbol ? `<div class="row-between sub muted">
+          <span>最強 <span class="link" role="button" tabindex="0" data-stock="tw:${esc(norm(t.top_symbol))}">${
+            esc(t.top_symbol)} ${esc(t.top_name || '')}</span></span>
+          <span class="${plClass(num(t.top_chg))}">${signed(num(t.top_chg) * 100, 2)}%</span>
+        </div>` : ''}
+      </div>`).join('')}
+    </div>
+    <p class="hint"><b>「從低點拉起」比「對昨收漲跌」重要。</b>
+      一檔今天對昨收還是跌的，不代表它弱——華新科 2026-09-10 對昨收看起來只有 +4.5%，
+      但它從當日低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天中位數最高的族群。
+      在那種位置放空，等於站在整群買盤的對面。
+      這裡是<b>收盤</b>資料，不是即時報價，用途是隔天回頭檢查自己昨天做了什麼。</p>`;
+  bindStockOpen(host);
+}
+
 function renderThemes(el) {
   const mk = state.themeMarket === 'us' ? 'us' : 'tw';
-  const vw = state.themeView === 'tree' ? 'tree' : 'list';
+  const vw = ['tree', 'day'].includes(state.themeView) ? state.themeView : 'list';
   el.innerHTML = `<div class="seg market-seg">
       <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
       <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
@@ -3494,12 +3574,17 @@ function renderThemes(el) {
     <div class="seg view-seg">
       <label><input type="radio" name="tvw" value="list" ${vw === 'list' ? 'checked' : ''}><span>清單</span></label>
       <label><input type="radio" name="tvw" value="tree" ${vw === 'tree' ? 'checked' : ''}><span>產業鏈</span></label>
+      ${mk === 'tw'
+        ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>` : ''}
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
-  if (vw === 'tree') renderThemeTree(host, mk);
+  // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
+  if (vw === 'day' && mk === 'tw') renderThemeDay(host);
+  else if (vw === 'tree') renderThemeTree(host, mk);
   else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
+    if (r.value === 'us' && state.themeView === 'day') state.themeView = 'list';
     renderThemes(el);
   }));
   $$('input[name=tvw]', el).forEach((r) => (r.onchange = () => {
