@@ -195,4 +195,53 @@ insert into public.us_themes (theme, symbol, name, sort) values
 
 ('銅 礦業',            'FCX',  'Freeport-McMoRan', 1),
 ('銅 礦業',            'SCCO', 'Southern Copper', 2),
-('銅 礦業',            'TECK', 'Teck Resources', 3);
+('銅 礦業',            'TECK', 'Teck Resources', 3),
+
+-- ── 2026-09-11 擴充 ──────────────────────────────
+-- 原本只有 126 檔。這批是用**公司自己的業務描述**找出來的：
+-- 先撈未分類的，再用具體字眼比對（optical transceiver、uranium、foundry…），
+-- 然後一檔一檔看描述決定。**關鍵字直接套會出一堆假陽性**——
+-- 搜 satellite 撈到 Fox 電視台跟 Boeing，搜 cybersecurity 撈到 KKR 私募基金，
+-- 搜 uranium 撈到金礦公司，全部都要人看過才收。
+-- 有幾檔是被關鍵字分錯再手動改的：FormFactor 與 Aehr 撈到「邊緣 AI 終端晶片」，
+-- 但它們做的是探針卡與燒機測試，應該歸封測；SK hynix 撈到晶圓代工，實際是記憶體。
+('AI 算力租賃',           'BRUN',  'Boost Run', 6),
+('AI 算力租賃',           'NBIS',  'Nebius Group', 7),
+('AI 算力租賃',           'SHAZ',  'SharonAI', 8),
+('AI 算力租賃',           'WYFI',  'WhiteFiber', 9),
+('DRAM HBM',          'SKHY',  'SK hynix', 2),
+('EMS 電子代工',          'PLXS',  'Plexus', 5),
+('GPU 通用加速器',         'CBRS',  'Cerebras Systems', 3),
+('NAND SSD',          'SIMO',  'Silicon Motion', 3),
+('光模組 光傳輸',           'POET',  'POET Technologies', 4),
+('光通訊晶片 DSP',         'MXL',   'MaxLinear', 4),
+('太空 衛星',             'BKSY',  'BlackSky', 4),
+('太空 衛星',             'GSAT',  'Globalstar', 5),
+('太空 衛星',             'IRDM',  'Iridium', 6),
+('太空 衛星',             'MDA',   'MDA Space', 7),
+('太空 衛星',             'PL',    'Planet Labs', 8),
+('太空 衛星',             'SATL',  'Satellogic', 9),
+('太空 衛星',             'VSAT',  'Viasat', 10),
+('封測 測試設備',           'AEHR',  'Aehr Test Systems', 4),
+('封測 測試設備',           'ASX',   'ASE Technology', 5),
+('封測 測試設備',           'FORM',  'FormFactor', 6),
+('小型模組核能 SMR',        'BWXT',  'BWX Technologies', 4),
+('晶圓代工',              'TSEM',  'Tower Semiconductor', 5),
+('沉積 蝕刻設備',           'VECO',  'Veeco Instruments', 4),
+('發電設備 渦輪機',          'INIO',  'INNIO', 2),
+('設備零組件 材料',          'APD',   'Air Products', 6),
+('設備零組件 材料',          'LIN',   'Linde', 7),
+('設備零組件 材料',          'Q',     'Qnity Electronics', 8),
+('資安',                'FTNT',  'Fortinet', 5),
+('資安',                'NTSK',  'Netskope', 6),
+('資安',                'QLYS',  'Qualys', 7),
+('資料中心工程營造',          'AGX',   'Argan', 8),
+('資料庫 可觀測性',          'DT',    'Dynatrace', 5),
+('量測 檢測設備',           'COHU',  'Cohu', 5),
+('鈾 核燃料',             'DNN',   'Denison Mines', 5),
+('鈾 核燃料',             'NXE',   'NexGen Energy', 6),
+('鈾 核燃料',             'UROY',  'Uranium Royalty', 7),
+('銅 礦業',              'ERO',   'Ero Copper', 4),
+('銅 礦業',              'HBM',   'Hudbay Minerals', 5),
+('雲端超大規模',            'AKAM',  'Akamai', 6),
+('雲端超大規模',            'RXT',   'Rackspace', 7);
