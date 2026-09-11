@@ -450,30 +450,6 @@ textarea.journal-input {
   font-size: 14px; position: sticky; top: 0; background: var(--card); z-index: 1;
 }
 
-/* ---------- 產業樹 ---------- */
-.view-seg { margin-bottom: 12px; }
-.tree-group .list-title { margin-bottom: 6px; }
-.tree-node {
-  padding: 8px 0 8px 10px; border-left: 2px solid var(--border);
-  margin: 4px 0; cursor: pointer;
-}
-.tree-node.mine { border-left-color: var(--primary); }
-.stage {
-  display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  margin-right: 6px; background: var(--bg); color: var(--muted); border: 1px solid var(--border);
-}
-.stage-上游 { color: var(--series-1); }
-.stage-中游 { color: var(--series-2); }
-.stage-下游 { color: var(--series-3); }
-.chain-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
-.chain-label { font-size: 12px; color: var(--muted); min-width: 30px; }
-.chip {
-  font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 999px;
-  background: var(--bg); color: var(--text); border: 1px solid var(--border); cursor: pointer;
-}
-.chip.plain { cursor: default; }
-.chain-row.members { border-top: 1px solid var(--border); padding-top: 8px; }
-
 /* ---------- 個股速覽 ---------- */
 .chip.plain { cursor: pointer; }
 .info-wrap { padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); max-height: 90dvh; overflow: auto; }
@@ -574,3 +550,58 @@ textarea.journal-input {
 .screen-nums input { width: 100%; min-width: 0; padding: 7px 8px; }
 .screen-nums span { flex: none; }
 .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 產業地圖 ---------- */
+/* 三條帶子由上往下＝供應鏈的流向。**位置本身就是資訊**，
+   所以帶子要有可見的邊界與底色，不能只靠標籤。
+   上游偏冷色、下游偏暖色，是供應鏈圖的通用做法（左/上游用冷色、右/下游用暖色）。 */
+.view-seg { margin-bottom: 10px; }
+.mhead .mchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.mchips .chip { font-size: 12px; padding: 5px 10px; }
+.mchips .chip.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+
+.mapwrap { margin-top: 12px; }
+.mband {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 10px 12px; background: var(--card);
+  border-left-width: 3px;
+}
+.band-0 { border-left-color: var(--series-1); }
+.band-1 { border-left-color: var(--series-2); }
+.band-2 { border-left-color: var(--series-3); }
+.mband-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.mband-head b { font-size: 15px; }
+.mband-head .muted { font-size: 13px; }
+.mband-head .sub { flex-basis: 100%; margin: 0; }
+/* 一行三格，minmax(0,·) 免得長族群名把格線撐破 */
+.mgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.mflow { text-align: center; color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 0; }
+
+.mnode {
+  position: relative; display: flex; flex-direction: column; gap: 3px;
+  padding: 7px 8px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  min-width: 0;
+}
+.mnode.mine { border-left: 3px solid var(--primary); }
+.mname { font-size: 13px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.mrow { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }
+/* 選了一格之後，沒關係的整個變暗——關係直接顯示在圖上，不用開面板 */
+.mnode.dim { opacity: .25; }
+.mnode.rel-self { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary) inset; }
+.mnode.rel-up { border-color: var(--series-1); }
+.mnode.rel-down { border-color: var(--series-3); }
+.mflag {
+  position: absolute; top: -7px; right: 6px; font-size: 10px; padding: 1px 5px;
+  border-radius: 999px; background: var(--card); border: 1px solid var(--border); color: var(--muted);
+}
+.mnode.rel-up .mflag { color: var(--series-1); border-color: var(--series-1); }
+.mnode.rel-down .mflag { color: var(--series-3); border-color: var(--series-3); }
+
+.mdetail { border: 1px solid var(--primary); }
+.mgroup { margin-top: 10px; }
+.mlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.mlink { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; flex-wrap: wrap; }
+.marrow { color: var(--muted); flex: none; }
+.mlink .link { background: none; border: none; padding: 0; font: inherit; font-size: 14px; }
+.mlink .sub { flex-basis: 100%; margin: 0 0 0 18px; line-height: 1.45; }

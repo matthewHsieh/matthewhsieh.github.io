@@ -40,6 +40,7 @@ const state = {
   screen: null,    // 選股條件
   screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
   screenOpen: false,                  // 選股條件面板要不要展開
+  mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -3553,21 +3554,27 @@ async function openStock(mk, sym) {
 
 // 族群頁：台股看落後的月營收，美股看前瞻的營收預估，兩邊分開看
 // ------------------------------------------------------------
-// 產業樹與供應鏈
-//   平的清單看不出誰餵誰。攤成「大類 → 供應鏈位置 → 族群」之後，
-//   才看得出自己是不是把同一條鏈買了三次。
-//   點一個族群會展開它的上游與下游，可以順著鏈一路點下去。
+// 產業地圖
+//
+//   **第一版是分組的卡片列表，不是地圖。** 39 個族群疊成 3,300px，
+//   上中下游只是一個小標籤而不是位置，關係只有「下游 1」這種文字，
+//   而且要點開才看得到。名字叫產業鏈，看起來卻跟清單沒兩樣。
+//
+//   實際算過之後發現：台股 39 個族群裡有 35 個是互相連通的，
+//   而且全部匯流到伺服器組裝。所以這根本不是「很多條鏈」，是**一條大鏈**。
+//   那就該照它本來的樣子畫——上游、中游、下游三條帶子，由上往下流。
+//
+//   位置本身要帶資訊：在哪一條帶子上＝在供應鏈的哪一段，
+//   不用再讀標籤。點一個族群時不是展開一塊面板，而是**把整張圖變暗、
+//   只留它的上下游**，關係直接顯示在圖上。
 // ------------------------------------------------------------
-const STAGE_ORDER = { 上游: 0, 中游: 1, 下游: 2 };
+const STAGES = [
+  ['上游', '原料與設備', '誰供貨給這條鏈'],
+  ['中游', '製造與零組件', '把材料變成零件'],
+  ['下游', '成品與服務', '賣給終端客戶'],
+];
 
-// 這個族群的上游與下游
-const chainOf = (mk, theme) => ({
-  up: state.themeLinks.filter((l) => l.market === mk && l.dst === theme),
-  down: state.themeLinks.filter((l) => l.market === mk && l.src === theme),
-});
-
-// 樹狀圖要用的數字，台股與美股取的欄位不同，這裡統一
-function treeStats(mk, theme) {
+function themeStats(mk, theme) {
   if (mk === 'tw') {
     const t = state.themeTrend.find((x) => x.theme === theme);
     const v = state.themeVal.find((x) => x.theme === theme);
@@ -3576,216 +3583,139 @@ function treeStats(mk, theme) {
              ratio: v ? v.ratio_median : null, pe: v ? v.pe1_median : null };
   }
   const u = state.usThemeTrend.find((x) => x.theme === theme);
-  return { members: u ? num(u.members) : null,
-           growth: u ? num(u.growth_next) : null,
+  return { members: u ? num(u.members) : null, growth: u ? num(u.growth_next) : null,
            ratio: u ? u.ratio_median : null, pe: u ? u.pe_next_median : null };
 }
 
-function renderThemeTree(host, mk) {
+const linksOf = (mk, theme) => ({
+  up: state.themeLinks.filter((l) => l.market === mk && l.dst === theme),
+  down: state.themeLinks.filter((l) => l.market === mk && l.src === theme),
+});
+
+function renderThemeMap(host, mk) {
   const metas = state.themeMeta.filter((m) => m.market === mk);
   if (!metas.length) {
     host.innerHTML = '<div class="card"><p class="muted">還沒有產業分類資料。</p></div>';
     return;
   }
+  const sel = state.mapPick && metas.some((m) => m.theme === state.mapPick) ? state.mapPick : null;
+  const grp = state.mapGroup || '';
   const held = mk === 'tw' ? heldSymbols() : new Set(state.us.map((s) => norm(s.symbol)));
   const memberRows = mk === 'tw' ? state.themeMembers : state.usThemeMembers;
-  const mineThemes = new Set(memberRows.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+  const mine = new Set(memberRows.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
   const bench = mk === 'tw' ? idxRatio() : usIdxRatio();
+  const parents = [...new Set(metas.map((m) => m.parent))];
 
-  // 大類 → 族群，族群內先按上中下游再按自訂順序
-  const groups = [];
-  for (const m of metas) {
-    let g = groups.find((x) => x.parent === m.parent);
-    if (!g) { g = { parent: m.parent, list: [] }; groups.push(g); }
-    g.list.push(m);
-  }
-  for (const g of groups) {
-    g.list.sort((a, b) => (STAGE_ORDER[a.stage] ?? 9) - (STAGE_ORDER[b.stage] ?? 9)
-      || num(a.sort) - num(b.sort));
+  // 選了某個族群時，它的直接上下游要亮著，其餘變暗
+  const near = new Map();
+  if (sel) {
+    const c = linksOf(mk, sel);
+    near.set(sel, 'self');
+    c.up.forEach((l) => near.set(l.src, 'up'));
+    c.down.forEach((l) => near.set(l.dst, 'down'));
   }
 
-  host.innerHTML = `
-    <div class="card">
-      <div class="list-title">產業鏈</div>
-      <p class="sub muted">依<b>大類 → 供應鏈位置 → 族群</b>攤開，點一個族群看它的上游與下游。
-        ${mk === 'tw' ? '成長率是月營收年增（已發生）' : '成長率是明年營收預估（前瞻）'}，
-        報酬/波動的及格線是${mk === 'tw' ? '加權指數' : '那斯達克 100'}
-        ${isNum(bench) ? fmtMax(bench, 2) : '–'}。</p>
-    </div>
-    ${groups.map((g) => `
-      <div class="card tree-group">
-        <div class="list-title">${esc(g.parent)}<span class="muted sub">　${fmt(g.list.length)} 個族群</span></div>
-        ${g.list.map((m) => {
-          const s = treeStats(mk, m.theme);
-          const c = chainOf(mk, m.theme);
-          const mine = mineThemes.has(m.theme);
-          return `<div class="tree-node${mine ? ' mine' : ''}" data-node="${esc(m.theme)}">
-            <div class="row-between">
-              <span><span class="stage stage-${esc(m.stage || '')}">${esc(m.stage || '')}</span>
-                <b>${esc(m.theme)}</b>${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
-              <span class="${plClass(num(s.growth))}">${
-                isNum(s.growth) ? signed(num(s.growth) * 100, 1) + '%' : '–'}</span>
-            </div>
-            <div class="row-between sub muted">
-              <span>${fmt(s.members)} 檔${isNum(s.ratio)
-                ? `　報酬/波動 <b class="${num(s.ratio) > bench ? 'gain' : ''}">${fmtMax(s.ratio, 2)}</b>` : ''}${
-                isNum(s.pe) ? `　本益比 ${fmtMax(s.pe, 1)}x` : ''}</span>
-              <span>${c.up.length ? `上游 ${c.up.length}` : ''}${
-                c.up.length && c.down.length ? '・' : ''}${c.down.length ? `下游 ${c.down.length}` : ''}</span>
-            </div>
-            <div class="tree-body" hidden></div>
-          </div>`;
-        }).join('')}
-      </div>`).join('')}
-    <p class="hint">供應鏈關係是人工整理的，箭頭方向代表「出貨給」。
-      <b>攤開來看最大的用處是檢查自己有沒有把同一條鏈買了很多次。</b>
-      例如玻纖布 → CCL → PCB → 伺服器組裝是同一條，分開看像四個標的，實際上是一個賭注。</p>`;
+  const tile = (m) => {
+    const s = themeStats(mk, m.theme);
+    const rel = near.get(m.theme) || '';
+    const dim = sel && !rel;
+    return `<button type="button" class="mnode${rel ? ' rel-' + rel : ''}${dim ? ' dim' : ''}${
+      mine.has(m.theme) ? ' mine' : ''}" data-node="${esc(m.theme)}">
+      ${rel === 'up' ? '<span class="mflag">供貨</span>'
+        : rel === 'down' ? '<span class="mflag">出貨給</span>' : ''}
+      <span class="mname">${esc(m.theme)}</span>
+      <span class="mrow"><span class="${plClass(num(s.growth))}">${
+        isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
+        <span class="muted">${fmt(s.members)} 檔</span></span>
+    </button>`;
+  };
 
-  $$('.tree-node', host).forEach((node) => {
-    node.onclick = (e) => {
-      if (e.target.closest('[data-jump]') || e.target.closest('[data-stock]')) return;
-      const body = $('.tree-body', node);
-      if (!body.hidden) { body.hidden = true; return; }
-      $$('.tree-body', host).forEach((b) => (b.hidden = true));
-      const theme = node.dataset.node;
-      const c = chainOf(mk, theme);
-      const chip = (t, note, dir) =>
-        `<button type="button" class="chip" data-jump="${esc(t)}">${
-          dir === 'up' ? '↑' : '↓'} ${esc(t)}${note ? `<span class="muted">　${esc(note)}</span>` : ''}</button>`;
-      const rows = memberRows.filter((m) => m.theme === theme);
-      body.innerHTML =
-        (c.up.length ? `<div class="chain-row"><span class="chain-label">上游</span>${
-          c.up.map((l) => chip(l.src, l.note, 'up')).join('')}</div>` : '') +
-        (c.down.length ? `<div class="chain-row"><span class="chain-label">下游</span>${
-          c.down.map((l) => chip(l.dst, l.note, 'down')).join('')}</div>` : '') +
-        (!c.up.length && !c.down.length ? '<p class="sub muted">這個族群沒有登記上下游關係。</p>' : '') +
-        (rows.length ? `<div class="chain-row members">${rows.map((m) =>
+  // 大類篩選在這裡就過濾掉，不要留給 CSS——用 display:none 藏格子的話，
+  // 整條帶子會變成「只有標題、裡面空無一物」的空殼。
+  const byStage = (st) => metas
+    .filter((m) => (m.stage || '中游') === st && (!grp || m.parent === grp))
+    .sort((a, b) => (a.parent === b.parent ? num(a.sort) - num(b.sort) : a.parent.localeCompare(b.parent)));
+
+  const detail = sel ? (() => {
+    const c = linksOf(mk, sel);
+    const meta = metas.find((m) => m.theme === sel);
+    const s = themeStats(mk, sel);
+    const rows = memberRows.filter((m) => m.theme === sel);
+    const line = (l, dir) => `<div class="mlink">
+      <span class="marrow">${dir === 'up' ? '↑' : '↓'}</span>
+      <button type="button" class="link" data-node="${esc(dir === 'up' ? l.src : l.dst)}">${
+        esc(dir === 'up' ? l.src : l.dst)}</button>
+      ${l.note ? `<span class="sub muted">${esc(l.note)}</span>` : ''}</div>`;
+    return `<div class="card mdetail">
+      <div class="row-between">
+        <span class="list-title">${esc(sel)}</span>
+        <button type="button" class="small" data-node-clear>看全圖</button>
+      </div>
+      <p class="sub muted">${esc(meta?.parent || '')}・${esc(meta?.stage || '')}　${
+        fmt(s.members)} 檔${isNum(s.ratio) ? `　報酬/波動 <b class="${
+          num(s.ratio) > bench ? 'gain' : ''}">${fmtMax(s.ratio, 2)}</b>` : ''}${
+        isNum(s.pe) ? `　本益比 ${fmtMax(s.pe, 1)}x` : ''}</p>
+      ${c.up.length ? `<div class="mgroup"><div class="mlabel">誰供貨給它</div>${
+        c.up.map((l) => line(l, 'up')).join('')}</div>` : ''}
+      ${c.down.length ? `<div class="mgroup"><div class="mlabel">它供貨給誰</div>${
+        c.down.map((l) => line(l, 'down')).join('')}</div>` : ''}
+      ${!c.up.length && !c.down.length
+        ? '<p class="sub muted">這個族群沒有登記上下游關係。</p>' : ''}
+      ${rows.length ? `<div class="mgroup"><div class="mlabel">成分股</div>
+        <div class="chain-row members">${rows.map((m) =>
           `<button type="button" class="chip plain" data-stock="${mk}:${esc(norm(m.symbol))}">${
             esc(m.symbol)} ${esc(m.name || TW_STOCKS[norm(m.symbol)] || '')}${
-            held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</button>`).join('')}</div>` : '');
-      body.hidden = false;
-      bindStockOpen(body);
-      $$('[data-jump]', body).forEach((b) => (b.onclick = (ev) => {
-        ev.stopPropagation();
-        const target = $$('.tree-node', host).find((n) => n.dataset.node === b.dataset.jump);
-        if (!target) return;
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        target.click();
-      }));
-    };
-  });
-}
-
-// ------------------------------------------------------------
-// 今日：哪個族群在動
-//   這頁是為了「永遠不要放空當天強勢的股票」那條紀律做的。
-//   要能執行那條規則，得先看得到「今天是不是整群在漲」，
-//   以及每一檔「從當日低點拉了多少」——那才是判斷強弱的數字。
-//
-//   華新科 2026-09-10 是活教材：對昨收 +4.5% 看起來還好，
-//   但它從低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天最強的族群。
-//   使用者在 317.5 空 2 口、328 回補，賠了 42,000。
-//
-//   這是收盤資料，用途是隔天回頭看自己做了什麼，不是盤中攔截。
-// ------------------------------------------------------------
-function renderThemeDay(host) {
-  const rows = state.themeDay.filter((t) => isNum(t.chg_med));
-  if (!rows.length) {
-    host.innerHTML = '<div class="card"><p class="muted">還沒有當日漲跌資料，按右上角 ↻ 更新。</p></div>';
-    return;
-  }
-  const held = heldSymbols();
-  const mineThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
-  const asOf = rows.map((t) => t.as_of).filter(Boolean).sort().pop();
-  // 整群在漲才叫族群性大漲：中位數為正、而且上漲家數佔多數
-  const hot = (t) => num(t.chg_med) > 0.02 && num(t.up) > num(t.members) / 2;
+            held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</button>`).join('')}</div>
+      </div>` : ''}
+    </div>`;
+  })() : '';
 
   host.innerHTML = `
-    <div class="card">
-      <div class="list-title">今日族群漲跌</div>
-      <p class="sub muted">${esc(asOf || '')} 收盤。取<b>中位數</b>不取平均，一檔漲停就會把平均拉爛。
-        <b>整群在漲</b>（中位數 &gt;2% 且過半上漲）的會標紅框——
-        <b>那是不能去空的族群。</b></p>
+    <div class="card mhead">
+      <div class="list-title">產業地圖</div>
+      <p class="sub muted">由上往下是供應鏈的流向。${mk === 'tw'
+        ? '台股 39 個族群裡有 35 個互相連通，而且<b>全部匯流到伺服器組裝</b>——這不是很多條鏈，是一條大鏈。'
+        : '美股這張圖同樣由上往下流，終點是雲端與 AI 應用。'}
+        點任何一格，圖上只會留下它的上下游。</p>
+      <div class="mchips">
+        <button type="button" class="chip${grp ? '' : ' on'}" data-group="">全部</button>
+        ${parents.map((p) => `<button type="button" class="chip${
+          grp === p ? ' on' : ''}" data-group="${esc(p)}">${esc(p)}</button>`).join('')}
+      </div>
     </div>
-    <div class="card list">
-      ${rows.map((t) => `<div class="day-theme${hot(t) ? ' hot' : ''}${
-        mineThemes.has(t.theme) ? ' mine' : ''}">
-        <div class="row-between">
-          <span class="list-title">${esc(t.theme)}${
-            mineThemes.has(t.theme) ? '<span class="badge day-badge">持有</span>' : ''}${
-            hot(t) ? '<span class="badge warn-badge">整群在漲</span>' : ''}</span>
-          <span class="theme-yoy ${plClass(num(t.chg_med))}">${signed(num(t.chg_med) * 100, 2)}%</span>
+    ${detail}
+    <div class="mapwrap">
+      ${STAGES.map(([st, title, sub], i) => {
+        const list = byStage(st);
+        if (!list.length) return '';
+        return `<div class="mband band-${i}">
+          <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
+            <span class="sub muted">${sub}</span></div>
+          <div class="mgrid">${list.map(tile).join('')}</div>
         </div>
-        <div class="row-between sub muted">
-          <span>${fmt(t.members)} 檔　<span class="gain">漲 ${fmt(t.up)}</span>　<span class="loss">跌 ${fmt(t.down)}</span></span>
-          <span>從低點拉起 <b class="${num(t.off_low_med) > 0.03 ? 'gain' : ''}">${
-            isNum(t.off_low_med) ? signed(num(t.off_low_med) * 100, 1) + '%' : '–'}</b></span>
-        </div>
-        ${t.top_symbol ? `<div class="row-between sub muted">
-          <span>最強 <span class="link" role="button" tabindex="0" data-stock="tw:${esc(norm(t.top_symbol))}">${
-            esc(t.top_symbol)} ${esc(t.top_name || '')}</span></span>
-          <span class="${plClass(num(t.top_chg))}">${signed(num(t.top_chg) * 100, 2)}%</span>
-        </div>` : ''}
-      </div>`).join('')}
+        ${i < STAGES.length - 1 ? '<div class="mflow">↓</div>' : ''}`;
+      }).join('')}
     </div>
-    <p class="hint"><b>「從低點拉起」比「對昨收漲跌」重要。</b>
-      一檔今天對昨收還是跌的，不代表它弱——華新科 2026-09-10 對昨收看起來只有 +4.5%，
-      但它從當日低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天中位數最高的族群。
-      在那種位置放空，等於站在整群買盤的對面。
-      這裡是<b>收盤</b>資料，不是即時報價，用途是隔天回頭檢查自己昨天做了什麼。</p>`;
+    <p class="hint">格子的位置就是它在供應鏈的位置，不用再讀標籤。
+      數字是${mk === 'tw' ? '月營收年增（已發生）' : '明年營收預估（前瞻）'}。
+      左邊有藍線的是你有持股的族群。
+      <b>攤開來看最大的用處是檢查自己有沒有把同一條鏈買了很多次</b>——
+      玻纖布 → CCL → PCB → 伺服器組裝是同一條，分開看像四個標的，實際上是一個賭注。</p>`;
+
+  const pick = (t) => { state.mapPick = state.mapPick === t ? null : t; renderThemeMap(host, mk); };
+  $$('[data-node]', host).forEach((b) => (b.onclick = (e) => { e.stopPropagation(); pick(b.dataset.node); }));
+  $$('[data-node-clear]', host).forEach((b) => (b.onclick = () => { state.mapPick = null; renderThemeMap(host, mk); }));
+  $$('[data-group]', host).forEach((b) => (b.onclick = () => {
+    state.mapGroup = b.dataset.group === state.mapGroup ? '' : b.dataset.group;
+    renderThemeMap(host, mk);
+  }));
   bindStockOpen(host);
+  // 選了之後把詳情捲進畫面，不然在長圖中間點會看不到
+  if (sel) {
+    const d = $('.mdetail', host);
+    if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
-
-// ------------------------------------------------------------
-// 選股
-//   他自己講過策略：「不能做動能，現在適合反市場，在下跌中買入好公司，
-//   拉起來回檔後加碼」。那句話拆開就是三個條件：
-//     好公司  = 報酬/波動贏得過大盤（不然不如直接開槓桿買指數）
-//     在下跌 = 離三年高點夠遠
-//     不是地雷 = 有人在報、而且沒被交易所盯上
-//   這頁就是把那三件事變成可以按的東西。
-//
-//   **池子是全市場**：台股約 1,970 檔（所有有公告月營收的普通股），
-//   美股約 2,000 檔（日成交額 2,000 萬美元以上，進得去也出得來的）。
-//   四千列不可能每次登入都載下來，所以篩選與排序都在資料庫做，
-//   一次只回前 60 檔。代價是拉桿要等一次往返，所以要防連點。
-// ------------------------------------------------------------
-const SCREEN_DEFAULT = {
-  beat: true,        // 報酬/波動要贏過大盤
-  covered: false,    // 至少三位分析師
-  clean: true,       // 排除處置與注意股
-  drop: 20,          // 至少從三年高點跌下來幾 %
-  peMax: 0,          // 本益比上限，0 = 不限
-  growth: null,      // 營收年增下限
-  q: '',             // 關鍵字（代號／名稱／族群／產業別／主要經營業務）
-  sort: 'drop',
-};
-const SCREEN_SORT = [
-  ['drop', '跌最多'],
-  ['ratio', '報酬/波動'],
-  ['pe', '本益比'],
-  ['growth', '營收成長'],
-];
-
-let screenSeq = 0;   // 連點時只認最後一次的結果
-
-async function runScreen(mk, f) {
-  const { data, error } = await sb.rpc('screen_stocks', {
-    p_market: mk,
-    p_beat: !!f.beat,
-    p_covered: !!f.covered,
-    p_clean: !!f.clean,
-    p_drop: num(f.drop),
-    p_pe_max: num(f.peMax),
-    p_growth: isNum(f.growth) && f.growth !== '' ? num(f.growth) : null,
-    p_q: (f.q || '').trim() || null,
-    p_sort: f.sort,
-    p_limit: 60,
-  });
-  if (error) throw error;
-  return data ?? [];
-}
-
 function renderScreener(host, mk) {
   const f = { ...SCREEN_DEFAULT, ...(state.screen || {}) };
   state.screen = f;
@@ -3970,7 +3900,7 @@ function renderThemes(el) {
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
   if (vw === 'day' && mk === 'tw') renderThemeDay(host);
   else if (vw === 'screen') { renderScreener(host, mk); loadScreen(host, mk); }
-  else if (vw === 'tree') renderThemeTree(host, mk);
+  else if (vw === 'tree') renderThemeMap(host, mk);
   else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
