@@ -11,6 +11,12 @@
   --loss: #16a34a;   /* 綠跌 */
   --nav-h: 60px;
   --radius: 14px;
+  /* 產業地圖三段。明暗共用一組，兩種模式都通過 dataviz 的六項檢查
+     （亮度帶、彩度、色盲分離 ΔE 19.3、一般視覺 23.3、對比 ≥3:1）。
+     冷 → 中 → 暖，順序本身就在表達上游到下游的流向。 */
+  --stage-1: #0d9488;
+  --stage-2: #6366f1;
+  --stage-3: #d97706;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -566,9 +572,12 @@ textarea.journal-input {
   padding: 10px 10px 12px; background: var(--card);
   border-left-width: 3px;
 }
-.band-0 { border-left-color: var(--series-1); }
-.band-1 { border-left-color: var(--series-2); }
-.band-2 { border-left-color: var(--series-3); }
+.band-0 { border-left-color: var(--stage-1); }
+.band-1 { border-left-color: var(--stage-2); }
+.band-2 { border-left-color: var(--stage-3); }
+.band-0 .mnode.mine { border-left-color: var(--stage-1); }
+.band-1 .mnode.mine { border-left-color: var(--stage-2); }
+.band-2 .mnode.mine { border-left-color: var(--stage-3); }
 .mband-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .mband-head b { font-size: 15px; }
 .mband-head .muted { font-size: 13px; }
@@ -589,14 +598,14 @@ textarea.journal-input {
 /* 選了一格之後，沒關係的整個變暗——關係直接顯示在圖上，不用開面板 */
 .mnode.dim { opacity: .25; }
 .mnode.rel-self { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary) inset; }
-.mnode.rel-up { border-color: var(--series-1); }
-.mnode.rel-down { border-color: var(--series-3); }
+.mnode.rel-up { border-color: var(--stage-1); }
+.mnode.rel-down { border-color: var(--stage-3); }
 .mflag {
   position: absolute; top: -7px; right: 6px; font-size: 10px; padding: 1px 5px;
   border-radius: 999px; background: var(--card); border: 1px solid var(--border); color: var(--muted);
 }
-.mnode.rel-up .mflag { color: var(--series-1); border-color: var(--series-1); }
-.mnode.rel-down .mflag { color: var(--series-3); border-color: var(--series-3); }
+.mnode.rel-up .mflag { color: var(--stage-1); border-color: var(--stage-1); }
+.mnode.rel-down .mflag { color: var(--stage-3); border-color: var(--stage-3); }
 
 .mdetail { border: 1px solid var(--primary); }
 .mgroup { margin-top: 10px; }
@@ -606,40 +615,89 @@ textarea.journal-input {
 .mlink .link { background: none; border: none; padding: 0; font: inherit; font-size: 14px; }
 .mlink .sub { flex-basis: 100%; margin: 0 0 0 18px; line-height: 1.45; }
 
-/* ---------- 產業地圖：桌機版 ---------- */
-/* 螢幕夠寬就把三段改成左右三欄，並且真的把連線畫出來。
-   #main 卡在 720px，這裡要突破，否則三欄會擠在一起。 */
+/* ---------- 產業地圖：桌機版（≥900px） ---------- */
+/* 手機只能靠變暗表達關係，390px 畫不下線。螢幕夠寬就把三段轉成三欄、
+   把線真的畫出來。#main 卡在 720px，這裡要突破，否則三欄會擠成一團。 */
 @media (min-width: 900px) {
   .mapwrap.desk {
     position: relative;
     width: min(1240px, calc(100vw - 48px));
     margin-left: calc(50% - min(620px, (100vw - 48px) / 2));
   }
-  .mcols { display: grid; grid-template-columns: 1fr 1.35fr 1fr; gap: 56px; align-items: start; }
-  .mcol {
-    border: 1px solid var(--border); border-radius: var(--radius);
-    border-left-width: 3px; padding: 12px; background: var(--card);
+  .mcols {
+    position: relative; z-index: 1;
+    display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 72px; align-items: start;
   }
-  .mcol-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+
+  /* 欄位不用邊框框住——那看起來像表格。改成頂上一條該段顏色的細線，
+     加一層幾乎看不見的同色底，讓它是「一區」而不是「一個框」。 */
+  .mcol { border: none; padding: 0; background: none; }
+  .mcol-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
   /* 中游 21 格、上下游各 8 與 10，單欄排下去高度差三倍 */
-  .mcol.two .mcol-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mcol .mband-head { margin-bottom: 2px; }
-  .mcol .mnode { padding: 8px 10px; }
+  .mcol.two .mcol-body { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+  .mcol .mband-head {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    margin: 0 0 12px; padding: 0 0 10px; border-bottom: 2px solid var(--st);
+  }
+  .mcol .mband-head b { font-size: 17px; letter-spacing: .02em; color: var(--st); }
+  .mcol .mband-head .muted { font-size: 13px; }
+  .mcol .mband-head .sub { flex-basis: 100%; margin: 4px 0 0; font-size: 12px; }
+  .mcol.band-0 { --st: var(--stage-1); }
+  .mcol.band-1 { --st: var(--stage-2); }
+  .mcol.band-2 { --st: var(--stage-3); }
+
+  .mcol .mnode {
+    padding: 9px 11px 9px 13px; border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
+    transition: transform .12s, border-color .12s, box-shadow .12s, opacity .18s;
+  }
+  /* 左邊那條色帶告訴你它屬於哪一段，連線斷開時也還讀得出來 */
+  .mcol .mnode::before {
+    content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--st); opacity: .55;
+  }
+  .mcol .mnode:hover { transform: translateY(-1px); border-color: var(--st);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .12); }
+  .mcol .mname { font-size: 14px; font-weight: 600; }
+  .mcol .mrow { margin-top: 2px; font-size: 11.5px; }
+  .mcol .mnode.mine::before { opacity: 1; width: 4px; }
+
+  .mcol .mnode.dim { opacity: .3; filter: saturate(.35); box-shadow: none; }
+  .mcol .mnode.rel-self {
+    border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  .mcol .mnode.rel-up { border-color: var(--stage-1); }
+  .mcol .mnode.rel-down { border-color: var(--stage-3); }
+
   /* 連線畫在格子底下，才不會擋住點擊 */
-  .medges { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
-  .mcols { position: relative; z-index: 1; }
-  .mcol { background: var(--card); }
-  .medges .e { fill: none; stroke: var(--muted); stroke-width: 1.2; opacity: .28; }
-  /* 沒選的時候全部一樣淡；選了之後只有相關的亮起來，
-     其餘壓到幾乎看不見——密集網路圖全部畫滿一樣粗只會變一團毛線 */
-  .medges .e.off { opacity: .06; }
-  .medges .e.up { stroke: var(--series-1); stroke-width: 2.2; opacity: 1; }
-  .medges .e.down { stroke: var(--series-3); stroke-width: 2.2; opacity: 1; }
-  .mapwrap.desk + .hint { margin-top: 16px; }
-  /* 詳情卡在桌機上排成三欄，不然它會把整張圖推到螢幕外 */
-  .mdetail .mgroup { margin-top: 0; }
-  .mapwrap.desk ~ .mdetail, .mdetail.wide {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px;
+  /* 跟容器同一個框。**不要用負的 inset 去撐大**——svg 沒有內在尺寸，
+     那樣量出來的 rect 會是 0，viewBox 變成 "0 0 0 0"，線就整個不見了。
+     繞出去的弧改成往有空間的那一側走（最後一欄往左），所以不需要多出來的空間。 */
+  .medges { position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 0; }
+  .medges .e {
+    fill: none; stroke-width: 1.6; stroke-linecap: round; opacity: .5;
+    transition: opacity .18s, stroke-width .18s;
+  }
+  /* 沒選的時候全部一樣淡；選了之後只有相關的亮起來，其餘壓到幾乎看不見。
+     38 條線全部畫滿一樣粗只會變成一團毛線。 */
+  .medges .e.off { opacity: .07; }
+  .medges .e.up, .medges .e.down { stroke-width: 2.6; opacity: 1; }
+
+  /* 詳情卡與說明要跟地圖一樣寬，不然 720px 的卡浮在 1240px 的圖上面很不對齊 */
+  .mdetail.wide, .mhead, .mapwrap.desk ~ .hint {
+    width: min(1240px, calc(100vw - 48px));
+    margin-left: calc(50% - min(620px, (100vw - 48px) / 2));
+  }
+  .mdetail { border-color: var(--primary); }
+  .mdetail.wide {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px;
   }
   .mdetail.wide > .row-between, .mdetail.wide > .sub { grid-column: 1 / -1; }
+  .mdetail .mgroup { margin-top: 0; }
+  /* 不要分成兩欄：句子會被切在中間（「玻纖布 → CCL →」跳到第二欄才接下去）*/
+  .mapwrap.desk ~ .hint { margin-top: 22px; max-width: 72ch; }
 }

@@ -3605,6 +3605,12 @@ function orderColumn(list, links) {
     || a.parent.localeCompare(b.parent) || num(a.sort) - num(b.sort));
 }
 
+// 三段的顏色。用 dataviz 的驗證腳本跑過：明暗兩種模式都在亮度帶內、
+// 彩度足夠、色盲相鄰分離 ΔE 19.3（deutan），一般視覺 23.3。
+// tritan 是 6.3 落在下限帶，規則是「只有搭配次要編碼才算數」——
+// 這裡每一格都有文字標籤、每一欄都有標題，符合。
+const STAGE_HUE = ['#0d9488', '#6366f1', '#d97706'];
+
 // 量完位置才畫得出線，所以一定要在 DOM 上去之後做
 function drawEdges(wrap, mk, sel) {
   const svg = $('.medges', wrap);
@@ -3615,35 +3621,60 @@ function drawEdges(wrap, mk, sel) {
     const r = n.getBoundingClientRect();
     pos.set(n.dataset.node, {
       l: r.left - box.left, r: r.right - box.left,
-      t: r.top - box.top, b: r.bottom - box.top,
-      cx: r.left - box.left + r.width / 2, cy: r.top - box.top + r.height / 2,
+      cy: r.top - box.top + r.height / 2,
       col: Number(n.dataset.col),
     });
   });
-  svg.setAttribute('viewBox', `0 0 ${Math.round(box.width)} ${Math.round(box.height)}`);
-  svg.setAttribute('width', Math.round(box.width));
-  svg.setAttribute('height', Math.round(box.height));
+  const W = Math.round(box.width), H = Math.round(box.height);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
 
-  const parts = [];
+  const defs = [];
+  const dim = [];
+  const lit = [];
+  let gi = 0;
+
   for (const l of state.themeLinks.filter((x) => x.market === mk)) {
     const a = pos.get(l.src), b = pos.get(l.dst);
     if (!a || !b) continue;
     const on = sel && (l.src === sel || l.dst === sel);
-    const cls = !sel ? 'e' : on ? (l.dst === sel ? 'e up' : 'e down') : 'e off';
-    let d;
-    if (a.col === b.col) {
-      // 同一欄：從右緣出去、繞一個弧再回到右緣
-      const x = Math.max(a.r, b.r) + 14;
-      d = `M ${a.r} ${a.cy} C ${x} ${a.cy}, ${x} ${b.cy}, ${b.r} ${b.cy}`;
+    let x1, y1, x2, y2, d;
+    // **判斷依據是實際座標，不是欄位編號。** 中游排成兩個子欄，
+    // CCL（左子欄）→ PCB（右子欄）其實是左到右，照同欄處理會繞一大圈。
+    if (a.r + 10 <= b.l) {
+      x1 = a.r; y1 = a.cy; x2 = b.l; y2 = b.cy;
+      const mid = (x1 + x2) / 2;
+      d = `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
     } else {
-      const x1 = a.r, x2 = b.l, mid = (x1 + x2) / 2;
-      d = `M ${x1} ${a.cy} C ${mid} ${a.cy}, ${mid} ${b.cy}, ${x2} ${b.cy}`;
+      // 真的重疊了才繞。最後一欄往右繞會跑出畫面，所以那一欄往左繞。
+      const left = b.col === 2;
+      const x = left ? Math.min(a.l, b.l) - 26 : Math.max(a.r, b.r) + 26;
+      x1 = left ? a.l : a.r; y1 = a.cy;
+      x2 = left ? b.l : b.r; y2 = b.cy;
+      d = `M ${x1} ${y1} C ${x} ${y1}, ${x} ${y2}, ${x2} ${y2}`;
     }
-    parts.push(`<path class="${cls}" d="${d}"/>`);
+    // 漸層由來源段的顏色走到目標段的顏色，方向感就出來了，
+    // 不用靠箭頭也看得出誰餵誰。userSpaceOnUse 是因為同欄的弧線
+    // bbox 寬度接近 0，用 objectBoundingBox 會算不出漸層。
+    const id = `eg${gi++}`;
+    defs.push(`<linearGradient id="${id}" gradientUnits="userSpaceOnUse"
+      x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
+      <stop offset="0" stop-color="${STAGE_HUE[a.col]}"/>
+      <stop offset="1" stop-color="${STAGE_HUE[b.col]}"/></linearGradient>`);
+    const cls = !sel ? 'e' : on ? (l.dst === sel ? 'e up' : 'e down') : 'e off';
+    const path = `<path class="${cls}" d="${d}" stroke="url(#${id})"
+      marker-end="url(#ar${b.col}${on ? 'h' : ''})"/>`;
+    // 亮的畫在後面才不會被淡的蓋住
+    (on ? lit : dim).push(path);
   }
-  // 亮的畫在後面，才不會被淡的蓋住
-  parts.sort((p, q) => (p.includes('class="e off"') ? -1 : 0) - (q.includes('class="e off"') ? -1 : 0));
-  svg.innerHTML = parts.join('');
+
+  const marker = (i, hi) => `<marker id="ar${i}${hi ? 'h' : ''}" viewBox="0 0 8 8"
+    refX="7" refY="4" markerWidth="${hi ? 6 : 5}" markerHeight="${hi ? 6 : 5}"
+    orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+    <path d="M 0 1 L 7 4 L 0 7 z" fill="${STAGE_HUE[i]}" opacity="${hi ? 1 : 0.55}"/></marker>`;
+  svg.innerHTML = `<defs>${[0, 1, 2].map((i) => marker(i) + marker(i, true)).join('')}
+    ${defs.join('')}</defs>${dim.join('')}${lit.join('')}`;
 }
 
 const STAGES = [
