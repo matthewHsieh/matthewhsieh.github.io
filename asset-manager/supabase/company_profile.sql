@@ -243,7 +243,7 @@ begin
     left join public.company_profile c on c.symbol = u.symbol
     left join public.market_prices m on m.market = 'tw' and m.symbol = u.symbol
     where u.market = 'tw'
-      and (c.business is null or c.biz_src = 'yahoo')
+      and (c.business is null or c.biz_src in ('yahoo', 'yahoo-none'))
       and (c.updated_at is null or c.updated_at < now() - interval '30 days')
     order by c.updated_at nulls first
     limit p_limit
@@ -252,8 +252,8 @@ begin
       body := public.pm_fetch('https://tw.stock.yahoo.com/quote/' || r.symbol || r.suffix || '/profile');
       biz := public.pm_yahoo_business(body);
       if biz is not null then
-        insert into public.company_profile (symbol, business, biz_src, as_of, updated_at)
-        values (r.symbol, biz, 'yahoo', current_date, now())
+        insert into public.company_profile (symbol, market, business, biz_src, as_of, updated_at)
+        values (r.symbol, 'tw', biz, 'yahoo', current_date, now())
         on conflict (symbol) do update
           -- MOPS 寫過的不要蓋掉，那份比較完整
           set business = case when company_profile.biz_src = 'mops'
@@ -261,6 +261,13 @@ begin
               biz_src  = case when company_profile.biz_src = 'mops' then 'mops' else 'yahoo' end,
               updated_at = now();
         n := n + 1;
+      else
+        -- **抓不到也要記一筆時間戳。**
+        -- 不寫的話 updated_at 還是 null，下一批排序又把它排到最前面，
+        -- 整個回填會卡在同樣那幾檔上面永遠前進不了。
+        insert into public.company_profile (symbol, market, biz_src, updated_at)
+        values (r.symbol, 'tw', 'yahoo-none', now())
+        on conflict (symbol) do update set updated_at = now();
       end if;
       perform pg_sleep(0.3);
     exception when others then
@@ -287,3 +294,47 @@ begin
   perform cron.schedule('am-biz-3', '10 20 * * *', $c$select public.refresh_business_yahoo(60)$c$);
   perform cron.schedule('am-biz-4', '10 22 * * *', $c$select public.refresh_business_yahoo(60)$c$);
 end $do$;
+
+-- 針對指定名單補業務描述。
+-- 用途是做專題盤點時（例如「跟著 PCB 成長但還沒被歸類的公司」），
+-- 先用營收與股價篩出候選，再只抓那幾檔，不必等整批回填跑完。
+create or replace function public.refresh_business_list(p_symbols text[], p_limit integer default 55)
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare r record; body text; biz text; n integer := 0;
+begin
+  for r in
+    select u.symbol,
+           case when m.exch = 'tpex' then '.TWO' else '.TW' end as suffix
+    from public.stock_universe u
+    left join public.company_profile c on c.symbol = u.symbol
+    left join public.market_prices m on m.market = 'tw' and m.symbol = u.symbol
+    where u.market = 'tw' and u.symbol = any(p_symbols)
+      and c.business is null
+    limit p_limit
+  loop
+    begin
+      body := public.pm_fetch('https://tw.stock.yahoo.com/quote/' || r.symbol || r.suffix || '/profile');
+      biz := public.pm_yahoo_business(body);
+      if biz is not null then
+        insert into public.company_profile (symbol, market, business, biz_src, as_of, updated_at)
+        values (r.symbol, 'tw', biz, 'yahoo', current_date, now())
+        on conflict (symbol) do update
+          set business = case when company_profile.biz_src = 'mops'
+                              then company_profile.business else excluded.business end,
+              biz_src  = case when company_profile.biz_src = 'mops' then 'mops' else 'yahoo' end,
+              updated_at = now();
+        n := n + 1;
+      else
+        insert into public.company_profile (symbol, market, biz_src, updated_at)
+        values (r.symbol, 'tw', 'yahoo-none', now())
+        on conflict (symbol) do update set updated_at = now();
+      end if;
+      perform pg_sleep(0.2);
+    exception when others then
+      perform public.pm_log('biz_list ' || r.symbol, 0, false, sqlerrm);
+    end;
+  end loop;
+  return n;
+end $fn$;
+
+revoke all on function public.refresh_business_list(text[], integer) from public, anon;
