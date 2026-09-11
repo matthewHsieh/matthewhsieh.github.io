@@ -46,6 +46,28 @@ language sql stable security definer set search_path = public as $fn$
                        'caution', t.caution, 'relates', t.relates, 'source', t.source,
                        'checked_on', t.checked_on)
                 from public.stock_story t where t.symbol = s.sym),
+    -- **有沒有主動型 ETF 重壓。**
+    -- 兩個數字要一起看才有意義：
+    --   weight   佔該檔 ETF 的幾 %——這是基金經理人押多重
+    --   own_pct  這些 ETF 合計吃掉這檔股票的幾 % 股本——這是籌碼被鎖住多少
+    -- 只看第一個會誤判：某檔小型股可能是三檔基金的第一大持股，
+    -- 但如果它們合計只買到股本的 0.1%，對籌碼沒有影響。
+    -- 反過來，緯穎被 14 檔合計吃掉 6.9% 股本，那是實打實的浮額減少。
+    --
+    -- **資料只有前十大。** 沒出現不代表沒人持有，只代表不在任何一檔的前十大。
+    'etf', (select jsonb_build_object(
+              'funds', count(*),
+              'sum_weight', round(sum(h.weight), 1),
+              'max_weight', round(max(h.weight), 2),
+              'own_pct', round(sum(h.shares_held) / nullif(max(sh.shares), 0) * 100, 3),
+              'as_of', max(h.as_of),
+              'list', jsonb_agg(jsonb_build_object('etf', h.etf, 'name', e.name,
+                                                   'weight', h.weight)
+                                order by h.weight desc))
+            from public.etf_holding h
+            join public.active_etf e on e.symbol = h.etf
+            left join public.stock_shares sh on sh.market = 'tw' and sh.symbol = h.symbol
+            where h.symbol = s.sym and s.mk = 'tw'),
     -- 今天的開高低與漲跌。**「從當日低點拉起多少」才是判斷強弱的數字**，
     -- 不是對昨收的漲跌幅，理由見 theme_day.sql。
     'day', (select jsonb_build_object('price', m.price, 'chg', m.chg,

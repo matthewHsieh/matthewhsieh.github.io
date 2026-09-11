@@ -832,7 +832,10 @@ textarea.journal-input {
 
 /* 擁擠度：單一色相、由長度表達多寡，這是 sequential 的用法，
    不要每一條給不同顏色——顏色在這裡沒有攜帶任何資訊。 */
-.etf-crowd { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.etf-crowd { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.etf-citem { display: flex; flex-direction: column; gap: 2px; }
+.etf-cfoot { padding-left: 2px; }
+.etf-est { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .etf-crow {
   display: grid;
   grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 2.2em;
@@ -860,6 +863,8 @@ textarea.journal-input {
 }
 .etf-chip b { color: var(--text); font-variant-numeric: tabular-nums; }
 .etf-chip:hover { border-color: var(--primary); color: var(--primary); }
+/* 實際持股與推估要一眼分得出來：持股給底色，推估維持空心 */
+.etf-chip.hold { background: color-mix(in srgb, var(--stage-2) 12%, transparent); border-color: transparent; color: var(--text); }
 .etf-more { margin-top: 8px; }
 
 @media (min-width: 900px) {
@@ -872,5 +877,33 @@ textarea.journal-input {
   }
   .etf-crow { grid-template-columns: minmax(0, 10em) minmax(0, 1fr) 2.5em; }
   /* 擁擠度排成兩欄。一欄的話每一條長得離譜、而且整頁被拉長一倍 */
-  .etf-crowd { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 24px; }
+  .etf-crowd { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
 }
+
+/* 個股卡：主動型 ETF 持股 */
+.sc-etf {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+/* 到了浮額會變少的量級才給紅框。平常不強調，不然每一檔都在叫 */
+.sc-etf.heavy { border-color: var(--gain); }
+.sc-own { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* 產業地圖：主動型 ETF 重壓的標記。
+   數字是族群裡被吃最兇的那一檔佔股本的 %，到 3% 才轉紅——
+   平常都亮的話等於沒有標記。 */
+.metf {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.metf.hot { background: var(--gain); color: #fff; }
+.mnode:not(.talent) .metf { margin-left: 6px; }
+.mdisc .metf { position: absolute; top: -4px; right: -6px; }

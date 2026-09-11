@@ -70,7 +70,8 @@ create or replace function public.refresh_px_daily(p_limit integer default 60)
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
 declare r record; body text; n integer := 0; got integer; v_yf text;
 begin
-  perform set_config('statement_timeout', '600s', true);
+  -- 實測 43 秒（250 檔日線）。函式內 set_config('statement_timeout') 是無效的，
+  -- 上限在語句開始時就鎖定，要靠分批把單次做完的量壓在預設的 120 秒以內。
 
   insert into public.px_src (symbol)
   select w.symbol from public.px_wanted() w
@@ -145,7 +146,8 @@ create or replace function public.refresh_etf_tilt()
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
 declare n integer;
 begin
-  perform set_config('statement_timeout', '600s', true);
+  -- 實測 43 秒（250 檔日線）。函式內 set_config('statement_timeout') 是無效的，
+  -- 上限在語句開始時就鎖定，要靠分批把單次做完的量壓在預設的 120 秒以內。
 
   create temp table _r on commit drop as
   select symbol, d, adj / lag(adj) over (partition by symbol order by d) - 1 as r
@@ -193,40 +195,8 @@ end $fn$;
 
 revoke all on function public.refresh_etf_tilt() from public, anon;
 
--- ------------------------------------------------------------
--- 給畫面用：一次回一包
---
--- 基金 30 檔、每檔 6 個族群、擁擠度 35 列，全部加起來兩百多列。
--- 分開叫三次 RPC 沒有比較清楚，而且 PostgREST 預設 1000 列上限
--- 踩過一次了，包成一個 jsonb 最穩。
--- ------------------------------------------------------------
+-- 給畫面用的 etf_board() 移到 etf_holding.sql。
+-- 它要讀 etf_holding 與 stock_shares，LANGUAGE SQL 的函式在建立時就會驗
+-- 內文，放在這裡的話全新資料庫依序套用會因為表還不存在而失敗。
 drop function if exists public.etf_tilts(text, integer);
 drop function if exists public.theme_crowding(numeric);
-
-create or replace function public.etf_board()
-returns jsonb language sql stable security definer set search_path = public as $fn$
-  select jsonb_build_object(
-    'as_of', (select max(last_day) from public.etf_perf),
-    'funds', coalesce((
-      select jsonb_agg(to_jsonb(f) || jsonb_build_object('tilts', coalesce((
-               select jsonb_agg(jsonb_build_object('theme', t.theme, 'corr', t.corr))
-               from (select t2.theme, t2.corr from public.etf_tilt t2
-                     where t2.symbol = f.symbol and t2.rk <= 6 order by t2.rk) t
-             ), '[]'::jsonb))
-             order by f.excess desc nulls last)
-      from public.active_etf_perf() f), '[]'::jsonb),
-    'crowd', coalesce((
-      select jsonb_agg(jsonb_build_object('theme', c.theme, 'top5', c.top5,
-                                          'top10', c.top10, 'corr', c.ac)
-             order by c.top5 desc, c.top10 desc, c.ac desc)
-      from (select t.theme,
-                   count(*) filter (where t.rk <= 5)::int as top5,
-                   count(*) filter (where t.rk <= 10)::int as top10,
-                   round(avg(t.corr) filter (where t.rk <= 10), 3) as ac
-            from public.etf_tilt t group by t.theme
-            having count(*) filter (where t.rk <= 10) > 0) c), '[]'::jsonb),
-    'rated', (select count(distinct symbol)::int from public.etf_tilt)
-  );
-$fn$;
-
-grant execute on function public.etf_board() to anon, authenticated;

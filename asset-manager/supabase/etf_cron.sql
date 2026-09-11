@@ -31,3 +31,27 @@ begin
   perform cron.schedule('am-etf-tilt', '40 12 * * 1-5',
     $c$select public.refresh_etf_tilt()$c$);                        -- 20:40
 end $do$;
+
+-- ------------------------------------------------------------
+-- 實際持股（MoneyDJ）與已發行股數
+--
+-- 一樣要分開，理由同上。實測時間：
+--   refresh_stock_shares    幾秒（證交所＋櫃買各一次 OpenAPI）
+--   refresh_etf_holdings    15 秒（32 頁，每頁間隔 0.3 秒）
+-- 兩支都遠低於預設的 120 秒上限。
+--
+-- MoneyDJ 的資料日期是前一個交易日，所以不必等當天收盤，
+-- 但還是排在行情之後，這樣 theme_etf 算市值時用的是當天的價。
+-- ------------------------------------------------------------
+do $do$
+begin
+  perform cron.unschedule(j) from unnest(array['am-etf-shares', 'am-etf-hold']) j
+  where exists (select 1 from cron.job where jobname = j);
+
+  -- 股數變動要等增資或減資，一週一次就夠
+  perform cron.schedule('am-etf-shares', '2 12 * * 1',
+    $c$select public.refresh_stock_shares()$c$);                    -- 週一 20:02 台北
+
+  perform cron.schedule('am-etf-hold', '20 12 * * 1-5',
+    $c$select public.refresh_etf_holdings()$c$);                    -- 20:20
+end $do$;

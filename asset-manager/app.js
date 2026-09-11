@@ -1009,9 +1009,11 @@ async function loadMarketOnly() {
     sb.from('theme_links').select('*'),
     sb.rpc('theme_day', {}),
     sb.rpc('active_alerts', { p_days: 10 }),
+    sb.rpc('theme_etf', {}),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [trend, members, tinfo, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts] = results;
+  const [trend, members, tinfo, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts,
+         tetf] = results;
   const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
   const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = { ...DEFAULT_SETTINGS };
@@ -1027,6 +1029,7 @@ async function loadMarketOnly() {
   state.themeLinks = tlinks.data ?? [];
   state.themeDay = tday.data ?? [];
   state.alerts = alerts.data ?? [];
+  state.themeEtf = tetf.data ?? [];
 }
 
 async function loadAll() {
@@ -1059,12 +1062,13 @@ async function loadAll() {
     sb.from('theme_links').select('*'),
     sb.rpc('theme_day', {}),
     sb.rpc('active_alerts', { p_days: 10 }),
+    sb.rpc('theme_etf', {}),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, tetf, rules, jdays, prices] = results;
   const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
   const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
@@ -1090,6 +1094,7 @@ async function loadAll() {
   state.themeLinks = tlinks.data ?? [];
   state.themeDay = tday.data ?? [];
   state.alerts = alerts.data ?? [];
+  state.themeEtf = tetf.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -3187,11 +3192,15 @@ function alertLine(a) {
       : '所有委託都要圈存（先付全部價金／先有券）');
     return bits.join('　');
   }
-  if (a.kind === 'near') return a.reason || '注意次數已經逼近處置門檻，隨時可能被處置';
+  if (a.kind === 'near') return stripTags(a.reason) || '注意次數已經逼近處置門檻，隨時可能被處置';
   return num(a.notices) > 0
     ? `最近 30 天上過 ${fmt(a.notices)} 次注意${num(a.notices) >= 4 ? '，再一次就可能處置' : ''}`
-    : (a.reason || '最近上過注意交易資訊');
+    : (stripTags(a.reason) || '最近上過注意交易資訊');
 }
+
+// 證交所的公告原文裡夾著 <font color='#FF0000'> 這種標籤。esc() 會把它
+// 原封不動印在畫面上，看起來像壞掉，所以顯示前先拔乾淨。
+const stripTags = (v) => String(v || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 
 const alertBadge = (a) => (a
   ? `<span class="badge alert-${esc(a.kind)}">${ALERT_LABEL[a.kind] || '警示'}</span>` : '');
@@ -3372,7 +3381,7 @@ function stockCardHtml(mk, sym) {
         <div class="row-between"><b>${ALERT_LABEL[a.kind] || '警示'}</b>
           <span class="sub">${esc(a.name || '')}</span></div>
         <div class="sub">${esc(alertLine(a))}</div>
-        ${a.reason ? `<div class="sub muted">${esc(a.reason)}</div>` : ''}
+        ${a.reason ? `<div class="sub muted">${esc(stripTags(a.reason))}</div>` : ''}
         ${a.detail ? `<details class="sc-note"><summary>交易所公告原文</summary><p>${
           esc(a.detail)}</p></details>` : ''}
       </div>`;
@@ -3441,6 +3450,39 @@ function stockCardHtml(mk, sym) {
 }
 
 // 任何列了股票的地方都可以掛這個：元素上寫 data-stock="tw:2330" 就能點開速覽
+// 主動型 ETF 有沒有重壓這一檔。
+//
+//   **兩個數字要一起看。** 佔該檔 ETF 的權重高，只說明經理人押得重；
+//   真正影響股價的是「這些基金合計吃掉這檔股票的幾 % 股本」——那是浮額
+//   真的變少。小型股可能是三檔基金的第一大持股，但合計只買到 0.1% 股本，
+//   對籌碼沒有意義；緯穎被 14 檔合計吃掉 6.9%，那才是。
+//
+//   資料只有前十大持股（MoneyDJ）。**沒出現不代表沒人持有**，
+//   只代表不在任何一檔的前十大，這句話一定要寫出來。
+function etfOwnHtml(e) {
+  if (!e || !num(e.funds)) return '';
+  const own = num(e.own_pct);
+  // 5% 是一個實務上的門檻：到這個量級，主動型 ETF 的申贖會直接影響股價
+  const heavy = own >= 3;
+  const list = (e.list || []).slice(0, 6);
+  return `<div class="sc-etf${heavy ? ' heavy' : ''}">
+    <div class="row-between">
+      <span class="sc-story-tag">主動型 ETF</span>
+      <span class="sc-own ${heavy ? 'gain' : ''}">${
+        isNum(e.own_pct) ? fmt(own, 2) + '% 股本' : '–'}</span>
+    </div>
+    <p class="sub">${fmt(e.funds)} 檔主動型 ETF 把它放進<b>前十大持股</b>，
+      單檔最重 <b>${fmt(e.max_weight, 1)}%</b>${
+      heavy ? '，合計吃掉的股本已經到<b>浮額會變少</b>的量級' : ''}。</p>
+    <div class="etf-tilts">${list.map((x) => `<span class="etf-chip hold">${
+      esc(x.name || x.etf)} <b>${fmt(x.weight, 1)}%</b></span>`).join('')}${
+      (e.list || []).length > list.length
+        ? `<span class="etf-chip">還有 ${(e.list || []).length - list.length} 檔</span>` : ''}</div>
+    <p class="sub muted">${esc(e.as_of || '')}。只看得到前十大持股，
+      沒出現在這裡的基金不代表沒買。</p>
+  </div>`;
+}
+
 function bindStockOpen(host) {
   $$('[data-stock]', host).forEach((b) => (b.onclick = (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -3513,7 +3555,9 @@ async function openStock(mk, sym) {
         <p class="sub muted">${esc(st.source || '')}${
           st.checked_on ? `　查證於 ${esc(st.checked_on)}` : ''}</p>
       </div>` : '')
+      + etfOwnHtml(d.etf)
       + (d.business ? `<p class="sc-biz">${esc(d.business)}</p>` : '');
+    bindStockOpen(bz);
   }
 
   const rn = $('[data-sc-revnext]', body);
@@ -3878,6 +3922,18 @@ function renderThemeMap(host, mk) {
   // 聚焦狀態不在這裡算——那是 applyFocus 的事，因為 hover 時只能改 class，
   // 重建 innerHTML 會閃。這裡只負責把靜態的樹畫出來。
 
+  // 主動型 ETF 重壓的族群要看得出來。標的是**族群裡被吃最兇的那一檔
+  // 佔它股本的幾 %**，不是基金檔數——每檔基金都放台積電不代表台積電是題材。
+  // 只有台股有，美股那邊沒有對應的持股來源。
+  const etfBy = new Map(mk === 'tw'
+    ? (state.themeEtf || []).map((r) => [r.theme, r]) : []);
+  const etfMark = (theme) => {
+    const e = etfBy.get(theme);
+    const own = num(e && e.top_own);
+    if (!e || own < 0.5) return '';
+    return `<span class="metf${own >= 3 ? ' hot' : ''}">${fmt(own, 1)}%</span>`;
+  };
+
   // 桌機是圓形圖示節點（名字在下面），手機維持方塊（390px 放不下圖示 + 名字）
   const tile = (m, col) => {
     const s = themeStats(mk, m.theme);
@@ -3885,7 +3941,7 @@ function renderThemeMap(host, mk) {
     if (!desk) {
       return `<button type="button" class="mnode${owned ? ' mine' : ''}"
         data-node="${esc(m.theme)}" data-col="${col}">
-        <span class="mname">${esc(m.theme)}</span>
+        <span class="mname">${esc(m.theme)}${etfMark(m.theme)}</span>
         <span class="mrow"><span class="${plClass(num(s.growth))}">${
           isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
           <span class="muted">${fmt(s.members)} 檔</span></span>
@@ -3894,7 +3950,7 @@ function renderThemeMap(host, mk) {
     return `<button type="button" class="mnode talent${owned ? ' mine' : ''}"
       data-node="${esc(m.theme)}" data-col="${col}">
       <span class="mdisc"><span class="mglyph">${esc(glyphOf(m.theme))}</span>
-        <span class="mcount">${fmt(s.members)}</span></span>
+        <span class="mcount">${fmt(s.members)}</span>${etfMark(m.theme)}</span>
       <span class="mname">${esc(m.theme)}</span>
       <span class="mstat ${plClass(num(s.growth))}">${
         isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
@@ -4000,7 +4056,9 @@ function renderThemeMap(host, mk) {
     ${desk ? '' : detail}
     <p class="hint">格子的位置就是它在供應鏈的位置，不用再讀標籤。
       數字是${mk === 'tw' ? '月營收年增（已發生）' : '明年營收預估（前瞻）'}。
-      左邊有藍線的是你有持股的族群。
+      左邊有藍線的是你有持股的族群。${mk === 'tw' ? `
+      圈上的小數字是<b>主動型 ETF 吃掉的股本比例</b>（族群裡被吃最兇的那一檔），
+      <span class="metf hot">3%</span> 以上轉紅——到那個量級浮額是真的變少了。` : ''}
       <b>攤開來看最大的用處是檢查自己有沒有把同一條鏈買了很多次</b>——
       玻纖布 → CCL → PCB → 伺服器組裝是同一條，分開看像四個標的，實際上是一個賭注。</p>`;
 
@@ -4419,12 +4477,16 @@ function renderEtf(host) {
   const rows = all.filter((f) => f.scope === scope);
   const win = rows.filter((f) => num(f.excess) > 0).length;
   const young = (b.funds || []).length - all.length;
-  // 只有一檔押的族群列出來沒有意義——那是單一基金的選擇不是共識，
-  // 而且尾巴一長串「1」會把真正集中的那幾個擠到看不見。
-  const crowdAll = (b.crowd || []).filter((c) => num(c.top5) > 0);
-  const crowd = crowdAll.filter((c) => num(c.top5) >= 2);
+  // 族群擁擠度現在用**實際持股**算，不是相關性推估了。
+  // 長條的長度用 top_own（族群內被吃最兇的那一檔佔股本幾 %），
+  // 不用基金檔數——每檔基金都放台積電不代表台積電是題材，
+  // 但是被十四檔合計吃掉 6.9% 股本就是實打實的浮額減少。
+  // 0.2% 以下的不列。那個量級對籌碼沒有任何影響，
+  // 一長串 0.0% 只會把真正集中的那幾個擠到看不見。
+  const crowdAll = (b.crowd || []).filter((c) => isNum(c.top_own));
+  const crowd = crowdAll.filter((c) => num(c.top_own) >= 0.2);
   const crowdTail = crowdAll.length - crowd.length;
-  const rated = num(b.rated) || 1;
+  const ownMax = Math.max(...crowd.map((c) => num(c.top_own)), 0.001);
 
   host.innerHTML = `
     <div class="card">
@@ -4453,18 +4515,23 @@ function renderEtf(host) {
 
     ${scope === 'tw' && crowd.length ? `<div class="card">
       <div class="list-title">這些錢押在哪裡</div>
-      <p class="sub muted"><b>這是推估，不是持股。</b>每日持股各家投信只放在自己網站、
-        沒有集中來源，所以改看日報酬——一檔基金重押哪個族群，它就會跟那個族群一起動。
-        兩邊都先扣掉大盤，不然台股什麼跟什麼都相關 0.8。
-        下面是 ${rated} 檔台股主動型 ETF 裡，有幾檔把這個族群排進<b>前五名</b>。</p>
+      <p class="sub muted">${esc(b.hold_as_of || '')}的<b>實際持股</b>。長條是族群裡
+        被吃最兇的那一檔<b>佔它股本的幾 %</b>——不是基金檔數，因為每檔基金都放台積電
+        不代表台積電是題材，但被十幾檔合計吃掉 6% 股本就是浮額真的變少了。
+        <b>只有前十大持股</b>，沒出現不代表沒人買，只代表不在任何一檔的前十大。</p>
       <div class="etf-crowd">
-        ${crowd.map((c) => `<div class="etf-crow" role="button" tabindex="0" data-tilt="${esc(c.theme)}">
-          <span class="etf-cname">${esc(c.theme)}</span>
-          <span class="etf-bar"><i style="width:${Math.round(num(c.top5) / rated * 100)}%"></i></span>
-          <span class="etf-cnum">${fmt(c.top5)}</span>
+        ${crowd.map((c) => `<div class="etf-citem">
+          <div class="etf-crow" role="button" tabindex="0" data-tilt="${esc(c.theme)}">
+            <span class="etf-cname">${esc(c.theme)}</span>
+            <span class="etf-bar"><i style="width:${Math.round(num(c.top_own) / ownMax * 100)}%"></i></span>
+            <span class="etf-cnum">${fmt(c.top_own, 1)}%</span>
+          </div>
+          <div class="etf-cfoot sub muted">${fmt(c.funds)} 檔持有 ${fmt(c.names)} 家　
+            最重 <span class="link" role="button" tabindex="0" data-stock="tw:${esc(c.top_symbol)}">${
+              esc(c.top_symbol)} ${esc(c.top_name || '')}</span>　${fmt(c.val_yi, 1)} 億</div>
         </div>`).join('')}
       </div>
-      ${crowdTail ? `<p class="sub muted">另有 ${crowdTail} 個族群只有 1 檔基金押，沒列出來。</p>` : ''}
+      ${crowdTail ? `<p class="sub muted">另有 ${crowdTail} 個族群被吃掉的股本不到 0.2%，沒列出來。</p>` : ''}
     </div>` : ''}
 
     <div class="card list">
@@ -4481,14 +4548,18 @@ function renderEtf(host) {
             <span>${signed(num(f.ret) * 100, 1)}% <span class="muted">vs ${
               esc(f.bench)} ${signed(num(f.bench_ret) * 100, 1)}%</span></span>
           </div>
-          ${(f.tilts || []).length ? `<div class="etf-tilts">${
-            (f.tilts || []).slice(0, open ? 6 : 3).map((t) => `<span class="etf-chip" role="button"
-              tabindex="0" data-tilt="${esc(t.theme)}">${esc(t.theme)}
-              <b>${Number(t.corr).toFixed(2)}</b></span>`).join('')}</div>` : ''}
+          ${(f.holds || []).length ? `<div class="etf-tilts">${
+            (f.holds || []).slice(0, open ? 10 : 4).map((h) => `<span class="etf-chip hold"
+              role="button" tabindex="0" ${h.mkt === 'US' ? '' : `data-stock="tw:${esc(h.symbol)}"`}>${
+              esc(h.name || h.symbol)} <b>${fmt(h.weight, 1)}%</b></span>`).join('')}</div>` : ''}
           ${open ? `<div class="sub muted etf-more">
             ${esc(f.issuer || '')}${f.issuer ? '　' : ''}${esc(f.listed_on || '')} 掛牌　
             年化波動 ${isNum(f.vol) ? pct(f.vol) : '–'}　
             對照組 ${esc(f.bench)}（相關 ${isNum(f.bench_corr) ? Number(f.bench_corr).toFixed(2) : '–'}）
+            ${(f.tilts || []).length ? `<div class="etf-est">前十大以外看不到，
+              用日報酬推估的風格：${(f.tilts || []).slice(0, 4).map((t) =>
+              `<span class="etf-chip" role="button" tabindex="0" data-tilt="${esc(t.theme)}">${
+              esc(t.theme)} <b>${Number(t.corr).toFixed(2)}</b></span>`).join('')}</div>` : ''}
           </div>` : ''}
         </div>`;
       }).join('') : '<p class="muted">這一組還沒有滿 20 個交易日的基金。</p>'}
@@ -4510,6 +4581,7 @@ function renderEtf(host) {
     state.etfOpen = state.etfOpen === n.dataset.etf ? '' : n.dataset.etf;
     renderEtf(host);
   }));
+  bindStockOpen(host);
 }
 
 function renderThemes(el) {

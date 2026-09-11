@@ -93,7 +93,9 @@ declare
   f_px numeric; l_px numeric; f_adj numeric; l_adj numeric;
   b_sym text; b_corr numeric; b_f numeric; b_l numeric;
 begin
-  perform set_config('statement_timeout', '900s', true);
+  -- 實測 6 秒（32 檔 × 一次 Yahoo 請求）。
+  -- **不要在這裡 set_config('statement_timeout')**，那是無效的——
+  -- 上限在語句開始時就鎖定了，函式內再設不會延長正在跑的這一句。
 
   -- 兩張暫存表都在迴圈外建好。在迴圈裡 create 的話，只要有一檔丟例外、
   -- 子交易回滾，下一圈就會踩到半建好的狀態。
