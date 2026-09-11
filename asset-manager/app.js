@@ -42,6 +42,7 @@ const state = {
   screenOpen: false,                  // 選股條件面板要不要展開
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
+  mapLit: null,                       // 選中時整條路徑上的族群
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -3611,7 +3612,49 @@ function orderColumn(list, links) {
 // 這裡每一格都有文字標籤、每一欄都有標題，符合。
 const STAGE_HUE = ['#0d9488', '#6366f1', '#d97706'];
 
+// 把浮出框擺到被點的那一格旁邊，並且夾在地圖範圍內。
+// **地圖本身不會因為它出現而改變**，這是跟原本那張插入式卡片最大的差別。
+function placePop(wrap, sel) {
+  const pop = $('.mpop.anchored', wrap);
+  if (!pop || !sel) return;
+  const node = $$('.mnode', wrap).find((n) => n.dataset.node === sel);
+  if (!node) return;
+  const box = wrap.getBoundingClientRect();
+  const r = node.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const GAP = 14;
+  // 垂直對齊格子中線，再夾回範圍內
+  let y = r.top - box.top + r.height / 2 - ph / 2;
+  y = Math.max(0, Math.min(y, Math.max(0, box.height - ph)));
+
+  // **選遮住最少「亮著的格子」的那一側。** 不管放哪邊都會蓋到東西，
+  // 但蓋到變暗的格子沒差，蓋到同一條路徑上的就等於把剛點亮的東西藏起來。
+  const lit = $$('.mnode', wrap).filter((n) => !n.classList.contains('dim'));
+  const covers = (x) => lit.filter((n) => {
+    const q = n.getBoundingClientRect();
+    const nx = q.left - box.left, ny = q.top - box.top;
+    return nx < x + pw && nx + q.width > x && ny < y + ph && ny + q.height > y;
+  }).length;
+  const right = Math.min(Math.max(0, r.right - box.left + GAP), Math.max(0, box.width - pw));
+  const left = Math.min(Math.max(0, r.left - box.left - pw - GAP), Math.max(0, box.width - pw));
+  const x = covers(left) <= covers(right) ? left : right;
+  pop.style.left = `${Math.round(x)}px`;
+  pop.style.top = `${Math.round(y)}px`;
+  pop.classList.add('ready');
+}
+
 // 量完位置才畫得出線，所以一定要在 DOM 上去之後做
+// 邊的三種狀態：選中的直接關係（強）、同一條路徑上的（中）、其餘（幾乎看不見）。
+// 這樣看到的是「一整條分支」，不是「一個點加兩根鬚」。
+function edgeState(mk, sel, l) {
+  if (!sel) return 'e';
+  if (l.src === sel) return 'e down';
+  if (l.dst === sel) return 'e up';
+  const lit = state.mapLit;
+  if (lit && lit.has(l.src) && lit.has(l.dst)) return 'e path';
+  return 'e off';
+}
+
 function drawEdges(wrap, mk, sel) {
   const svg = $('.medges', wrap);
   if (!svg) return;
@@ -3662,11 +3705,12 @@ function drawEdges(wrap, mk, sel) {
       x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
       <stop offset="0" stop-color="${STAGE_HUE[a.col]}"/>
       <stop offset="1" stop-color="${STAGE_HUE[b.col]}"/></linearGradient>`);
-    const cls = !sel ? 'e' : on ? (l.dst === sel ? 'e up' : 'e down') : 'e off';
+    const cls = edgeState(mk, sel, l);
+    const strong = cls === 'e up' || cls === 'e down';
     const path = `<path class="${cls}" d="${d}" stroke="url(#${id})"
-      marker-end="url(#ar${b.col}${on ? 'h' : ''})"/>`;
+      marker-end="url(#ar${b.col}${strong ? 'h' : ''})"/>`;
     // 亮的畫在後面才不會被淡的蓋住
-    (on ? lit : dim).push(path);
+    (strong || cls === 'e path' ? lit : dim).push(path);
   }
 
   const marker = (i, hi) => `<marker id="ar${i}${hi ? 'h' : ''}" viewBox="0 0 8 8"
@@ -3716,20 +3760,43 @@ function renderThemeMap(host, mk) {
   const bench = mk === 'tw' ? idxRatio() : usIdxRatio();
   const parents = [...new Set(metas.map((m) => m.parent))];
 
-  // 選了某個族群時，它的直接上下游要亮著，其餘變暗
+  // 選了某個族群時，**整條路徑**都要亮起來，不只直接鄰居——
+  // 天賦樹點一個天賦會照亮通往它的那一整條分支，那才看得出「我在哪一條線上」。
+  // 直接相鄰的給強樣式（near），再上/下游的給弱樣式（path）。
   const near = new Map();
+  const path = new Map();
   if (sel) {
+    const links = state.themeLinks.filter((l) => l.market === mk);
+    const walk = (from, dir) => {
+      const seen = new Set();
+      const queue = [from];
+      while (queue.length) {
+        const cur = queue.shift();
+        for (const l of links) {
+          const [a, b] = dir === 'up' ? [l.dst, l.src] : [l.src, l.dst];
+          if (a !== cur || seen.has(b) || b === sel) continue;
+          seen.add(b);
+          queue.push(b);
+        }
+      }
+      return seen;
+    };
     const c = linksOf(mk, sel);
-    near.set(sel, 'self');
+    walk(sel, 'up').forEach((t) => path.set(t, 'up'));
+    walk(sel, 'down').forEach((t) => path.set(t, 'down'));
     c.up.forEach((l) => near.set(l.src, 'up'));
     c.down.forEach((l) => near.set(l.dst, 'down'));
+    near.set(sel, 'self');
   }
+  state.mapLit = sel ? new Set([sel, ...near.keys(), ...path.keys()]) : null;
 
   const tile = (m, col) => {
     const s = themeStats(mk, m.theme);
     const rel = near.get(m.theme) || '';
-    const dim = sel && !rel;
-    return `<button type="button" class="mnode${rel ? ' rel-' + rel : ''}${dim ? ' dim' : ''}${
+    const far = !rel && (path.get(m.theme) || '');
+    const dim = sel && !rel && !far;
+    return `<button type="button" class="mnode${rel ? ' rel-' + rel : ''}${
+      far ? ' far far-' + far : ''}${dim ? ' dim' : ''}${
       mine.has(m.theme) ? ' mine' : ''}" data-node="${esc(m.theme)}" data-col="${col}">
       ${rel === 'up' ? '<span class="mflag">供貨</span>'
         : rel === 'down' ? '<span class="mflag">出貨給</span>' : ''}
@@ -3756,10 +3823,14 @@ function renderThemeMap(host, mk) {
       <button type="button" class="link" data-node="${esc(dir === 'up' ? l.src : l.dst)}">${
         esc(dir === 'up' ? l.src : l.dst)}</button>
       ${l.note ? `<span class="sub muted">${esc(l.note)}</span>` : ''}</div>`;
-    return `<div class="card mdetail${desk ? ' wide' : ''}">
+    // **不能是一張插在版面裡的卡。** 它一出現整張圖就往下推，
+    // 點下一格又推一次，位置一直跳——使用者的說法是「不穩定」。
+    // 改成浮在地圖上、貼著被點的那一格（桌機）或釘在底部（手機），
+    // 就像天賦樹的 tooltip：出現與消失都不會動到樹本身。
+    return `<div class="mpop${desk ? ' anchored' : ' sheet'}">
       <div class="row-between">
         <span class="list-title">${esc(sel)}</span>
-        <button type="button" class="small" data-node-clear>看全圖</button>
+        <button type="button" class="small" data-node-clear>關閉</button>
       </div>
       <p class="sub muted">${esc(meta?.parent || '')}・${esc(meta?.stage || '')}　${
         fmt(s.members)} 檔${isNum(s.ratio) ? `　報酬/波動 <b class="${
@@ -3793,9 +3864,9 @@ function renderThemeMap(host, mk) {
           grp === p ? ' on' : ''}" data-group="${esc(p)}">${esc(p)}</button>`).join('')}
       </div>
     </div>
-    ${detail}
     <div class="mapwrap${desk ? ' desk' : ''}">
       ${desk ? '<svg class="medges" aria-hidden="true"></svg>' : ''}
+      ${desk ? detail : ''}
       ${desk ? `<div class="mcols">${STAGES.map(([st, title, sub], i) => {
         const list = orderColumn(byStage(st), state.themeLinks.filter((l) => l.market === mk));
         if (!list.length) return '';
@@ -3818,6 +3889,7 @@ function renderThemeMap(host, mk) {
         ${i < STAGES.length - 1 ? '<div class="mflow">↓</div>' : ''}`;
       }).join('')}
     </div>
+    ${desk ? '' : detail}
     <p class="hint">格子的位置就是它在供應鏈的位置，不用再讀標籤。
       數字是${mk === 'tw' ? '月營收年增（已發生）' : '明年營收預估（前瞻）'}。
       左邊有藍線的是你有持股的族群。
@@ -3836,7 +3908,7 @@ function renderThemeMap(host, mk) {
   if (desk) {
     const wrap = $('.mapwrap', host);
     // 量位置一定要等版面排完，所以排進下一幀
-    requestAnimationFrame(() => drawEdges(wrap, mk, sel));
+    requestAnimationFrame(() => { drawEdges(wrap, mk, sel); placePop(wrap, sel); });
     // 視窗寬度變了，線的位置就不對了
     clearTimeout(state.mapResizeT);
     if (!state.mapBound) {
@@ -3851,10 +3923,11 @@ function renderThemeMap(host, mk) {
     }
   }
 
-  // 選了之後把詳情捲進畫面，不然在長圖中間點會看不到
+  // 手機：把選中的格子捲到畫面中間。底部面板佔 38vh，中間剛好在它上面，
+  // 所以點完之後看得到那一格與它亮起來的鄰居。
   if (sel && !desk) {
-    const d = $('.mdetail', host);
-    if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const n = $$('.mnode', host).find((x) => x.dataset.node === sel);
+    if (n) n.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
 function renderScreener(host, mk) {

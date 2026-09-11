@@ -687,17 +687,67 @@ textarea.journal-input {
   .medges .e.off { opacity: .07; }
   .medges .e.up, .medges .e.down { stroke-width: 2.6; opacity: 1; }
 
-  /* 詳情卡與說明要跟地圖一樣寬，不然 720px 的卡浮在 1240px 的圖上面很不對齊 */
-  .mdetail.wide, .mhead, .mapwrap.desk ~ .hint {
+  .mhead, .mapwrap.desk ~ .hint {
     width: min(1240px, calc(100vw - 48px));
     margin-left: calc(50% - min(620px, (100vw - 48px) / 2));
   }
-  .mdetail { border-color: var(--primary); }
-  .mdetail.wide {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px;
-  }
-  .mdetail.wide > .row-between, .mdetail.wide > .sub { grid-column: 1 / -1; }
-  .mdetail .mgroup { margin-top: 0; }
   /* 不要分成兩欄：句子會被切在中間（「玻纖布 → CCL →」跳到第二欄才接下去）*/
   .mapwrap.desk ~ .hint { margin-top: 22px; max-width: 72ch; }
+}
+
+/* ---------- 產業地圖：浮出框 ---------- */
+/* 天賦樹的做法：點一個節點，說明浮在旁邊，**樹本身不動**。
+   原本是一張插在版面裡的卡，一出現整張圖就往下推，點下一格又推一次。 */
+.mpop {
+  background: var(--card); border: 1px solid var(--primary); border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.mpop .mgroup { margin-top: 10px; }
+.mpop .list-title { font-size: 16px; }
+
+/* 手機：釘在底部，不佔版面高度 */
+/* **不能太高。** 52vh 會把地圖整個蓋掉，等於點了之後看不到剛亮起來的路徑，
+   那就失去點它的意義了。38vh 讓上面六成留給地圖。 */
+.mpop.sheet {
+  position: fixed; left: 10px; right: 10px; z-index: 6;
+  bottom: calc(var(--nav-h) + 10px + env(safe-area-inset-bottom));
+  max-height: 38vh; overflow: auto;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, .3);
+}
+.mpop.sheet .list-title { font-size: 15px; }
+.mpop.sheet .mgroup { margin-top: 8px; }
+.mpop.sheet .chip.plain { font-size: 12px; padding: 3px 8px; }
+
+@media (min-width: 900px) {
+  /* 桌機：絕對定位貼在被點的格子旁邊。定位算好之前先不要顯示，
+     否則會看到它從左上角跳到定位點。 */
+  .mpop.anchored {
+    position: absolute; z-index: 4; width: 340px; max-height: 70%; overflow: auto;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+    opacity: 0; transition: opacity .12s;
+  }
+  .mpop.anchored.ready { opacity: 1; }
+}
+
+/* ---------- 產業地圖：路徑狀態 ---------- */
+/* 選中時亮的是「一整條分支」，不是「一個點加兩根鬚」。
+   直接相鄰的強、同一條路徑上的中、其餘幾乎看不見。 */
+.mnode.far { opacity: .8; }
+.mnode.far-up { border-color: color-mix(in srgb, var(--stage-1) 45%, var(--border)); }
+.mnode.far-down { border-color: color-mix(in srgb, var(--stage-3) 45%, var(--border)); }
+@media (min-width: 900px) {
+  .mcol .mnode.far { box-shadow: none; }
+  .medges .e.path { stroke-width: 1.8; opacity: .45; }
+  /* 持股的族群給一圈光暈，像天賦樹裡已經點亮的節點 */
+  .mcol .mnode.mine {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 40%, transparent),
+                0 2px 10px color-mix(in srgb, var(--primary) 18%, transparent);
+  }
+}
+@media (min-width: 900px) {
+  .mpop.anchored { width: 310px; }
+  .mpop .chain-row.members { gap: 4px; }
+  .mpop .chip.plain { font-size: 12px; padding: 3px 7px; }
+  .mpop .mlink { padding: 2px 0; }
+  .mpop .mlink .sub { margin-left: 16px; }
 }
