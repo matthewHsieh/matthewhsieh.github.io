@@ -4660,6 +4660,9 @@ function renderThemes(el) {
         ? `<label><input type="radio" name="tvw" value="etf" ${vw === 'etf' ? 'checked' : ''}><span>主動ETF</span></label>` : ''}
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
+  // 讓 CSS 知道現在是哪個子視圖。桌機的兩欄排版只能套在「一堆同質卡片」
+  // 的清單與今日上；產業鏈、選股、主動ETF 都有自己的版面，被切成兩欄會壞。
+  host.dataset.view = vw;
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
   if (vw === 'etf' && mk === 'tw') { renderEtf(host); if (!state.etfBoard) loadEtf(host); }
   else if (vw === 'day' && mk === 'tw') renderThemeDay(host);

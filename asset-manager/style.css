@@ -288,11 +288,16 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
   padding: 0; border: none; font-size: 13px; color: var(--muted);
 }
 
-/* ---------- 折線圖 ---------- */
-.line { display: block; width: 100%; overflow: visible; }
-.line .grid { stroke: var(--grid); stroke-width: 1; }
-.line .axis-text { fill: var(--muted); font-size: 10px; }
-.line .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+/* ---------- 折線圖 ----------
+   **一定要寫成 svg.line，不能只寫 .line。**
+   表格列也叫 .line（<div class="row-between line">），只寫 .line 的話
+   這裡的 display:block 會蓋掉 .row-between 的 display:flex——
+   因為兩者權重相同而這段在後面。結果就是總覽「曝險」那一整段的
+   標籤跟數字黏在一起（「台股市值704,880」）。 */
+svg.line { display: block; width: 100%; overflow: visible; }
+svg.line .grid { stroke: var(--grid); stroke-width: 1; }
+svg.line .axis-text { fill: var(--muted); font-size: 10px; }
+svg.line .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
 .chart-tip {
   position: absolute; top: 4px; z-index: 3; pointer-events: none;
   background: var(--card); border: 1px solid var(--border); border-radius: 10px;
@@ -913,4 +918,36 @@ textarea.journal-input {
   color: var(--primary);
   border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 桌機：把寬度用起來 ----------
+   #main 固定 720px，在 1440px 螢幕上兩側各空掉三百多 px。
+   讀起來舒服的行寬本來就該限制，所以**不是把整頁拉寬**，
+   而是讓「同質、可平行掃視的卡片列表」排成兩欄：
+   族群清單有 43 張卡，一欄要捲很久，兩欄剛好。
+   總覽不動——它是有閱讀順序的儀表板，拆兩欄反而要來回找。 */
+@media (min-width: 1180px) {
+  #main { max-width: 1120px; }
+
+  /* 族群「清單」與「今日」：一堆同質的卡片，兩欄並排剛好。
+     **只套這兩個子視圖。** 產業鏈、選股、主動ETF 都有自己的內部版面，
+     被外層切成兩欄會把它們擠壞（主動ETF 的基金卡片會被塞進半寬的欄位）。 */
+  [data-themebody][data-view="list"],
+  [data-themebody][data-view="day"] {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px; align-items: start;
+  }
+  [data-themebody][data-view="list"] > .card,
+  [data-themebody][data-view="day"] > .card { margin: 0; }
+  /* 開頭的說明卡橫跨兩欄 */
+  [data-themebody][data-view="list"] > .card:first-child,
+  [data-themebody][data-view="day"] > .card:first-child { grid-column: 1 / -1; }
+
+  /* 持倉：各資產類別的卡片也兩欄。
+     **這裡用 columns 不用 grid。** grid 會讓同一列的卡片對齊，
+     「台股」只有兩筆、旁邊「期貨部位」有五筆，矮的那張後面就空一大塊。
+     多欄流式排版會自己往下填，不會有洞。上方兩個按鈕用 column-span 橫跨。 */
+  .tab-panel[data-tab="holdings"] { columns: 2; column-gap: 12px; }
+  .tab-panel[data-tab="holdings"] > * { break-inside: avoid; margin: 0 0 12px; }
+  .tab-panel[data-tab="holdings"] > button.block { column-span: all; width: 100%; }
 }
