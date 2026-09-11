@@ -26,7 +26,9 @@ begin
     -- 交易所警示、契約對照
     'trade_alerts', 'fut_codes', 'fut_months', 'stock_universe', 'company_profile',
     -- 轉型故事、主動型 ETF
-    'stock_story', 'active_etf', 'etf_perf', 'etf_tilt', 'etf_holding', 'stock_shares',
+    'stock_story', 'active_etf', 'etf_perf', 'etf_holding', 'stock_shares',
+    -- 盤中報價
+    'market_live',
     -- 更新狀態（只有市場名稱與日期，沒有任何個人資料）
     'price_runs'
   ] loop

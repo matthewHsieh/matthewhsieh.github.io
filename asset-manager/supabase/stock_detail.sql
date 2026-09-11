@@ -67,7 +67,7 @@ language sql stable security definer set search_path = public as $fn$
             from public.etf_holding h
             join public.active_etf e on e.symbol = h.etf
             left join public.stock_shares sh on sh.market = 'tw' and sh.symbol = h.symbol
-            where h.symbol = s.sym and s.mk = 'tw'),
+            where h.symbol = s.sym and h.mkt = 'TW' and s.mk = 'tw'),
     -- 今天的開高低與漲跌。**「從當日低點拉起多少」才是判斷強弱的數字**，
     -- 不是對昨收的漲跌幅，理由見 theme_day.sql。
     'day', (select jsonb_build_object('price', m.price, 'chg', m.chg,

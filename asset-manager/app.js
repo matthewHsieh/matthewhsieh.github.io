@@ -308,6 +308,15 @@ function liveMap() {
 // 有新鮮的盤中報價就用它，否則用存下來的收盤價
 const livePx = (sym) => (state._live || new Map()).get(norm(sym)) || null;
 // 盤中價一定要標出來。使用者看到的數字跟收盤價是兩件事，不標就會看錯。
+// CMoney 的公司名是全名（緯穎科技服務、貿聯控股（BizLink…）），
+// 晶片上放不下，截短到看得懂就好。
+// **只給個股名用。** ETF 名稱不能截——「主動中信台灣卓越」砍成
+// 「主動中信台灣」會變成另一檔基金。
+const shortName = (v) => {
+  const t = String(v || '').replace(/（.*$/, '').replace(/\(.*$/, '').trim();
+  return t.length > 6 ? t.slice(0, 6) : t;
+};
+
 const liveTag = (sym) => {
   const l = livePx(sym);
   if (!l) return '';
@@ -3505,8 +3514,8 @@ function stockCardHtml(mk, sym) {
 //   真的變少。小型股可能是三檔基金的第一大持股，但合計只買到 0.1% 股本，
 //   對籌碼沒有意義；緯穎被 14 檔合計吃掉 6.9%，那才是。
 //
-//   資料只有前十大持股（MoneyDJ）。**沒出現不代表沒人持有**，
-//   只代表不在任何一檔的前十大，這句話一定要寫出來。
+//   資料是 CMoney 的完整持股（一檔平均 50 檔），不是前十大，
+//   所以「沒出現」就真的是沒有人持有。
 function etfOwnHtml(e) {
   if (!e || !num(e.funds)) return '';
   const own = num(e.own_pct);
@@ -3519,15 +3528,14 @@ function etfOwnHtml(e) {
       <span class="sc-own ${heavy ? 'gain' : ''}">${
         isNum(e.own_pct) ? fmt(own, 2) + '% 股本' : '–'}</span>
     </div>
-    <p class="sub">${fmt(e.funds)} 檔主動型 ETF 把它放進<b>前十大持股</b>，
-      單檔最重 <b>${fmt(e.max_weight, 1)}%</b>${
+    <p class="sub">${fmt(e.funds)} 檔主動型 ETF 持有它，單檔押最重的佔該檔基金
+      <b>${fmt(e.max_weight, 1)}%</b>${
       heavy ? '，合計吃掉的股本已經到<b>浮額會變少</b>的量級' : ''}。</p>
     <div class="etf-chips">${list.map((x) => `<span class="etf-chip hold">${
       esc(x.name || x.etf)} <b>${fmt(x.weight, 1)}%</b></span>`).join('')}${
       (e.list || []).length > list.length
         ? `<span class="etf-chip">還有 ${(e.list || []).length - list.length} 檔</span>` : ''}</div>
-    <p class="sub muted">${esc(e.as_of || '')}。只看得到前十大持股，
-      沒出現在這裡的基金不代表沒買。</p>
+    <p class="sub muted">${esc(e.as_of || '')}　資料來源 CMoney</p>
   </div>`;
 }
 
@@ -4565,8 +4573,7 @@ function renderEtf(host) {
       <div class="list-title">這些錢押在哪裡</div>
       <p class="sub muted">${esc(b.hold_as_of || '')}的<b>實際持股</b>。長條是族群裡
         被吃最兇的那一檔<b>佔它股本的幾 %</b>——不是基金檔數，因為每檔基金都放台積電
-        不代表台積電是題材，但被十幾檔合計吃掉 6% 股本就是浮額真的變少了。
-        <b>只有前十大持股</b>，沒出現不代表沒人買，只代表不在任何一檔的前十大。</p>
+        不代表台積電是題材，但被二十檔合計吃掉 7% 股本就是浮額真的變少了。</p>
       <div class="etf-crowd">
         ${crowd.map((c) => `<div class="etf-citem">
           <div class="etf-crow" role="button" tabindex="0" data-tilt="${esc(c.theme)}">
@@ -4576,7 +4583,7 @@ function renderEtf(host) {
           </div>
           <div class="etf-cfoot sub muted">${fmt(c.funds)} 檔持有 ${fmt(c.names)} 家　
             最重 <span class="link" role="button" tabindex="0" data-stock="tw:${esc(c.top_symbol)}">${
-              esc(c.top_symbol)} ${esc(c.top_name || '')}</span>　${fmt(c.val_yi, 1)} 億</div>
+              esc(c.top_symbol)} ${esc(shortName(c.top_name))}</span>　${fmt(c.val_yi, 1)} 億</div>
         </div>`).join('')}
       </div>
       ${crowdTail ? `<p class="sub muted">另有 ${crowdTail} 個族群被吃掉的股本不到 0.2%，沒列出來。</p>` : ''}
@@ -4597,9 +4604,11 @@ function renderEtf(host) {
               esc(f.bench)} ${signed(num(f.bench_ret) * 100, 1)}%</span></span>
           </div>
           ${(f.holds || []).length ? `<div class="etf-chips">${
-            (f.holds || []).slice(0, open ? 10 : 4).map((h) => `<span class="etf-chip hold"
-              role="button" tabindex="0" ${h.mkt === 'US' ? '' : `data-stock="tw:${esc(h.symbol)}"`}>${
-              esc(h.name || h.symbol)} <b>${fmt(h.weight, 1)}%</b></span>`).join('')}</div>` : ''}
+            (f.holds || []).slice(0, open ? 12 : 4).map((h) => `<span class="etf-chip hold"
+              role="button" tabindex="0" ${h.mkt === 'TW' ? `data-stock="tw:${esc(h.symbol)}"` : ''}>${
+              esc(shortName(h.name) || h.symbol)} <b>${fmt(h.weight, 1)}%</b></span>`).join('')}${
+            num(f.holds_n) > (open ? 12 : 4)
+              ? `<span class="etf-chip">還有 ${fmt(num(f.holds_n) - (open ? 12 : 4))} 檔</span>` : ''}</div>` : ''}
           ${open ? `<div class="sub muted etf-more">
             ${esc(f.issuer || '')}${f.issuer ? '　' : ''}${esc(f.listed_on || '')} 掛牌　
             年化波動 ${isNum(f.vol) ? pct(f.vol) : '–'}　

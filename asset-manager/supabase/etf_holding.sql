@@ -1,19 +1,24 @@
 -- ============================================================
 -- 主動型 ETF 的實際持股
 --
--- 上一版只能用日報酬的相關性**推估**押在哪些產業，因為每日申購買回清單
--- 各家投信只放在自己網站、格式都不一樣、國泰那個網域還整站擋自動存取。
+-- 每日申購買回清單各家投信只放在自己網站，格式都不一樣、國泰那個網域
+-- 還整站擋自動存取，一度以為只能寫十七支解析器。中間退而求其次用過
+-- MoneyDJ，但它只給**前十大**。
 --
--- **但是 MoneyDJ 有。** 它把每一檔 ETF 的前十大持股整理成同一個版型，
--- 伺服器端算好的 HTML，一支解析器吃得下全部 32 檔，資料日期幾乎是前一天。
+-- **最後找到 CMoney 有完整持股，而且是一個 GET 就回一包 JSON。**
+--   https://www.cmoney.tw/MobileService/ashx/GetDtnoData.ashx
+--     ?action=getdtnodata&DtNo=59449513&ParamStr=AssignID=<代號>;...MajorTable=M722;
+-- 32 檔全部涵蓋，每檔 38～98 筆，台股上市上櫃與美股持股都有，
+-- 回應才兩三 KB（MoneyDJ 一頁 60KB）。
 --
--- 拿得到的：個股代號、**投資比例（佔該檔 ETF 幾 %）**、持有股數、資料日期。
--- 拿不到的：第十一名以後。主動型 ETF 通常持有三、五十檔，前十大大約佔
--- 五到七成。**這個限制要一路標到畫面上**——某檔股票沒出現，只代表它不在
--- 任何一檔的前十大，不代表沒有人持有。
+-- 口袋證券（pocket.tw）是同一份資料，但它的 /api/cm/ 只是代理，
+-- **而且從 Supabase 連過去 TLS 會被擋**（SSL_ERROR_SYSCALL，換 UA 沒用，
+-- 應該是 WAF 或機房 IP），所以直接打上游 www.cmoney.tw。
 --
--- 不過就這個功能要回答的問題來說，前十大剛好就是答案：
--- 「有沒有人重壓」這件事，照定義就發生在前十大裡面。
+-- 回傳裡不是每一列都是持股，要看「單位」欄：
+--   股  真正的持股。台股是裸代號 2330，美股是 'TSLA US'
+--   元  現金、應收處分款、附買回債券
+--   口  期貨（例如 202609TX 台指期貨）
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -107,41 +112,48 @@ drop policy if exists "public read etf holding" on public.etf_holding;
 create policy "public read etf holding" on public.etf_holding for select to anon using (true);
 grant select on public.etf_holding to anon, authenticated;
 
--- 解析一頁。版型是固定的三欄表格：
---   <td class="col05"><a …>台積電(2330.TW)</a></td>
---   <td class="col06">10.24</td><td class="col07">11,864,000.00</td>
--- **所有量詞都要非貪婪。** Postgres 的貪婪與否是由「第一個帶偏好的量詞」
--- 決定的，前面放一個貪婪的 .* 會讓整串跟著貪婪，一路吃到頁尾。
-create or replace function public.pm_mdj_holdings(p_body text)
-returns table (symbol text, name text, mkt text, weight numeric, shares_held numeric)
+-- CMoney 的回傳是 {"Title":[...],"Data":[[...],...]}，每一列是一個陣列，
+-- 欄序固定：日期 / 標的代號 / 標的名稱 / 權重(%) / 持有數 / 單位。
+create or replace function public.pm_cm_holdings(p_body text)
+returns table (symbol text, name text, mkt text, weight numeric,
+               shares_held numeric, d date)
 language sql immutable as $fn$
-  select btrim(g[2]), btrim(g[1]), upper(btrim(g[3])),
-         nullif(btrim(g[4]), '')::numeric,
-         nullif(replace(btrim(g[5]), ',', ''), '')::numeric
-  from regexp_matches(p_body,
-    'col05">.*?([^<>(]+?)\(([^()]+?)\.(TW|TWO|US)\)<.*?col06">(.*?)</td>.*?col07">(.*?)</td>',
-    'g') as g
-  where btrim(g[4]) ~ '^[0-9.]+$' and replace(btrim(g[5]), ',', '') ~ '^[0-9.]+$';
+  select upper(split_part(btrim(e ->> 1), ' ', 1)),
+         btrim(e ->> 2),
+         -- 代號是彭博格式：台股是裸代號 2330，國外是「代號 市場」。
+         -- **不能只認 US**，實際出現過 JP / LN / KS / GY / IM / NA / FP /
+         -- GA / CH / HK / JT / KP / SM / UW 共 16 種。只認 US 的話，
+         -- 日本的 6997 NIPPON CHEMI-CON 會被當成台股 6997，
+         -- 算出「被吃掉 5.77% 股本」這種完全錯誤的數字。
+         case when btrim(e ->> 1) like '% %'
+              then upper(split_part(btrim(e ->> 1), ' ', 2)) else 'TW' end,
+         nullif(btrim(e ->> 3), '')::numeric,
+         nullif(replace(btrim(e ->> 4), ',', ''), '')::numeric,
+         to_date(btrim(e ->> 0), 'YYYYMMDD')
+  from jsonb_array_elements((p_body::jsonb) -> 'Data') e
+  -- 只要真正的持股。'元' 是現金與應收款、'口' 是期貨。
+  where btrim(e ->> 5) = '股'
+    and btrim(e ->> 0) ~ '^[0-9]{8}$'
+    and nullif(replace(btrim(e ->> 4), ',', ''), '') ~ '^[0-9.]+$';
 $fn$;
 
 create or replace function public.refresh_etf_holdings()
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
-declare r record; body text; d date; n integer := 0; got integer;
+declare r record; body text; n integer := 0; got integer;
 begin
-  -- 實測 15 秒（32 頁 × 0.3 秒間隔）。函式內 set_config('statement_timeout')
-  -- 無效，上限在語句開始時就鎖定了。
-
+  -- 32 檔各一個小請求，實測十幾秒，遠低於預設的 120 秒上限。
+  -- （函式內 set_config('statement_timeout') 是無效的，上限在語句開始時就鎖定。）
   for r in select symbol from public.active_etf order by symbol loop
     begin
-      body := public.pm_fetch('https://www.moneydj.com/etf/x/Basic/Basic0007.xdjhtm?etfid='
-                              || r.symbol || '.TW');
-      -- 資料日期跟在 sdate3 那個 div 裡，抓不到就不寫，寧可沒有也不要寫錯日期
-      d := to_date((regexp_match(body, 'sdate3.*?資料日期：([0-9]{4}/[0-9]{2}/[0-9]{2})'))[1],
-                   'YYYY/MM/DD');
+      body := public.pm_fetch(
+        'https://www.cmoney.tw/MobileService/ashx/GetDtnoData.ashx'
+        || '?action=getdtnodata&DtNo=59449513&ParamStr=AssignID%3D' || r.symbol
+        || '%3BMTPeriod%3D0%3BDTMode%3D0%3BDTRange%3D1%3BDTOrder%3D1%3BMajorTable%3DM722%3B'
+        || '&FilterNo=0');
 
       insert into public.etf_holding (etf, symbol, name, mkt, weight, shares_held, as_of, updated_at)
-      select r.symbol, h.symbol, h.name, h.mkt, h.weight, h.shares_held, d, now()
-      from public.pm_mdj_holdings(body) h
+      select r.symbol, h.symbol, h.name, h.mkt, h.weight, h.shares_held, h.d, now()
+      from public.pm_cm_holdings(body) h
       on conflict (etf, symbol) do update
         set name = excluded.name, mkt = excluded.mkt, weight = excluded.weight,
             shares_held = excluded.shares_held, as_of = excluded.as_of, updated_at = now();
@@ -153,10 +165,10 @@ begin
       if got > 0 then
         delete from public.etf_holding h
         where h.etf = r.symbol
-          and not exists (select 1 from public.pm_mdj_holdings(body) x where x.symbol = h.symbol);
+          and not exists (select 1 from public.pm_cm_holdings(body) x where x.symbol = h.symbol);
         n := n + 1;
       end if;
-      perform pg_sleep(0.3);
+      perform pg_sleep(0.2);
     exception when others then
       perform public.pm_log('etf_holding ' || r.symbol, 0, false, sqlerrm);
     end;
@@ -189,7 +201,7 @@ language sql stable security definer set search_path = public as $fn$
     from public.etf_holding h
     join public.stock_shares s on s.market = 'tw' and s.symbol = h.symbol
     left join public.market_prices m on m.market = 'tw' and m.symbol = h.symbol
-    where h.mkt in ('TW', 'TWO')
+    where h.mkt = 'TW'
     group by h.symbol
   ),
   per as (
@@ -233,12 +245,18 @@ returns jsonb language sql stable security definer set search_path = public as $
     'hold_as_of', (select max(as_of) from public.etf_holding),
     'funds', coalesce((
       select jsonb_agg(to_jsonb(f)
-               -- 實際持股（前十大，MoneyDJ）
-               || jsonb_build_object('holds', coalesce((
-                    select jsonb_agg(jsonb_build_object('symbol', h.symbol, 'name', h.name,
-                                                        'mkt', h.mkt, 'weight', h.weight)
-                           order by h.weight desc)
-                    from public.etf_holding h where h.etf = f.symbol), '[]'::jsonb))
+               -- 實際持股。**只放權重前 12 大**——一檔平均 50 檔持股，
+               -- 32 檔全放進來是 1,592 列，畫面上也不會列那麼多。
+               -- holds_n 帶總檔數，讓畫面可以寫「還有 N 檔」。
+               || jsonb_build_object(
+                    'holds_n', (select count(*) from public.etf_holding h where h.etf = f.symbol),
+                    'holds', coalesce((
+                      select jsonb_agg(jsonb_build_object('symbol', x.symbol, 'name', x.name,
+                                                          'mkt', x.mkt, 'weight', x.weight)
+                             order by x.weight desc)
+                      from (select h.symbol, h.name, h.mkt, h.weight
+                            from public.etf_holding h where h.etf = f.symbol
+                            order by h.weight desc limit 12) x), '[]'::jsonb))
              order by f.excess desc nulls last)
       from public.active_etf_perf() f), '[]'::jsonb),
     'crowd', coalesce((
