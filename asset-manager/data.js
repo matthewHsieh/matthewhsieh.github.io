@@ -6,44 +6,69 @@ import { render } from './render.js';
 // ============================================================
 // 資料存取
 // ============================================================
-// 訪客模式：只有市場資料那幾張表對匿名開放（見 supabase/public_read.sql），
+// **要抓什麼、放到 state 的哪個欄位，寫成一張表。**
+// 原本 loadMarketOnly 與 loadAll 各自列了一遍同樣的十三個查詢與解構，
+// 每加一個資料來源就要改兩處、順序還要對得剛好——一次改錯順序就是整批
+// 錯位。表格化之後 key 就是 state 的欄位名，順序不再重要。
+//
+// 訪客模式只有市場資料那幾張表對匿名開放（見 supabase/public_read.sql），
 // 個人資料表連查都不用查，查了也只會拿到空陣列。
-async function loadMarketOnly() {
-  const results = await Promise.all([
-    sb.rpc('theme_trend', { p_months: 1 }),
-    sb.rpc('theme_members', {}),
-    sb.from('theme_info').select('*'),
-    sb.rpc('theme_valuation', {}),
-    sb.rpc('app_risk', {}),
-    sb.rpc('us_theme_trend', {}),
-    sb.rpc('us_theme_members', {}),
-    sb.from('theme_meta').select('*'),
-    sb.from('theme_links').select('*'),
-    sb.rpc('theme_day', {}),
-    sb.rpc('active_alerts', { p_days: 10 }),
-    sb.rpc('theme_etf', {}),
-    sb.from('market_live').select('*'),
-  ]);
+const MARKET_QUERIES = {
+  themeTrend:     () => sb.rpc('theme_trend', { p_months: 1 }),
+  themeMembers:   () => sb.rpc('theme_members', {}),
+  themeInfo:      () => sb.from('theme_info').select('*'),
+  themeVal:       () => sb.rpc('theme_valuation', {}),
+  // **不要整批 select risk_stats/us_stats**：它們現在各有兩千列，
+  // PostgREST 預設只回前 1,000 列，會安靜地截斷，
+  // 症狀是有些股票的報酬/波動莫名變成「–」。app_risk() 只回真的用得到的那幾百檔。
+  _risk:          () => sb.rpc('app_risk', {}),
+  usThemeTrend:   () => sb.rpc('us_theme_trend', {}),
+  usThemeMembers: () => sb.rpc('us_theme_members', {}),
+  themeMeta:      () => sb.from('theme_meta').select('*'),
+  themeLinks:     () => sb.from('theme_links').select('*'),
+  themeDay:       () => sb.rpc('theme_day', {}),
+  alerts:         () => sb.rpc('active_alerts', { p_days: 10 }),
+  themeEtf:       () => sb.rpc('theme_etf', {}),
+  marketLive:     () => sb.from('market_live').select('*'),
+};
+
+const personalQueries = (uid) => ({
+  _settings:   () => sb.from('settings').select('*').eq('user_id', uid).maybeSingle(),
+  stocks:      () => sb.from('stocks').select('*').order('created_at'),
+  futures:     () => sb.from('futures').select('*').order('created_at'),
+  us:          () => sb.from('us_stocks').select('*').order('created_at'),
+  balances:    () => sb.from('balances').select('*').order('kind').order('created_at'),
+  snapshots:   () => sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
+  trades:      () => sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
+  options:     () => sb.from('options').select('*').order('expiry').order('strike'),
+  warrants:    () => sb.from('warrants').select('*').order('created_at'),
+  ivHistory:   () => sb.from('warrant_iv_history').select('code,as_of,iv').gte('as_of', ivSince()).order('as_of'),
+  _fwds:       () => sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
+  valuation:   () => sb.rpc('my_valuation', {}),
+  rules:       () => sb.from('rules').select('*').eq('active', true).order('sort'),
+  journalDays: () => sb.rpc('journal_days', { p_limit: 120 }),
+  priceStatus: () => sb.from('price_status').select('market,as_of,updated_at,symbols'),
+});
+
+// 平行送出、回 { key: data }。42P01 是「表還不存在」，新版程式碰到舊資料庫時
+// 不該因此整頁掛掉，其餘錯誤照常丟出去。
+async function runQueries(queries) {
+  const keys = Object.keys(queries);
+  const results = await Promise.all(keys.map((k) => queries[k]()));
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [trend, members, tinfo, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts,
-         tetf, mlive] = results;
-  const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
-  const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
-  state.settings = { ...DEFAULT_SETTINGS };
-  state.themeTrend = trend.data ?? [];
-  state.themeMembers = members.data ?? [];
-  state.themeInfo = tinfo.data ?? [];
-  state.themeVal = tval.data ?? [];
-  state.riskStats = risk.data ?? [];
-  state.usStats = ustat.data ?? [];
-  state.usThemeTrend = utrend.data ?? [];
-  state.usThemeMembers = umem.data ?? [];
-  state.themeMeta = tmeta.data ?? [];
-  state.themeLinks = tlinks.data ?? [];
-  state.themeDay = tday.data ?? [];
-  state.alerts = alerts.data ?? [];
-  state.themeEtf = tetf.data ?? [];
-  state.marketLive = mlive.data ?? [];
+  return Object.fromEntries(keys.map((k, i) => [k, results[i].data]));
+}
+
+// 沒有底線的 key 直接對應 state 欄位；底線開頭的要再加工，寫在下面
+function assignState(d) {
+  for (const [k, v] of Object.entries(d)) {
+    if (!k.startsWith('_')) state[k] = v ?? [];
+  }
+  if ('_risk' in d) {
+    const risk = d._risk ?? [];
+    state.riskStats = risk.filter((r) => r.market === 'tw');
+    state.usStats = risk.filter((r) => r.market === 'us');
+  }
 }
 
 export async function loadAll() {
@@ -51,76 +76,19 @@ export async function loadAll() {
   // 但重新整理之後一定要讓它失效——否則按了 ↻ 那一頁還是舊資料，
   // 要整頁重載才會更新。
   state.etfBoard = null;
-  if (state.guest) return loadMarketOnly();
-  const uid = state.user.id;
-  const results = await Promise.all([
-    sb.from('settings').select('*').eq('user_id', uid).maybeSingle(),
-    sb.from('stocks').select('*').order('created_at'),
-    sb.from('futures').select('*').order('created_at'),
-    sb.from('us_stocks').select('*').order('created_at'),
-    sb.from('balances').select('*').order('kind').order('created_at'),
-    sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
-    sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
-    sb.from('options').select('*').order('expiry').order('strike'),
-    sb.from('warrants').select('*').order('created_at'),
-    sb.from('warrant_iv_history').select('code,as_of,iv').gte('as_of', ivSince()).order('as_of'),
-    sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
-    sb.rpc('theme_trend', { p_months: 1 }),
-    sb.rpc('theme_members', {}),
-    sb.from('theme_info').select('*'),
-    sb.rpc('my_valuation', {}),
-    sb.rpc('theme_valuation', {}),
-    // **不要整批 select risk_stats/us_stats**：它們現在各有兩千列，
-    // PostgREST 預設只回前 1,000 列，會安靜地截斷，
-    // 症狀是有些股票的報酬/波動莫名變成「–」。app_risk() 只回真的用得到的那幾百檔。
-    sb.rpc('app_risk', {}),
-    sb.rpc('us_theme_trend', {}),
-    sb.rpc('us_theme_members', {}),
-    sb.from('theme_meta').select('*'),
-    sb.from('theme_links').select('*'),
-    sb.rpc('theme_day', {}),
-    sb.rpc('active_alerts', { p_days: 10 }),
-    sb.rpc('theme_etf', {}),
-    sb.from('market_live').select('*'),
-    sb.from('rules').select('*').eq('active', true).order('sort'),
-    sb.rpc('journal_days', { p_limit: 120 }),
-    sb.from('price_status').select('market,as_of,updated_at,symbols'),
-  ]);
-  for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, tetf, mlive, rules, jdays, prices] = results;
-  const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
-  const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
-  state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
-  state.stocks = stocks.data ?? [];
-  state.futures = futures.data ?? [];
-  state.us = us.data ?? [];
-  state.balances = balances.data ?? [];
-  state.snapshots = snaps.data ?? [];
-  state.trades = trades.data ?? [];
-  state.options = opts.data ?? [];
-  state.warrants = wars.data ?? [];
-  state.ivHistory = ivh.data ?? [];
-  state.themeTrend = trend.data ?? [];
-  state.themeMembers = members.data ?? [];
-  state.themeInfo = tinfo.data ?? [];
-  state.valuation = val.data ?? [];
-  state.themeVal = tval.data ?? [];
-  state.riskStats = risk.data ?? [];
-  state.usStats = ustat.data ?? [];
-  state.usThemeTrend = utrend.data ?? [];
-  state.usThemeMembers = umem.data ?? [];
-  state.themeMeta = tmeta.data ?? [];
-  state.themeLinks = tlinks.data ?? [];
-  state.themeDay = tday.data ?? [];
-  state.alerts = alerts.data ?? [];
-  state.themeEtf = tetf.data ?? [];
-  state.marketLive = mlive.data ?? [];
-  state.rules = rules.data ?? [];
-  state.journalDays = jdays.data ?? [];
-  state.optExpiries = (fwds.data ?? [])
+
+  if (state.guest) {
+    assignState(await runQueries(MARKET_QUERIES));
+    state.settings = { ...DEFAULT_SETTINGS };
+    return;
+  }
+
+  const d = await runQueries({ ...MARKET_QUERIES, ...personalQueries(state.user.id) });
+  assignState(d);
+  state.settings = d._settings ? { ...DEFAULT_SETTINGS, ...d._settings } : { ...DEFAULT_SETTINGS };
+  state.optExpiries = (d._fwds ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
-  state.priceStatus = prices.data ?? [];
   state.priceInfo = [...state.priceStatus].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0] ?? null;
 }
 

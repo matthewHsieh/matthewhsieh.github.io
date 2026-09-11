@@ -13,7 +13,6 @@ import { TRADE_KINDS, projectTrade, saveTrade, tradeCost } from './trades.js';
 // ============================================================
 const BALANCE_KINDS = [['cash', '現金 / 存款'], ['futures_equity', '期貨帳戶權益數'], ['liability', '負債']];
 
-const BALANCE_KIND_LABEL = Object.fromEntries(BALANCE_KINDS);
 
 const ENTITIES = {
   stock: {
