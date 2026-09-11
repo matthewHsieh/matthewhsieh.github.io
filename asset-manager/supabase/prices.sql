@@ -85,6 +85,45 @@ begin
   return body;
 end $fn$;
 
+-- 會重試的 JSON 抓取。
+--
+-- **櫃買那份 4.4MB 的收盤檔會中途斷線。** 實際發生過的失敗有三種：
+--   Recv failure: Connection reset by peer
+--   HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR
+--   HTTP 200 但 JSON 被截斷（這種不會拋錯，要到 ::jsonb 才爆）
+-- 而且**不是檔案還沒出**——2026-09-09 的 14:15 抓得到 5,375 筆，
+-- 2026-09-08 的 14:30 失敗、14:31 就成功。純粹是大回應的連線不穩。
+--
+-- 原本一失敗就要等下一班（14:35 掛掉、下一次 16:05），中間一個半小時
+-- 上櫃部位停在昨天的收盤，上市的卻已經是今天的。所以這裡做三件事：
+--   1. 重試，而且把 ::jsonb 放進 try 裡面，截斷的回應也算失敗
+--   3. 檢查筆數，回了合法但空的陣列一樣重試
+--
+-- 本來還想強制走 HTTP/1.1 避開 HTTP/2 的 INTERNAL_ERROR，
+-- **但這套 pgsql-http 不支援 CURLOPT_HTTP_VERSION**（run-time 不可設定），
+-- 所以只能靠重試。實務上夠用：2026-09-08 的 14:30 失敗、14:31 就成功。
+create or replace function public.pm_fetch_json(p_url text, p_tries integer default 3,
+                                                p_min_items integer default 0,
+                                                p_wait numeric default 3)
+returns jsonb language plpgsql security definer set search_path = public, extensions as $fn$
+declare i integer; payload jsonb; last_err text := '未知';
+begin
+  for i in 1 .. greatest(p_tries, 1) loop
+    begin
+      payload := public.pm_fetch(p_url)::jsonb;
+      if p_min_items > 0 and coalesce(jsonb_array_length(payload), 0) < p_min_items then
+        raise exception '只回了 % 筆，少於預期的 %',
+          coalesce(jsonb_array_length(payload), 0), p_min_items;
+      end if;
+      return payload;
+    exception when others then
+      last_err := sqlerrm;
+      if i < p_tries then perform pg_sleep(p_wait); end if;
+    end;
+  end loop;
+  raise exception '連續 % 次抓不到 %：%', p_tries, p_url, last_err;
+end $fn$;
+
 create or replace function public.pm_log(p_source text, p_rows integer, p_ok boolean, p_msg text)
 returns void language sql security definer set search_path = public as $$
   insert into public.price_runs(source, rows, ok, message) values (p_source, p_rows, p_ok, left(p_msg, 500));
@@ -209,7 +248,10 @@ begin
     perform public.pm_log('tpex(略過，已有 ' || have_tpex || ')', 0, true, null);
   else
     begin
-      payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')::jsonb;
+      -- 這一份會斷線，一定要用會重試的版本，理由見 pm_fetch_json。
+      -- 正常有五千多筆，低於 1000 筆一定是壞的回應，重抓。
+      payload := public.pm_fetch_json(
+        'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes', 3, 1000);
       -- 櫃買的 Change 已經帶正負號，不用像證交所那樣拆
       insert into public.market_prices (market, symbol, name, price,
                                         chg, open, high, low, as_of, src, updated_at)
@@ -1467,15 +1509,23 @@ begin
    where jobname in ('asset-prices-tw', 'asset-prices-tw2', 'asset-prices-tw3',
                      'asset-prices-tw4', 'asset-prices-us',
                      'am-quotes-1', 'am-quotes-2', 'am-quotes-3', 'am-quotes-4', 'am-quotes-5',
+                     'am-quotes-1b', 'am-quotes-1c',
                      'am-fundamentals', 'am-estimates', 'am-risk', 'am-us', 'am-housekeeping',
                      'am-risk-2', 'am-risk-3', 'am-risk-4',
                      'am-usrisk', 'am-usrisk-2', 'am-usrisk-3', 'am-usrisk-4',
                      'am-profiles', 'am-profiles-2', 'am-profiles-3', 'am-profiles-4',
                      'am-usextra', 'am-usextra-2', 'am-usextra-3');
 
-  -- 行情：台北 14:35 / 16:05 / 18:05 / 19:05 / 21:05
+  -- 行情：台北 14:35 / 15:05 / 15:35 / 16:05 / 18:05 / 19:05 / 21:05
   -- 抓到當天資料後，後面幾班會被守則擋掉，不會重複打對方的 API。
+  --
+  -- **14:35 到 16:05 之間多排兩班是為了上櫃。** 櫃買那份 4.4MB 的收盤檔
+  -- 會中途斷線，pm_fetch_json 已經會重試三次，但如果對方連續幾分鐘都不通，
+  -- 原本要等到 16:05，中間一個半小時上櫃部位停在昨天的收盤。
+  -- 這兩班平常會被守則擋掉（上櫃不落後於上市就不抓），成本是零。
   perform cron.schedule('am-quotes-1', '35 6 * * 1-5',  $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-1b', '5 7 * * 1-5',  $c$select public.update_quotes()$c$);
+  perform cron.schedule('am-quotes-1c', '35 7 * * 1-5', $c$select public.update_quotes()$c$);
   perform cron.schedule('am-quotes-2', '5 8 * * 1-5',   $c$select public.update_quotes()$c$);
   perform cron.schedule('am-quotes-3', '5 10 * * 1-5',  $c$select public.update_quotes()$c$);
   perform cron.schedule('am-quotes-4', '5 11 * * 1-5',  $c$select public.update_quotes()$c$);
