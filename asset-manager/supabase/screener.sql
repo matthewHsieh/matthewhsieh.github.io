@@ -28,7 +28,7 @@ returns table (
   price numeric, drop_pct numeric, lo3y numeric, hi3y numeric,
   ratio numeric, vol numeric, cagr numeric, days integer,
   pe numeric, pe_src text, fy smallint, analysts smallint,
-  growth numeric, themes text, business text, alert_kind text, total integer
+  growth numeric, themes text, business text, story text, alert_kind text, total integer
 )
 language sql stable security definer set search_path = public as $fn$
   with mk as (select case when lower(coalesce(p_market, '')) = 'us' then 'us' else 'tw' end as m),
@@ -69,6 +69,11 @@ language sql stable security definer set search_path = public as $fn$
            (select string_agg(t.theme, '・' order by t.theme)
               from public.themes t where t.symbol = u.symbol) as themes,
            cp.business,
+           -- 轉型故事也要進搜尋：搜「M9」要找得到國慶科技，
+           -- 它的產業別寫化學工業、業務寫人工皮革，兩個都搜不到那件事。
+           case when st.symbol is null then null
+                else st.stage || ' ' || st.title || ' ' || coalesce(st.relates, '')
+                     || ' ' || coalesce(st.detail, '') end as story,
            (select a.kind from public.trade_alerts a
              where a.symbol = u.symbol
                and ((a.kind = 'punish' and a.end_d >= current_date)
@@ -80,6 +85,7 @@ language sql stable security definer set search_path = public as $fn$
     left join public.risk_stats k on k.symbol = u.symbol
     left join public.valuation v on v.symbol = u.symbol
     left join public.company_profile cp on cp.symbol = u.symbol
+    left join public.stock_story st on st.symbol = u.symbol
     left join eps e on e.symbol = u.symbol
     left join lateral (
       select case when ly.amount > 0 then cur.amount / ly.amount - 1 end as yoy
@@ -104,6 +110,7 @@ language sql stable security definer set search_path = public as $fn$
            -- 公司業務描述優先，沒有才退回 Nasdaq 給的 sector。
            -- 搜尋吃的是這一欄，所以有描述才搜得到 "liquid cooling" 這種說法。
            coalesce(cp.business, u.sector),
+           null,
            null
     from public.stock_universe u
     left join public.us_stats s on s.symbol = u.symbol
@@ -131,13 +138,14 @@ language sql stable security definer set search_path = public as $fn$
            coalesce(name, '') ilike '%' || btrim(p_q) || '%' or
            coalesce(themes, '') ilike '%' || btrim(p_q) || '%' or
            coalesce(industry, '') ilike '%' || btrim(p_q) || '%' or
-           coalesce(business, '') ilike '%' || btrim(p_q) || '%')
+           coalesce(business, '') ilike '%' || btrim(p_q) || '%' or
+           coalesce(story, '') ilike '%' || btrim(p_q) || '%')
   )
   select h.symbol, h.name, h.industry, h.price,
          round(h.dp, 4), h.lo3y, h.hi3y,
          h.ratio, h.vol, h.cagr, h.days,
          h.pe, h.pe_src, h.fy, h.analysts,
-         h.growth, h.themes, h.business, h.alert_kind,
+         h.growth, h.themes, h.business, h.story, h.alert_kind,
          (select count(*)::int from hit)
   from hit h
   order by

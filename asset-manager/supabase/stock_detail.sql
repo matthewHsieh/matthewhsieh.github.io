@@ -24,7 +24,12 @@ language sql stable security definer set search_path = public as $fn$
     'market', s.mk,
     'name', case when s.mk = 'us'
               then (select t.name from public.us_themes t where t.symbol = s.sym and t.name is not null limit 1)
+              -- **stock_universe 優先。** 它是跟著最新的月營收公告更新的，
+              -- market_prices 的名字會落後——1721 已經改名國慶科技了，
+              -- 行情表裡還寫三晃，而改名本身正是那檔的重點。
               else coalesce(
+                (select u.name from public.stock_universe u
+                  where u.market = 'tw' and u.symbol = s.sym and u.name is not null),
                 (select m.name from public.market_prices m
                   where m.market = 'tw' and m.symbol = s.sym and m.name is not null),
                 (select r.name from public.revenue r
@@ -36,6 +41,11 @@ language sql stable security definer set search_path = public as $fn$
     -- 公司自己在公開資訊觀測站申報的「主要經營業務」。
     -- 產業別分不出銅箔與 MLCC，這一行分得出來。
     'business', (select c.business from public.company_profile c where c.symbol = s.sym),
+    -- 轉型故事。數字看不到的那一半：它「要變成什麼」。
+    'story', (select jsonb_build_object('title', t.title, 'stage', t.stage, 'detail', t.detail,
+                       'caution', t.caution, 'relates', t.relates, 'source', t.source,
+                       'checked_on', t.checked_on)
+                from public.stock_story t where t.symbol = s.sym),
     -- 今天的開高低與漲跌。**「從當日低點拉起多少」才是判斷強弱的數字**，
     -- 不是對昨收的漲跌幅，理由見 theme_day.sql。
     'day', (select jsonb_build_object('price', m.price, 'chg', m.chg,

@@ -801,3 +801,27 @@ textarea.journal-input {
   .medges .e.path { stroke-width: 2.4; opacity: .5; }
   .medges .e.up, .medges .e.down { stroke-width: 3.4; opacity: 1; }
 }
+
+/* ---------- 轉型故事 ---------- */
+/* 數字看不到的那一半。stage 要比標題顯眼——
+   「已成主業」跟「試做送樣」在股價上可能一樣激動，在現實上差很遠。 */
+.sc-story {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--muted);
+  background: var(--bg);
+}
+.sc-story.stage-已成主業, .sc-story.stage-已量產 { border-left-color: var(--stage-1); }
+.sc-story.stage-驗證中 { border-left-color: var(--stage-2); }
+.sc-story.stage-試做送樣, .sc-story.stage-規劃 { border-left-color: var(--stage-3); }
+.sc-story-tag { font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+.sc-stage {
+  font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--border);
+}
+.stage-已成主業 .sc-stage, .stage-已量產 .sc-stage { color: var(--stage-1); border-color: var(--stage-1); }
+.stage-驗證中 .sc-stage { color: var(--stage-2); border-color: var(--stage-2); }
+.stage-試做送樣 .sc-stage, .stage-規劃 .sc-stage { color: var(--stage-3); border-color: var(--stage-3); }
+.sc-story-title { margin: 6px 0 4px; font-size: 14px; font-weight: 600; line-height: 1.45; }
+.sc-story .sub { margin: 5px 0 0; line-height: 1.6; }
+.sc-caution { color: var(--text); }
+.badge.story-badge { background: var(--stage-2); color: #fff; }

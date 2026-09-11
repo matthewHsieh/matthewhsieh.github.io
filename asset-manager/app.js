@@ -43,6 +43,7 @@ const state = {
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
   mapLit: null,                       // 選中時整條路徑上的族群
+  mapOutside: null, mapEsc: null,     // 點外面／Esc 關閉浮出框
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -3281,6 +3282,10 @@ function rangeBar(lo, hi, px, label) {
 
 const CONF_LABEL = { high: '可信度高', mid: '可信度中', low: '可信度低' };
 
+// 轉型故事的文字裡用 **…** 標重點。先 esc 再轉標記，順序不能反，
+// 否則使用者資料裡的角括號會變成可執行的 HTML。
+const mdBold = (t) => esc(String(t ?? '')).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+
 // 區間帶與風險這兩塊拆出來，因為記憶體裡只有幾百檔的風險數字
 // （全市場四千檔不可能整批載，見 app_risk()），其餘的要等 stock_detail 回來才有。
 function rangeHtml(k, price) {
@@ -3345,7 +3350,7 @@ function stockCardHtml(mk, sym) {
   return `
     <div class="sc-head">
       <div class="row-between">
-        <span class="sc-name"><b>${esc(key)}</b> ${esc(name)}</span>
+        <span class="sc-name" data-sc-nm="${esc(name)}"><b>${esc(key)}</b> ${esc(name)}</span>
         <span class="sc-px" data-px="${isNum(price) && num(price) > 0 ? 1 : 0}">${
           isNum(price) && num(price) > 0 ? cur + fmtMax(price, 2) : '…'}</span>
       </div>
@@ -3464,6 +3469,13 @@ async function openStock(mk, sym) {
   const ind = $('[data-sc-industry]', body);
   if (ind && d.industry) ind.textContent = '・' + d.industry;
 
+  // 名稱以 RPC 回來的為準。前端的 tw-stocks.json 是靜態檔，改名不會跟著動——
+  // 1721 已經是國慶科技了，那份還寫三晃，而改名本身就是那一檔的重點。
+  const nm = $('[data-sc-nm]', body);
+  if (nm && d.name && d.name !== nm.dataset.scNm) {
+    nm.innerHTML = `<b>${esc(key)}</b> ${esc(d.name)}`;
+  }
+
   // 記憶體裡只有幾百檔的風險數字，全市場其他四千檔要靠這裡補。
   // 價格也一樣：沒持有、又不在族群裡的股票，前端沒有它的收盤價。
   const k = market === 'us' ? d.usrisk : d.risk;
@@ -3483,8 +3495,23 @@ async function openStock(mk, sym) {
   // 公司自己申報的主要經營業務。證交所的「產業別」把金居、國巨、台光電
   // 全叫做電子零組件業，這一行才分得出誰在做什麼。
   const bz = $('[data-sc-biz]', body);
-  if (bz && d.business) {
-    bz.innerHTML = `<p class="sc-biz">${esc(d.business)}</p>`;
+  if (bz) {
+    // 轉型故事放在業務描述前面。**stage 要比標題顯眼**——
+    //「已成主業」跟「試做送樣」在股價上可能一樣激動，在現實上差很遠。
+    const st = d.story;
+    bz.innerHTML = (st ? `<div class="sc-story stage-${esc(String(st.stage || '').slice(0, 4))}">
+        <div class="row-between">
+          <span class="sc-story-tag">轉型故事</span>
+          <span class="sc-stage">${esc(st.stage || '')}</span>
+        </div>
+        <p class="sc-story-title">${mdBold(st.title)}</p>
+        ${st.detail ? `<p class="sub">${mdBold(st.detail)}</p>` : ''}
+        ${st.caution ? `<p class="sub sc-caution"><b>但書</b>　${mdBold(st.caution)}</p>` : ''}
+        ${st.relates ? `<p class="sub muted">實質上屬於：${esc(st.relates)}</p>` : ''}
+        <p class="sub muted">${esc(st.source || '')}${
+          st.checked_on ? `　查證於 ${esc(st.checked_on)}` : ''}</p>
+      </div>` : '')
+      + (d.business ? `<p class="sc-biz">${esc(d.business)}</p>` : '');
   }
 
   const rn = $('[data-sc-revnext]', body);
@@ -4007,6 +4034,29 @@ function renderThemeMap(host, mk) {
     });
   }
   $$('[data-node-clear]', host).forEach((b) => (b.onclick = () => { state.mapPick = null; renderThemeMap(host, mk); }));
+
+  // **點空白處就關掉。** 原本一定要按到那顆「關閉」，
+  // 在手機上那是個很小的目標，在桌機上也不合直覺——
+  // 浮出視窗的通用行為就是點外面關掉、Esc 關掉。
+  if (state.mapPick && !state.mapOutside) {
+    state.mapOutside = (e) => {
+      if (!state.mapPick) return;
+      if (e.target.closest && (e.target.closest('.mpop') || e.target.closest('[data-node]')
+          || e.target.closest('#info-dialog'))) return;
+      state.mapPick = null;
+      const h = $('[data-themebody]');
+      if (h && $('.mapwrap', h)) renderThemeMap(h, state.themeMarket === 'us' ? 'us' : 'tw');
+    };
+    state.mapEsc = (e) => { if (e.key === 'Escape' && state.mapPick) state.mapOutside({ target: document.body }); };
+    // 用 capture 會在按鈕自己的 onclick 之前跑，那樣點節點會先被關掉，所以不加
+    addEventListener('pointerdown', state.mapOutside);
+    addEventListener('keydown', state.mapEsc);
+  }
+  if (!state.mapPick && state.mapOutside) {
+    removeEventListener('pointerdown', state.mapOutside);
+    removeEventListener('keydown', state.mapEsc);
+    state.mapOutside = null; state.mapEsc = null;
+  }
   $$('[data-group]', host).forEach((b) => (b.onclick = () => {
     state.mapGroup = b.dataset.group === state.mapGroup ? '' : b.dataset.group;
     renderThemeMap(host, mk);
@@ -4046,6 +4096,117 @@ function renderThemeMap(host, mk) {
     if (n) n.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
+// ------------------------------------------------------------
+// 今日：哪個族群在動
+//   這頁是為了「永遠不要放空當天強勢的股票」那條紀律做的。
+//   要能執行那條規則，得先看得到「今天是不是整群在漲」，
+//   以及每一檔「從當日低點拉了多少」——那才是判斷強弱的數字。
+//
+//   華新科 2026-09-10 是活教材：對昨收 +4.5% 看起來還好，
+//   但它從低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天最強的族群。
+//   使用者在 317.5 空 2 口、328 回補，賠了 42,000。
+//
+//   這是收盤資料，用途是隔天回頭看自己做了什麼，不是盤中攔截。
+// ------------------------------------------------------------
+function renderThemeDay(host) {
+  const rows = state.themeDay.filter((t) => isNum(t.chg_med));
+  if (!rows.length) {
+    host.innerHTML = '<div class="card"><p class="muted">還沒有當日漲跌資料，按右上角 ↻ 更新。</p></div>';
+    return;
+  }
+  const held = heldSymbols();
+  const mineThemes = new Set(state.themeMembers.filter((m) => held.has(norm(m.symbol))).map((m) => m.theme));
+  const asOf = rows.map((t) => t.as_of).filter(Boolean).sort().pop();
+  // 整群在漲才叫族群性大漲：中位數為正、而且上漲家數佔多數
+  const hot = (t) => num(t.chg_med) > 0.02 && num(t.up) > num(t.members) / 2;
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">今日族群漲跌</div>
+      <p class="sub muted">${esc(asOf || '')} 收盤。取<b>中位數</b>不取平均，一檔漲停就會把平均拉爛。
+        <b>整群在漲</b>（中位數 &gt;2% 且過半上漲）的會標紅框——
+        <b>那是不能去空的族群。</b></p>
+    </div>
+    <div class="card list">
+      ${rows.map((t) => `<div class="day-theme${hot(t) ? ' hot' : ''}${
+        mineThemes.has(t.theme) ? ' mine' : ''}">
+        <div class="row-between">
+          <span class="list-title">${esc(t.theme)}${
+            mineThemes.has(t.theme) ? '<span class="badge day-badge">持有</span>' : ''}${
+            hot(t) ? '<span class="badge warn-badge">整群在漲</span>' : ''}</span>
+          <span class="theme-yoy ${plClass(num(t.chg_med))}">${signed(num(t.chg_med) * 100, 2)}%</span>
+        </div>
+        <div class="row-between sub muted">
+          <span>${fmt(t.members)} 檔　<span class="gain">漲 ${fmt(t.up)}</span>　<span class="loss">跌 ${fmt(t.down)}</span></span>
+          <span>從低點拉起 <b class="${num(t.off_low_med) > 0.03 ? 'gain' : ''}">${
+            isNum(t.off_low_med) ? signed(num(t.off_low_med) * 100, 1) + '%' : '–'}</b></span>
+        </div>
+        ${t.top_symbol ? `<div class="row-between sub muted">
+          <span>最強 <span class="link" role="button" tabindex="0" data-stock="tw:${esc(norm(t.top_symbol))}">${
+            esc(t.top_symbol)} ${esc(t.top_name || '')}</span></span>
+          <span class="${plClass(num(t.top_chg))}">${signed(num(t.top_chg) * 100, 2)}%</span>
+        </div>` : ''}
+      </div>`).join('')}
+    </div>
+    <p class="hint"><b>「從低點拉起」比「對昨收漲跌」重要。</b>
+      一檔今天對昨收還是跌的，不代表它弱——華新科 2026-09-10 對昨收看起來只有 +4.5%，
+      但它從當日低點 303 拉到 334，是 +10.2%，而且 MLCC 電容是當天中位數最高的族群。
+      在那種位置放空，等於站在整群買盤的對面。
+      這裡是<b>收盤</b>資料，不是即時報價，用途是隔天回頭檢查自己昨天做了什麼。</p>`;
+  bindStockOpen(host);
+}
+
+// ------------------------------------------------------------
+// 選股
+//   他自己講過策略：「不能做動能，現在適合反市場，在下跌中買入好公司，
+//   拉起來回檔後加碼」。那句話拆開就是三個條件：
+//     好公司  = 報酬/波動贏得過大盤（不然不如直接開槓桿買指數）
+//     在下跌 = 離三年高點夠遠
+//     不是地雷 = 有人在報、而且沒被交易所盯上
+//   這頁就是把那三件事變成可以按的東西。
+//
+//   **池子是全市場**：台股約 1,970 檔（所有有公告月營收的普通股），
+//   美股約 2,000 檔（日成交額 2,000 萬美元以上，進得去也出得來的）。
+//   四千列不可能每次登入都載下來，所以篩選與排序都在資料庫做，
+//   一次只回前 60 檔。代價是拉桿要等一次往返，所以要防連點。
+// ------------------------------------------------------------
+
+const SCREEN_DEFAULT = {
+  beat: true,        // 報酬/波動要贏過大盤
+  covered: false,    // 至少三位分析師
+  clean: true,       // 排除處置與注意股
+  drop: 20,          // 至少從三年高點跌下來幾 %
+  peMax: 0,          // 本益比上限，0 = 不限
+  growth: null,      // 營收年增下限
+  q: '',             // 關鍵字（代號／名稱／族群／產業別／主要經營業務）
+  sort: 'drop',
+};
+const SCREEN_SORT = [
+  ['drop', '跌最多'],
+  ['ratio', '報酬/波動'],
+  ['pe', '本益比'],
+  ['growth', '營收成長'],
+];
+
+let screenSeq = 0;   // 連點時只認最後一次的結果
+
+async function runScreen(mk, f) {
+  const { data, error } = await sb.rpc('screen_stocks', {
+    p_market: mk,
+    p_beat: !!f.beat,
+    p_covered: !!f.covered,
+    p_clean: !!f.clean,
+    p_drop: num(f.drop),
+    p_pe_max: num(f.peMax),
+    p_growth: isNum(f.growth) && f.growth !== '' ? num(f.growth) : null,
+    p_q: (f.q || '').trim() || null,
+    p_sort: f.sort,
+    p_limit: 60,
+  });
+  if (error) throw error;
+  return data ?? [];
+}
+
 function renderScreener(host, mk) {
   const f = { ...SCREEN_DEFAULT, ...(state.screen || {}) };
   state.screen = f;
@@ -4116,6 +4277,8 @@ function renderScreener(host, mk) {
         <div class="row-between">
           <span>${esc(r.symbol)} ${esc(r.name || '')}${
             held.has(norm(r.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}${
+            r.story ? `<span class="badge story-badge">${
+              esc(String(r.story).split(' ')[0])}</span>` : ''}${
             r.alert_kind ? `<span class="badge alert-${esc(r.alert_kind)}">${
               ALERT_LABEL[r.alert_kind] || ''}</span>` : ''}</span>
           <span class="${plClass(num(r.drop_pct))}">${
