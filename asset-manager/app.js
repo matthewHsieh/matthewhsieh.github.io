@@ -3612,10 +3612,93 @@ function orderColumn(list, links) {
 // 這裡每一格都有文字標籤、每一欄都有標題，符合。
 const STAGE_HUE = ['#0d9488', '#6366f1', '#d97706'];
 
+// ------------------------------------------------------------
+// 產業地圖：天賦樹版（桌機）
+//
+//   前一版被說「像簡單的心智圖搭配說明」，而且電腦版空間利用率很低。
+//   兩個原因：節點是方形文字框（看起來就是清單），資訊只能點出來（要多一步）。
+//
+//   網遊天賦樹的特徵其實很具體：
+//     1. 節點是**圓形圖示**，名字在圖示下面而不是裡面
+//     2. **滑過去就出資訊**，點擊是「鎖定」不是「查看」
+//     3. 連線粗、是畫面的一部分，不是附註
+//     4. 已點亮的節點有光暈
+//   這一版照這四點做。
+//
+//   **hover 不能整個重畫。** 39 個節點每次滑過都重建 innerHTML 會閃，
+//   所以聚焦是直接改 class（applyFocus），只有換市場／換篩選才重畫。
+// ------------------------------------------------------------
+
+// 圖示用族群名的第一個字。比硬湊一套符號好——每個都不一樣、
+// 而且看到「玻」就知道是玻纖布，不用解碼。
+function glyphOf(theme) {
+  const t = String(theme || '').trim();
+  const m = t.match(/^[A-Za-z0-9]+/);
+  if (m) return m[0].slice(0, 3).toUpperCase();
+  return t.slice(0, 1);
+}
+
+// 選一個族群時，誰要亮、亮多強
+function computeFocus(mk, sel) {
+  if (!sel) return { near: new Map(), path: new Map(), lit: null };
+  const links = state.themeLinks.filter((l) => l.market === mk);
+  const walk = (dir) => {
+    const seen = new Set();
+    const queue = [sel];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const l of links) {
+        const [a, b] = dir === 'up' ? [l.dst, l.src] : [l.src, l.dst];
+        if (a !== cur || seen.has(b) || b === sel) continue;
+        seen.add(b); queue.push(b);
+      }
+    }
+    return seen;
+  };
+  const near = new Map();
+  const path = new Map();
+  walk('up').forEach((t) => path.set(t, 'up'));
+  walk('down').forEach((t) => path.set(t, 'down'));
+  links.filter((l) => l.dst === sel).forEach((l) => near.set(l.src, 'up'));
+  links.filter((l) => l.src === sel).forEach((l) => near.set(l.dst, 'down'));
+  near.set(sel, 'self');
+  return { near, path, lit: new Set([sel, ...near.keys(), ...path.keys()]) };
+}
+
+// 只改 class，不重建 DOM——hover 才不會閃
+function applyFocus(host, mk, sel) {
+  const { near, path, lit } = computeFocus(mk, sel);
+  $$('.mnode', host).forEach((n) => {
+    const t = n.dataset.node;
+    const rel = near.get(t) || '';
+    const far = !rel && (path.get(t) || '');
+    n.classList.toggle('rel-self', rel === 'self');
+    n.classList.toggle('rel-up', rel === 'up');
+    n.classList.toggle('rel-down', rel === 'down');
+    n.classList.toggle('far', !!far);
+    n.classList.toggle('far-up', far === 'up');
+    n.classList.toggle('far-down', far === 'down');
+    n.classList.toggle('dim', !!sel && !rel && !far);
+  });
+  $$('.medges path', host).forEach((p) => {
+    const a = p.dataset.src, b = p.dataset.dst;
+    let cls = 'e';
+    if (sel) {
+      if (a === sel) cls = 'e down';
+      else if (b === sel) cls = 'e up';
+      else if (lit && lit.has(a) && lit.has(b)) cls = 'e path';
+      else cls = 'e off';
+    }
+    p.setAttribute('class', cls);
+    const strong = cls === 'e up' || cls === 'e down';
+    p.setAttribute('marker-end', `url(#ar${p.dataset.col}${strong ? 'h' : ''})`);
+  });
+}
+
 // 把浮出框擺到被點的那一格旁邊，並且夾在地圖範圍內。
 // **地圖本身不會因為它出現而改變**，這是跟原本那張插入式卡片最大的差別。
-function placePop(wrap, sel) {
-  const pop = $('.mpop.anchored', wrap);
+function placePop(wrap, sel, target) {
+  const pop = target || $('.mpop.anchored.pinned', wrap) || $('.mpop.anchored', wrap);
   if (!pop || !sel) return;
   const node = $$('.mnode', wrap).find((n) => n.dataset.node === sel);
   if (!node) return;
@@ -3661,7 +3744,8 @@ function drawEdges(wrap, mk, sel) {
   const box = wrap.getBoundingClientRect();
   const pos = new Map();
   $$('.mnode', wrap).forEach((n) => {
-    const r = n.getBoundingClientRect();
+    // 接在圓盤上，不是整顆按鈕（按鈕還包含下面的名字，接在那裡線會歪）
+    const r = ($('.mdisc', n) || n).getBoundingClientRect();
     pos.set(n.dataset.node, {
       l: r.left - box.left, r: r.right - box.left,
       cy: r.top - box.top + r.height / 2,
@@ -3707,7 +3791,9 @@ function drawEdges(wrap, mk, sel) {
       <stop offset="1" stop-color="${STAGE_HUE[b.col]}"/></linearGradient>`);
     const cls = edgeState(mk, sel, l);
     const strong = cls === 'e up' || cls === 'e down';
+    // 端點記在 data 上，applyFocus 才能只改 class 而不用重畫整張圖
     const path = `<path class="${cls}" d="${d}" stroke="url(#${id})"
+      data-src="${esc(l.src)}" data-dst="${esc(l.dst)}" data-col="${b.col}"
       marker-end="url(#ar${b.col}${strong ? 'h' : ''})"/>`;
     // 亮的畫在後面才不會被淡的蓋住
     (strong || cls === 'e path' ? lit : dim).push(path);
@@ -3760,50 +3846,29 @@ function renderThemeMap(host, mk) {
   const bench = mk === 'tw' ? idxRatio() : usIdxRatio();
   const parents = [...new Set(metas.map((m) => m.parent))];
 
-  // 選了某個族群時，**整條路徑**都要亮起來，不只直接鄰居——
-  // 天賦樹點一個天賦會照亮通往它的那一整條分支，那才看得出「我在哪一條線上」。
-  // 直接相鄰的給強樣式（near），再上/下游的給弱樣式（path）。
-  const near = new Map();
-  const path = new Map();
-  if (sel) {
-    const links = state.themeLinks.filter((l) => l.market === mk);
-    const walk = (from, dir) => {
-      const seen = new Set();
-      const queue = [from];
-      while (queue.length) {
-        const cur = queue.shift();
-        for (const l of links) {
-          const [a, b] = dir === 'up' ? [l.dst, l.src] : [l.src, l.dst];
-          if (a !== cur || seen.has(b) || b === sel) continue;
-          seen.add(b);
-          queue.push(b);
-        }
-      }
-      return seen;
-    };
-    const c = linksOf(mk, sel);
-    walk(sel, 'up').forEach((t) => path.set(t, 'up'));
-    walk(sel, 'down').forEach((t) => path.set(t, 'down'));
-    c.up.forEach((l) => near.set(l.src, 'up'));
-    c.down.forEach((l) => near.set(l.dst, 'down'));
-    near.set(sel, 'self');
-  }
-  state.mapLit = sel ? new Set([sel, ...near.keys(), ...path.keys()]) : null;
+  // 聚焦狀態不在這裡算——那是 applyFocus 的事，因為 hover 時只能改 class，
+  // 重建 innerHTML 會閃。這裡只負責把靜態的樹畫出來。
 
+  // 桌機是圓形圖示節點（名字在下面），手機維持方塊（390px 放不下圖示 + 名字）
   const tile = (m, col) => {
     const s = themeStats(mk, m.theme);
-    const rel = near.get(m.theme) || '';
-    const far = !rel && (path.get(m.theme) || '');
-    const dim = sel && !rel && !far;
-    return `<button type="button" class="mnode${rel ? ' rel-' + rel : ''}${
-      far ? ' far far-' + far : ''}${dim ? ' dim' : ''}${
-      mine.has(m.theme) ? ' mine' : ''}" data-node="${esc(m.theme)}" data-col="${col}">
-      ${rel === 'up' ? '<span class="mflag">供貨</span>'
-        : rel === 'down' ? '<span class="mflag">出貨給</span>' : ''}
+    const owned = mine.has(m.theme);
+    if (!desk) {
+      return `<button type="button" class="mnode${owned ? ' mine' : ''}"
+        data-node="${esc(m.theme)}" data-col="${col}">
+        <span class="mname">${esc(m.theme)}</span>
+        <span class="mrow"><span class="${plClass(num(s.growth))}">${
+          isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
+          <span class="muted">${fmt(s.members)} 檔</span></span>
+      </button>`;
+    }
+    return `<button type="button" class="mnode talent${owned ? ' mine' : ''}"
+      data-node="${esc(m.theme)}" data-col="${col}">
+      <span class="mdisc"><span class="mglyph">${esc(glyphOf(m.theme))}</span>
+        <span class="mcount">${fmt(s.members)}</span></span>
       <span class="mname">${esc(m.theme)}</span>
-      <span class="mrow"><span class="${plClass(num(s.growth))}">${
+      <span class="mstat ${plClass(num(s.growth))}">${
         isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
-        <span class="muted">${fmt(s.members)} 檔</span></span>
     </button>`;
   };
 
@@ -3813,7 +3878,8 @@ function renderThemeMap(host, mk) {
     .filter((m) => (m.stage || '中游') === st && (!grp || m.parent === grp))
     .sort((a, b) => (a.parent === b.parent ? num(a.sort) - num(b.sort) : a.parent.localeCompare(b.parent)));
 
-  const detail = sel ? (() => {
+  const detailOf = (theme, pinned) => (() => {
+    const sel = theme;
     const c = linksOf(mk, sel);
     const meta = metas.find((m) => m.theme === sel);
     const s = themeStats(mk, sel);
@@ -3827,10 +3893,11 @@ function renderThemeMap(host, mk) {
     // 點下一格又推一次，位置一直跳——使用者的說法是「不穩定」。
     // 改成浮在地圖上、貼著被點的那一格（桌機）或釘在底部（手機），
     // 就像天賦樹的 tooltip：出現與消失都不會動到樹本身。
-    return `<div class="mpop${desk ? ' anchored' : ' sheet'}">
+    return `<div class="mpop${desk ? ' anchored' : ' sheet'}${pinned ? ' pinned' : ''}">
       <div class="row-between">
         <span class="list-title">${esc(sel)}</span>
-        <button type="button" class="small" data-node-clear>關閉</button>
+        ${pinned ? '<button type="button" class="small" data-node-clear>關閉</button>'
+          : '<span class="sub muted">點一下鎖定</span>'}
       </div>
       <p class="sub muted">${esc(meta?.parent || '')}・${esc(meta?.stage || '')}　${
         fmt(s.members)} 檔${isNum(s.ratio) ? `　報酬/波動 <b class="${
@@ -3849,7 +3916,8 @@ function renderThemeMap(host, mk) {
             held.has(norm(m.symbol)) ? '<span class="badge day-badge">持有</span>' : ''}</button>`).join('')}</div>
       </div>` : ''}
     </div>`;
-  })() : '';
+  })();
+  const detail = sel ? detailOf(sel, true) : '';
 
   host.innerHTML = `
     <div class="card mhead">
@@ -3872,10 +3940,21 @@ function renderThemeMap(host, mk) {
         if (!list.length) return '';
         // 中游有 21 個、上下游各 8 與 10，單欄排下去高度會差三倍。
         // 超過 12 個就排成兩欄，三欄的高度才接近。
-        return `<div class="mcol band-${i}${list.length > 12 ? ' two' : ''}">
+        // 欄內再依大類分群。天賦樹的分支感就是這樣來的——
+        // 一欄裡不是 21 個並排，是三四個有名字的小群。
+        const clus = [];
+        for (const m of list) {
+          let g = clus.find((x) => x.name === m.parent);
+          if (!g) { g = { name: m.parent, list: [] }; clus.push(g); }
+          g.list.push(m);
+        }
+        return `<div class="mcol band-${i}">
           <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
             <span class="sub muted">${sub}</span></div>
-          <div class="mcol-body">${list.map((m) => tile(m, i)).join('')}</div>
+          ${clus.map((g) => `<div class="mclus">
+            <div class="mclus-label">${esc(g.name)}</div>
+            <div class="mclus-nodes">${g.list.map((m) => tile(m, i)).join('')}</div>
+          </div>`).join('')}
         </div>`;
       }).join('')}</div>`
       : STAGES.map(([st, title, sub], i) => {
@@ -3898,6 +3977,35 @@ function renderThemeMap(host, mk) {
 
   const pick = (t) => { state.mapPick = state.mapPick === t ? null : t; renderThemeMap(host, mk); };
   $$('[data-node]', host).forEach((b) => (b.onclick = (e) => { e.stopPropagation(); pick(b.dataset.node); }));
+
+  // **滑過去就出資訊，點擊才是鎖定。** 天賦樹就是這樣：
+  // 看一個天賦不用點，點是為了「選它」。原本什麼都要點一下才看得到，
+  // 39 個節點要逐一點過去才知道是什麼，那才是不直覺的來源。
+  if (desk) {
+    const wrap = $('.mapwrap', host);
+    let hoverPop = null;
+    const clearHover = () => {
+      if (hoverPop) { hoverPop.remove(); hoverPop = null; }
+      applyFocus(host, mk, state.mapPick);
+    };
+    $$('.mnode', host).forEach((n) => {
+      n.onmouseenter = () => {
+        const t = n.dataset.node;
+        if (state.mapPick === t) return;         // 已經鎖定它了就不用再浮一個
+        applyFocus(host, mk, t);
+        if (hoverPop) hoverPop.remove();
+        wrap.insertAdjacentHTML('beforeend', detailOf(t, false));
+        hoverPop = wrap.lastElementChild;
+        hoverPop.classList.add('hover');
+        placePop(wrap, t, hoverPop);
+        bindStockOpen(hoverPop);
+        $$('[data-node]', hoverPop).forEach((b) => (b.onclick = (e) => {
+          e.stopPropagation(); pick(b.dataset.node);
+        }));
+      };
+      n.onmouseleave = clearHover;
+    });
+  }
   $$('[data-node-clear]', host).forEach((b) => (b.onclick = () => { state.mapPick = null; renderThemeMap(host, mk); }));
   $$('[data-group]', host).forEach((b) => (b.onclick = () => {
     state.mapGroup = b.dataset.group === state.mapGroup ? '' : b.dataset.group;
@@ -3905,10 +4013,18 @@ function renderThemeMap(host, mk) {
   }));
   bindStockOpen(host);
 
+  // **手機也要套聚焦。** 狀態 class 現在由 applyFocus 統一上，
+  // 如果只在桌機分支呼叫，手機點下去就什麼都不會亮。
+  applyFocus(host, mk, sel);
+
   if (desk) {
     const wrap = $('.mapwrap', host);
     // 量位置一定要等版面排完，所以排進下一幀
-    requestAnimationFrame(() => { drawEdges(wrap, mk, sel); placePop(wrap, sel); });
+    requestAnimationFrame(() => {
+      drawEdges(wrap, mk, sel);
+      applyFocus(host, mk, sel);
+      placePop(wrap, sel);
+    });
     // 視窗寬度變了，線的位置就不對了
     clearTimeout(state.mapResizeT);
     if (!state.mapBound) {

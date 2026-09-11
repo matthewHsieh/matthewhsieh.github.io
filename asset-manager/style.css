@@ -626,7 +626,8 @@ textarea.journal-input {
   }
   .mcols {
     position: relative; z-index: 1;
-    display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 72px; align-items: start;
+    /* 中游節點最多，給它最寬的欄 */
+    display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 44px; align-items: start;
   }
 
   /* 欄位不用邊框框住——那看起來像表格。改成頂上一條該段顏色的細線，
@@ -647,30 +648,71 @@ textarea.journal-input {
   .mcol.band-1 { --st: var(--stage-2); }
   .mcol.band-2 { --st: var(--stage-3); }
 
-  .mcol .mnode {
-    padding: 9px 11px 9px 13px; border-radius: 10px;
-    border: 1px solid var(--border);
-    background: var(--card);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
-    transition: transform .12s, border-color .12s, box-shadow .12s, opacity .18s;
+  /* 天賦節點：圓形圖示 + 名字在下面。方形文字框看起來就是清單，
+     圓盤才有「一個天賦」的感覺，而且名字外置之後盤面可以做狀態。 */
+  .mcol .mnode.talent {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    width: 92px; padding: 0; border: none; background: none; box-shadow: none;
+    transition: transform .12s, opacity .18s, filter .18s;
   }
-  /* 左邊那條色帶告訴你它屬於哪一段，連線斷開時也還讀得出來 */
-  .mcol .mnode::before {
-    content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px;
-    border-radius: 0 3px 3px 0; background: var(--st); opacity: .55;
+  .mcol .mnode.talent::before { content: none; }
+  .mdisc {
+    position: relative; width: 52px; height: 52px; border-radius: 50%;
+    display: grid; place-items: center; flex: none;
+    background: radial-gradient(circle at 35% 30%,
+      color-mix(in srgb, var(--st) 30%, var(--card)), var(--card) 72%);
+    border: 2px solid color-mix(in srgb, var(--st) 55%, var(--border));
+    box-shadow: inset 0 0 10px color-mix(in srgb, var(--st) 18%, transparent);
+    transition: border-color .14s, box-shadow .14s, transform .12s;
   }
-  .mcol .mnode:hover { transform: translateY(-1px); border-color: var(--st);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, .12); }
-  .mcol .mname { font-size: 14px; font-weight: 600; }
-  .mcol .mrow { margin-top: 2px; font-size: 11.5px; }
-  .mcol .mnode.mine::before { opacity: 1; width: 4px; }
+  .mglyph { font-size: 19px; font-weight: 700; line-height: 1; color: var(--text); }
+  .mnode.talent .mname {
+    font-size: 12px; font-weight: 600; line-height: 1.25; text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .mstat { font-size: 11px; line-height: 1; }
+  /* 檔數掛在盤緣，像天賦的「3/5」 */
+  .mcount {
+    position: absolute; right: -4px; bottom: -4px;
+    min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+    display: grid; place-items: center;
+    font-size: 10px; font-weight: 700; line-height: 1;
+    background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  }
 
-  .mcol .mnode.dim { opacity: .3; filter: saturate(.35); box-shadow: none; }
-  .mcol .mnode.rel-self {
-    border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent);
+  .mcol .mnode.talent:hover { transform: translateY(-2px); }
+  .mcol .mnode.talent:hover .mdisc {
+    border-color: var(--st);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--st) 18%, transparent),
+                inset 0 0 12px color-mix(in srgb, var(--st) 30%, transparent);
   }
-  .mcol .mnode.rel-up { border-color: var(--stage-1); }
-  .mcol .mnode.rel-down { border-color: var(--stage-3); }
+  /* 已點亮＝有持股 */
+  .mnode.talent.mine .mdisc {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent),
+                0 0 16px color-mix(in srgb, var(--primary) 35%, transparent),
+                inset 0 0 12px color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  .mnode.talent.mine .mglyph { color: var(--primary); }
+
+  .mcol .mnode.dim { opacity: .28; filter: saturate(.25); }
+  .mcol .mnode.rel-self .mdisc {
+    border-color: var(--primary); transform: scale(1.14);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 28%, transparent),
+                0 0 22px color-mix(in srgb, var(--primary) 45%, transparent);
+  }
+  .mcol .mnode.rel-up .mdisc { border-color: var(--stage-1);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-1) 26%, transparent); }
+  .mcol .mnode.rel-down .mdisc { border-color: var(--stage-3);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-3) 26%, transparent); }
+
+  /* 大類分群：一欄裡不是 21 個並排，是幾個有名字的小群 */
+  .mclus { margin-top: 16px; }
+  .mclus-label {
+    font-size: 11px; color: var(--muted); letter-spacing: .06em;
+    margin-bottom: 10px; padding-left: 2px;
+  }
+  .mclus-nodes { display: flex; flex-wrap: wrap; gap: 16px 12px; }
 
   /* 連線畫在格子底下，才不會擋住點擊 */
   /* 跟容器同一個框。**不要用負的 inset 去撐大**——svg 沒有內在尺寸，
@@ -750,4 +792,12 @@ textarea.journal-input {
   .mpop .chip.plain { font-size: 12px; padding: 3px 7px; }
   .mpop .mlink { padding: 2px 0; }
   .mpop .mlink .sub { margin-left: 16px; }
+}
+@media (min-width: 900px) {
+  /* hover 浮出的那張不要有滑鼠事件，否則滑到它上面會觸發 mouseleave 閃爍 */
+  .mpop.hover { pointer-events: none; }
+  .medges .e { stroke-width: 2.2; opacity: .42; }
+  .medges .e.off { opacity: .06; }
+  .medges .e.path { stroke-width: 2.4; opacity: .5; }
+  .medges .e.up, .medges .e.down { stroke-width: 3.4; opacity: 1; }
 }
