@@ -41,6 +41,7 @@ const state = {
   screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
   screenOpen: false,                  // 選股條件面板要不要展開
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
+  mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料
   themeMarket: 'tw',   // 族群頁看台股還是美股
   themeView: 'list',   // 族群頁：清單還是產業鏈
@@ -3568,6 +3569,83 @@ async function openStock(mk, sym) {
 //   不用再讀標籤。點一個族群時不是展開一塊面板，而是**把整張圖變暗、
 //   只留它的上下游**，關係直接顯示在圖上。
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// 產業地圖：桌機版
+//
+//   手機上只能靠「點一格、其餘變暗」來表達關係，因為 390px 畫不下連線。
+//   螢幕夠寬的時候沒有這個限制，**線可以真的畫出來**。
+//
+//   為什麼不用拓撲分層（每個節點放在「最長上游路徑」那一層）：
+//   實際算過是 27 / 7 / 2 / 1 / 1 / 1，第一層塞 27 個、後面幾層各一個，
+//   比三欄還難看。上中下游是 8 / 21 / 10，平均得多，而且本來就有意義。
+//
+//   代價是同一欄內部有連線（中游→中游 10 條、下游→下游 4 條）。
+//   處理方式是欄內先做拓撲排序讓它們一律往下流，線畫成欄右側的弧，
+//   而且**平常畫得很淡、選中才亮**——這是密集網路圖的通用做法，
+//   全部畫滿一樣粗只會變成一團毛線。
+// ------------------------------------------------------------
+const DESK_Q = typeof matchMedia === 'function' ? matchMedia('(min-width: 900px)') : null;
+const isDesk = () => !!(DESK_Q && DESK_Q.matches);
+
+// 欄內排序：只看同一欄的邊，讓來源排在目標前面
+function orderColumn(list, links) {
+  const inCol = new Set(list.map((m) => m.theme));
+  const depth = new Map(list.map((m) => [m.theme, 0]));
+  const edges = links.filter((l) => inCol.has(l.src) && inCol.has(l.dst));
+  // 邊數很少（最多十幾條），跑幾輪鬆弛就會收斂，不值得寫正式的拓撲排序
+  for (let i = 0; i < list.length; i += 1) {
+    let moved = false;
+    for (const l of edges) {
+      const want = depth.get(l.src) + 1;
+      if (depth.get(l.dst) < want) { depth.set(l.dst, want); moved = true; }
+    }
+    if (!moved) break;
+  }
+  return [...list].sort((a, b) => (depth.get(a.theme) - depth.get(b.theme))
+    || a.parent.localeCompare(b.parent) || num(a.sort) - num(b.sort));
+}
+
+// 量完位置才畫得出線，所以一定要在 DOM 上去之後做
+function drawEdges(wrap, mk, sel) {
+  const svg = $('.medges', wrap);
+  if (!svg) return;
+  const box = wrap.getBoundingClientRect();
+  const pos = new Map();
+  $$('.mnode', wrap).forEach((n) => {
+    const r = n.getBoundingClientRect();
+    pos.set(n.dataset.node, {
+      l: r.left - box.left, r: r.right - box.left,
+      t: r.top - box.top, b: r.bottom - box.top,
+      cx: r.left - box.left + r.width / 2, cy: r.top - box.top + r.height / 2,
+      col: Number(n.dataset.col),
+    });
+  });
+  svg.setAttribute('viewBox', `0 0 ${Math.round(box.width)} ${Math.round(box.height)}`);
+  svg.setAttribute('width', Math.round(box.width));
+  svg.setAttribute('height', Math.round(box.height));
+
+  const parts = [];
+  for (const l of state.themeLinks.filter((x) => x.market === mk)) {
+    const a = pos.get(l.src), b = pos.get(l.dst);
+    if (!a || !b) continue;
+    const on = sel && (l.src === sel || l.dst === sel);
+    const cls = !sel ? 'e' : on ? (l.dst === sel ? 'e up' : 'e down') : 'e off';
+    let d;
+    if (a.col === b.col) {
+      // 同一欄：從右緣出去、繞一個弧再回到右緣
+      const x = Math.max(a.r, b.r) + 14;
+      d = `M ${a.r} ${a.cy} C ${x} ${a.cy}, ${x} ${b.cy}, ${b.r} ${b.cy}`;
+    } else {
+      const x1 = a.r, x2 = b.l, mid = (x1 + x2) / 2;
+      d = `M ${x1} ${a.cy} C ${mid} ${a.cy}, ${mid} ${b.cy}, ${x2} ${b.cy}`;
+    }
+    parts.push(`<path class="${cls}" d="${d}"/>`);
+  }
+  // 亮的畫在後面，才不會被淡的蓋住
+  parts.sort((p, q) => (p.includes('class="e off"') ? -1 : 0) - (q.includes('class="e off"') ? -1 : 0));
+  svg.innerHTML = parts.join('');
+}
+
 const STAGES = [
   ['上游', '原料與設備', '誰供貨給這條鏈'],
   ['中游', '製造與零組件', '把材料變成零件'],
@@ -3599,6 +3677,7 @@ function renderThemeMap(host, mk) {
     return;
   }
   const sel = state.mapPick && metas.some((m) => m.theme === state.mapPick) ? state.mapPick : null;
+  const desk = isDesk();
   const grp = state.mapGroup || '';
   const held = mk === 'tw' ? heldSymbols() : new Set(state.us.map((s) => norm(s.symbol)));
   const memberRows = mk === 'tw' ? state.themeMembers : state.usThemeMembers;
@@ -3615,12 +3694,12 @@ function renderThemeMap(host, mk) {
     c.down.forEach((l) => near.set(l.dst, 'down'));
   }
 
-  const tile = (m) => {
+  const tile = (m, col) => {
     const s = themeStats(mk, m.theme);
     const rel = near.get(m.theme) || '';
     const dim = sel && !rel;
     return `<button type="button" class="mnode${rel ? ' rel-' + rel : ''}${dim ? ' dim' : ''}${
-      mine.has(m.theme) ? ' mine' : ''}" data-node="${esc(m.theme)}">
+      mine.has(m.theme) ? ' mine' : ''}" data-node="${esc(m.theme)}" data-col="${col}">
       ${rel === 'up' ? '<span class="mflag">供貨</span>'
         : rel === 'down' ? '<span class="mflag">出貨給</span>' : ''}
       <span class="mname">${esc(m.theme)}</span>
@@ -3646,7 +3725,7 @@ function renderThemeMap(host, mk) {
       <button type="button" class="link" data-node="${esc(dir === 'up' ? l.src : l.dst)}">${
         esc(dir === 'up' ? l.src : l.dst)}</button>
       ${l.note ? `<span class="sub muted">${esc(l.note)}</span>` : ''}</div>`;
-    return `<div class="card mdetail">
+    return `<div class="card mdetail${desk ? ' wide' : ''}">
       <div class="row-between">
         <span class="list-title">${esc(sel)}</span>
         <button type="button" class="small" data-node-clear>看全圖</button>
@@ -3676,7 +3755,7 @@ function renderThemeMap(host, mk) {
       <p class="sub muted">由上往下是供應鏈的流向。${mk === 'tw'
         ? '台股 39 個族群裡有 35 個互相連通，而且<b>全部匯流到伺服器組裝</b>——這不是很多條鏈，是一條大鏈。'
         : '美股這張圖同樣由上往下流，終點是雲端與 AI 應用。'}
-        點任何一格，圖上只會留下它的上下游。</p>
+        ${desk ? '線就是供應關係，點一格會把它的線亮起來。' : '點任何一格，圖上只會留下它的上下游。'}</p>
       <div class="mchips">
         <button type="button" class="chip${grp ? '' : ' on'}" data-group="">全部</button>
         ${parents.map((p) => `<button type="button" class="chip${
@@ -3684,14 +3763,26 @@ function renderThemeMap(host, mk) {
       </div>
     </div>
     ${detail}
-    <div class="mapwrap">
-      ${STAGES.map(([st, title, sub], i) => {
+    <div class="mapwrap${desk ? ' desk' : ''}">
+      ${desk ? '<svg class="medges" aria-hidden="true"></svg>' : ''}
+      ${desk ? `<div class="mcols">${STAGES.map(([st, title, sub], i) => {
+        const list = orderColumn(byStage(st), state.themeLinks.filter((l) => l.market === mk));
+        if (!list.length) return '';
+        // 中游有 21 個、上下游各 8 與 10，單欄排下去高度會差三倍。
+        // 超過 12 個就排成兩欄，三欄的高度才接近。
+        return `<div class="mcol band-${i}${list.length > 12 ? ' two' : ''}">
+          <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
+            <span class="sub muted">${sub}</span></div>
+          <div class="mcol-body">${list.map((m) => tile(m, i)).join('')}</div>
+        </div>`;
+      }).join('')}</div>`
+      : STAGES.map(([st, title, sub], i) => {
         const list = byStage(st);
         if (!list.length) return '';
         return `<div class="mband band-${i}">
           <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
             <span class="sub muted">${sub}</span></div>
-          <div class="mgrid">${list.map(tile).join('')}</div>
+          <div class="mgrid">${list.map((m) => tile(m, i)).join('')}</div>
         </div>
         ${i < STAGES.length - 1 ? '<div class="mflow">↓</div>' : ''}`;
       }).join('')}
@@ -3710,8 +3801,27 @@ function renderThemeMap(host, mk) {
     renderThemeMap(host, mk);
   }));
   bindStockOpen(host);
+
+  if (desk) {
+    const wrap = $('.mapwrap', host);
+    // 量位置一定要等版面排完，所以排進下一幀
+    requestAnimationFrame(() => drawEdges(wrap, mk, sel));
+    // 視窗寬度變了，線的位置就不對了
+    clearTimeout(state.mapResizeT);
+    if (!state.mapBound) {
+      state.mapBound = true;
+      addEventListener('resize', () => {
+        clearTimeout(state.mapResizeT);
+        state.mapResizeT = setTimeout(() => {
+          const h = $('[data-themebody]');
+          if (h && $('.mapwrap', h)) renderThemeMap(h, state.themeMarket === 'us' ? 'us' : 'tw');
+        }, 150);
+      });
+    }
+  }
+
   // 選了之後把詳情捲進畫面，不然在長圖中間點會看不到
-  if (sel) {
+  if (sel && !desk) {
     const d = $('.mdetail', host);
     if (d) d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }

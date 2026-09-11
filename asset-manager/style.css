@@ -605,3 +605,41 @@ textarea.journal-input {
 .marrow { color: var(--muted); flex: none; }
 .mlink .link { background: none; border: none; padding: 0; font: inherit; font-size: 14px; }
 .mlink .sub { flex-basis: 100%; margin: 0 0 0 18px; line-height: 1.45; }
+
+/* ---------- 產業地圖：桌機版 ---------- */
+/* 螢幕夠寬就把三段改成左右三欄，並且真的把連線畫出來。
+   #main 卡在 720px，這裡要突破，否則三欄會擠在一起。 */
+@media (min-width: 900px) {
+  .mapwrap.desk {
+    position: relative;
+    width: min(1240px, calc(100vw - 48px));
+    margin-left: calc(50% - min(620px, (100vw - 48px) / 2));
+  }
+  .mcols { display: grid; grid-template-columns: 1fr 1.35fr 1fr; gap: 56px; align-items: start; }
+  .mcol {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    border-left-width: 3px; padding: 12px; background: var(--card);
+  }
+  .mcol-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  /* 中游 21 格、上下游各 8 與 10，單欄排下去高度差三倍 */
+  .mcol.two .mcol-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mcol .mband-head { margin-bottom: 2px; }
+  .mcol .mnode { padding: 8px 10px; }
+  /* 連線畫在格子底下，才不會擋住點擊 */
+  .medges { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: visible; }
+  .mcols { position: relative; z-index: 1; }
+  .mcol { background: var(--card); }
+  .medges .e { fill: none; stroke: var(--muted); stroke-width: 1.2; opacity: .28; }
+  /* 沒選的時候全部一樣淡；選了之後只有相關的亮起來，
+     其餘壓到幾乎看不見——密集網路圖全部畫滿一樣粗只會變一團毛線 */
+  .medges .e.off { opacity: .06; }
+  .medges .e.up { stroke: var(--series-1); stroke-width: 2.2; opacity: 1; }
+  .medges .e.down { stroke: var(--series-3); stroke-width: 2.2; opacity: 1; }
+  .mapwrap.desk + .hint { margin-top: 16px; }
+  /* 詳情卡在桌機上排成三欄，不然它會把整張圖推到螢幕外 */
+  .mdetail .mgroup { margin-top: 0; }
+  .mapwrap.desk ~ .mdetail, .mdetail.wide {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px;
+  }
+  .mdetail.wide > .row-between, .mdetail.wide > .sub { grid-column: 1 / -1; }
+}
