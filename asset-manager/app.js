@@ -2755,17 +2755,20 @@ function renderHistory(el) {
 
   const labels = asc.map((s) => s.snap_date);
   const dates = asc.map((s) => new Date(s.snap_date + 'T00:00:00'));
+  // 圖表的 viewBox 要對齊實際寬度，否則字級會被等比放大（見 charts.js）。
+  // 容器這時已經在 DOM 上，量得到寬度；量不到就退回 340。
+  const cw = (sel) => Math.max(320, ($(sel, el)?.clientWidth || 364) - 24);
   // 總資產與淨資產量級相近，放同一張圖；曝險量級差很多，
   // 改由下面的「槓桿② 曝險」呈現（同一件事的標準化版本），避免壓扁資產線
   $('#chart-assets', el).appendChild(lineChart({
-    labels, dates, title: '資產走勢', format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
+    labels, dates, title: '資產走勢', width: cw('#chart-assets'), format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
     series: [
       { label: '總資產', color: 'var(--series-1)', values: asc.map((s) => (isNum(s.total_assets) ? Number(s.total_assets) : null)) },
       { label: '淨資產', color: 'var(--series-2)', values: asc.map((s) => (isNum(s.net_assets) ? Number(s.net_assets) : null)) },
     ],
   }));
   $('#chart-lev', el).appendChild(lineChart({
-    labels, dates, title: '槓桿走勢', format: (v) => Number(v).toFixed(2) + 'x',
+    labels, dates, title: '槓桿走勢', width: cw('#chart-lev'), format: (v) => Number(v).toFixed(2) + 'x',
     series: [
       { label: '槓桿① 資產', color: 'var(--series-1)', values: asc.map((s) => (isNum(s.leverage_asset) ? Number(s.leverage_asset) : null)) },
       { label: '槓桿② 曝險', color: 'var(--series-2)', values: asc.map((s) => (isNum(s.leverage_exposure) ? Number(s.leverage_exposure) : null)) },
@@ -2776,13 +2779,14 @@ function renderHistory(el) {
     labels: rs.series.map((r) => r.date),
     dates: rs.series.map((r) => new Date(r.date + 'T00:00:00')),
     title: '累計已實現損益', format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
-    yZero: true,
+    width: cw('#chart-cum'), yZero: true,
     series: [{ label: '累計已實現損益', color: 'var(--series-1)', values: rs.series.map((r) => r.cum) }],
   }));
   $('#chart-daily', el).appendChild(barChart({
     labels: rs.series.map((r) => r.date.slice(5)),
     values: rs.series.map((r) => r.daily),
     title: '單日已實現損益', format: (v, axis) => (axis ? fmtCompact(v) : fmt(v)),
+    width: cw('#chart-daily'),
   }));
 
   $('#snap-btn2', el).onclick = saveSnapshot;

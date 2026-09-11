@@ -363,12 +363,17 @@ dialog input[readonly] { opacity: .7; }
 .badge.day-badge { background: var(--primary); color: var(--on-primary); }
 
 /* 長條圖 */
-.bars { display: block; width: 100%; overflow: visible; }
-.bars .zero-line { stroke: var(--muted); stroke-width: 1; opacity: .55; }
-.bars .bar { cursor: pointer; outline: none; }
-.bars .bar.gain { fill: var(--gain); }
-.bars .bar.loss { fill: var(--loss); }
-.bars .bar:hover, .bars .bar:focus-visible { opacity: .78; }
+/* 長條圖的 svg class 是 .bars 不是 .line，所以上面那組
+   svg.line .grid / .axis-text 不會套到它——格線與座標標籤一直沒有樣式，
+   字級吃預設值（在 viewBox 裡是 16px）再被等比放大，看起來特別大。 */
+svg.bars { display: block; width: 100%; overflow: visible; }
+svg.bars .grid { stroke: var(--grid); stroke-width: 1; }
+svg.bars .axis-text { fill: var(--muted); font-size: 10px; }
+svg.bars .zero-line { stroke: var(--muted); stroke-width: 1; opacity: .55; }
+svg.bars .bar { cursor: pointer; outline: none; }
+svg.bars .bar.gain { fill: var(--gain); }
+svg.bars .bar.loss { fill: var(--loss); }
+svg.bars .bar:hover, svg.bars .bar:focus-visible { opacity: .78; }
 
 /* 只有一天紀錄時的折線圖替代顯示 */
 .single-point { padding: 6px 2px 2px; }
@@ -928,6 +933,14 @@ textarea.journal-input {
    總覽不動——它是有閱讀順序的儀表板，拆兩欄反而要來回找。 */
 @media (min-width: 1180px) {
   #main { max-width: 1120px; }
+
+  /* **只有真的用得到兩欄的分頁才放寬。**
+     其餘維持原本的 720px：折線圖的 viewBox 是固定的 340px、再用
+     width:100% 撐滿，容器變寬會把字級與線寬一起等比放大——
+     紀錄頁的座標標籤在 1120px 下會變成三十幾 px 的巨大字。 */
+  .tab-panel { max-width: 720px; margin-left: auto; margin-right: auto; }
+  .tab-panel[data-tab="holdings"],
+  .tab-panel[data-tab="themes"] { max-width: none; }
 
   /* 族群「清單」與「今日」：一堆同質的卡片，兩欄並排剛好。
      **只套這兩個子視圖。** 產業鏈、選股、主動ETF 都有自己的內部版面，

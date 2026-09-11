@@ -121,7 +121,12 @@ function ringPath(cx, cy, ro, ri) {
 //   labels: x 軸文字（日期字串）
 //   x 依實際日期比例排列；只在最後一點直接標數值
 // ------------------------------------------------------------
-export function lineChart({ labels, dates, series, format, yZero = false, title }) {
+// width：實際要畫多寬（px）。
+// **一定要傳。** viewBox 固定 340 再用 width:100% 撐滿的話，
+// 容器多寬字就被放大幾倍——桌機 690px 容器等於 2 倍，
+// 10px 的軸標籤會渲染成 20px，比內文還大；手機 390px 只有 1.08 倍，
+// 所以這個問題只在桌機看得到。把 viewBox 對齊實際寬度就不會縮放。
+export function lineChart({ labels, dates, series, format, yZero = false, title, width }) {
   const wrap = document.createElement('div');
   wrap.className = 'chart line-chart';
 
@@ -141,7 +146,7 @@ export function lineChart({ labels, dates, series, format, yZero = false, title 
     return wrap;
   }
 
-  const W = 340, H = 190, padL = 8, padR = 54, padT = 14, padB = 24;
+  const W = Math.max(320, Math.round(width || 340)), H = 190, padL = 8, padR = 54, padT = 14, padB = 24;
   const plotW = W - padL - padR, plotH = H - padT - padB;
 
   const all = series.flatMap((s) => s.values).filter((v) => v !== null && Number.isFinite(v));
@@ -274,7 +279,7 @@ function niceTicks(min, max, count) {
 //   顏色用漲跌語意（台灣慣例紅漲綠跌），不是分類色
 //   每根都可點，會顯示日期與金額
 // ------------------------------------------------------------
-export function barChart({ labels, values, format, title }) {
+export function barChart({ labels, values, format, title, width }) {
   const wrap = document.createElement('div');
   wrap.className = 'chart bar-chart';
   const pts = values.map((v) => (Number.isFinite(v) ? v : 0));
@@ -283,7 +288,7 @@ export function barChart({ labels, values, format, title }) {
     return wrap;
   }
 
-  const W = 340, H = 170, padL = 8, padR = 54, padT = 12, padB = 26;
+  const W = Math.max(320, Math.round(width || 340)), H = 170, padL = 8, padR = 54, padT = 12, padB = 26;
   const plotW = W - padL - padR, plotH = H - padT - padB;
   let max = Math.max(0, ...pts), min = Math.min(0, ...pts);
   if (max === min) { max += 1; min -= 1; }
