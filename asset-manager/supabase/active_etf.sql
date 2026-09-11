@@ -89,36 +89,6 @@ end $fn$;
 
 revoke all on function public.refresh_active_etf() from public, anon;
 
--- ------------------------------------------------------------
--- 主動型 ETF 對大盤的成績。
---
--- **這是這張表真正的用處。** 他整套判斷的基準線就是「報酬/波動有沒有贏過指數」，
--- 主動型 ETF 正好是一群公開宣稱要打敗指數的人，而且每一檔都有淨值可以驗。
--- 多數 2025 年才掛牌，三年年化算不出來（refresh_risk_stats 要 500 個交易日），
--- 所以另外算「上市以來報酬」，跟同期指數比。
--- ------------------------------------------------------------
-create or replace function public.active_etf_board()
-returns table (symbol text, name text, issuer text, scope text, listed_on date,
-               days integer, price numeric, vol numeric, cagr numeric, ratio numeric,
-               hi52 numeric, lo52 numeric, off_hi numeric,
-               bench_ratio numeric, beats boolean)
-language sql stable security definer set search_path = public as $fn$
-  select e.symbol, e.name, e.issuer, e.scope, e.listed_on,
-         k.days, coalesce(m.price, k.last), k.vol, k.cagr, k.ratio,
-         k.hi52, k.lo52,
-         case when k.hi52 > 0 and coalesce(m.price, k.last) > 0
-              then coalesce(m.price, k.last) / k.hi52 - 1 end,
-         b.ratio,
-         case when k.ratio is not null and b.ratio is not null then k.ratio > b.ratio end
-  from public.active_etf e
-  left join public.risk_stats k on k.symbol = e.symbol
-  left join public.market_prices m on m.market = 'tw' and m.symbol = e.symbol
-  left join lateral (
-    select r.ratio from public.risk_stats r
-    where r.symbol = case when e.scope = 'us' then 'NDX' else 'TAIEX' end
-  ) b on true
-  order by k.ratio desc nulls last, e.symbol;
-$fn$;
-
-grant execute on function public.active_etf_board() to anon, authenticated;
-
+-- 成績與族群押注在 etf_perf.sql 與 etf_tilt.sql。
+-- 這裡只管名冊：誰是主動型、誰發的、什麼時候掛牌。
+drop function if exists public.active_etf_board();
