@@ -1086,6 +1086,10 @@ async function loadMarketOnly() {
 }
 
 async function loadAll() {
+  // 主動ETF 那一包是進到那一頁才抓的（etf_board 一次回四十幾 KB），
+  // 但重新整理之後一定要讓它失效——否則按了 ↻ 那一頁還是舊資料，
+  // 要整頁重載才會更新。
+  state.etfBoard = null;
   if (state.guest) return loadMarketOnly();
   const uid = state.user.id;
   const results = await Promise.all([
@@ -4668,7 +4672,12 @@ function renderThemes(el) {
   // 的清單與今日上；產業鏈、選股、主動ETF 都有自己的版面，被切成兩欄會壞。
   host.dataset.view = vw;
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
-  if (vw === 'etf' && mk === 'tw') { renderEtf(host); if (!state.etfBoard) loadEtf(host); }
+  if (vw === 'etf' && mk === 'tw') {
+    // 先叫 loadEtf——它在第一個 await 之前就會把 etfBusy 設起來，
+    // 這樣接著的 renderEtf 才會顯示「讀取中」而不是閃一下「還沒有資料」。
+    if (!state.etfBoard) loadEtf(host);
+    renderEtf(host);
+  }
   else if (vw === 'day' && mk === 'tw') renderThemeDay(host);
   else if (vw === 'screen') { renderScreener(host, mk); loadScreen(host, mk); }
   else if (vw === 'tree') renderThemeMap(host, mk);

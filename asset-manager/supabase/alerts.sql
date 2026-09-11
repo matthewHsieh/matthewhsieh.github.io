@@ -82,10 +82,14 @@ begin
   d1 := (now() at time zone 'Asia/Taipei')::date;
   d0 := d1 - 14;
 
+  -- **六支都用 pm_fetch_json（會重試三次），不要用 pm_fetch。**
+  -- 證交所與櫃買都會偶發斷線：2026-09-10 那天 tpex notice 與 tpex near
+  -- 同時 SSL_ERROR_SYSCALL，當天就少了 18 筆注意股，而這張表是
+  -- 拿來擋「別去空處置股」用的，少一天就是漏一天的風險。
   -- ---------- 上市：處置 ----------
   begin
-    payload := public.pm_fetch(
-      'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json')::jsonb;
+    payload := public.pm_fetch_json(
+      'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json', 3);
     if payload ->> 'stat' = 'OK' then
       insert into public.trade_alerts (kind, symbol, as_of, name, src, start_d, end_d, level,
                                        reason, detail, match_min, prepay_lots)
@@ -110,10 +114,10 @@ begin
   -- ---------- 上市：注意 ----------
   -- 當天收盤後才公布，不帶日期會回空的，所以一定要給區間
   begin
-    payload := public.pm_fetch(
+    payload := public.pm_fetch_json(
       'https://www.twse.com.tw/rwd/zh/announcement/notice?startDate='
       || to_char(d0, 'YYYYMMDD') || '&endDate=' || to_char(d1, 'YYYYMMDD')
-      || '&response=json')::jsonb;
+      || '&response=json', 3);
     if payload ->> 'stat' = 'OK' then
       insert into public.trade_alerts (kind, symbol, as_of, name, src, reason)
       select 'notice', upper(btrim(r ->> 1)), public.pm_roc_date(r ->> 5), btrim(r ->> 2), 'twse',
@@ -131,8 +135,8 @@ begin
 
   -- ---------- 上市：快達處置標準 ----------
   begin
-    payload := public.pm_fetch(
-      'https://www.twse.com.tw/rwd/zh/announcement/notetrans?response=json')::jsonb;
+    payload := public.pm_fetch_json(
+      'https://www.twse.com.tw/rwd/zh/announcement/notetrans?response=json', 3);
     if payload ->> 'stat' = 'OK' then
       insert into public.trade_alerts (kind, symbol, as_of, name, src, reason)
       select 'near', upper(btrim(r ->> 1)), d1, btrim(r ->> 2), 'twse', btrim(r ->> 3)
@@ -149,7 +153,7 @@ begin
 
   -- ---------- 上櫃：處置 ----------
   begin
-    payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_disposal_information')::jsonb;
+    payload := public.pm_fetch_json('https://www.tpex.org.tw/openapi/v1/tpex_disposal_information', 3);
     insert into public.trade_alerts (kind, symbol, as_of, name, src, start_d, end_d,
                                      reason, detail, match_min, prepay_lots)
     select 'punish', upper(btrim(e ->> 'SecuritiesCompanyCode')),
@@ -175,7 +179,7 @@ begin
 
   -- ---------- 上櫃：注意 ----------
   begin
-    payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information')::jsonb;
+    payload := public.pm_fetch_json('https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information', 3);
     insert into public.trade_alerts (kind, symbol, as_of, name, src, reason)
     select 'notice', upper(btrim(e ->> 'SecuritiesCompanyCode')),
            public.pm_roc_date(e ->> 'Date'), btrim(e ->> 'CompanyName'), 'tpex',
@@ -194,7 +198,7 @@ begin
   -- ---------- 上櫃：快達處置標準 ----------
   -- 這支的 Date 是西元 YYYYMMDD，不是民國，跟同一個 API 的其他端點不一樣
   begin
-    payload := public.pm_fetch('https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_note')::jsonb;
+    payload := public.pm_fetch_json('https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_note', 3);
     insert into public.trade_alerts (kind, symbol, as_of, name, src, reason)
     select 'near', upper(btrim(e ->> 'SecuritiesCompanyCode')),
            coalesce(
