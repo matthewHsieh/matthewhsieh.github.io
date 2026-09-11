@@ -981,16 +981,22 @@ language sql stable security definer set search_path = public as $fn$
     join public.revenue r on r.symbol = t.symbol
     group by t.theme, r.ym
   ),
-  months as (
-    select distinct ym from public.revenue order by ym desc limit p_months
+  -- **最新月份要「每個族群各自算」，不能取全市場的最新月。**
+  -- 櫃買的月營收比證交所早出（每月 10 號前後有幾天只有上櫃的），
+  -- 取全域最新月的話，成員全是上市的族群會整個從清單消失——
+  -- 實測有 8 個族群不見，包括伺服器組裝、ABF 載板、電子代工 EMS。
+  -- 改成在族群內排名，每一族顯示它自己最新的那個月。
+  ranked as (
+    select a.*, dense_rank() over (partition by a.theme order by a.ym desc) as rk
+    from agg a
   )
   select a.theme, a.ym, a.amount,
          case when b.amount > 0 then a.amount / b.amount - 1 end as yoy,
          a.members
-  from agg a
-  join months m on m.ym = a.ym
+  from ranked a
   left join agg b on b.theme = a.theme
                  and b.ym = public.pm_ym_roc(public.pm_ym_add(a.ym, -12))
+  where a.rk <= p_months
   order by a.theme, a.ym;
 $fn$;
 

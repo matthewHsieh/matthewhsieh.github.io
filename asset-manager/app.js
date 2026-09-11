@@ -2820,7 +2820,9 @@ const rocPrevYm = (ym) => {
 function renderTwThemes(el) {
   const trend = [...state.themeTrend].filter((t) => isNum(t.yoy)).sort((a, b) => num(b.yoy) - num(a.yoy));
   const held = heldSymbols();
-  const ym = state.themeTrend[0]?.ym;
+  // 各族群現在可能落在不同月份（見 theme_trend 的註解），
+  // 標題要用「最新的那個月」，不能拿陣列第一筆——那是按族群名排序的，等於隨機。
+  const ym = state.themeTrend.reduce((mx, t) => (t.ym && t.ym > mx ? t.ym : mx), '');
 
   if (!trend.length) {
     el.innerHTML = `<div class="card"><p class="muted">還沒有營收資料。按右上角 ↻ 更新，或等下次自動更新。</p></div>`;
@@ -2833,7 +2835,10 @@ function renderTwThemes(el) {
     <div class="card">
       <div class="list-title">產業營收年增率</div>
       <p class="sub muted">${ym ? rocYm(ym) + ' 月營收' : ''}，同族群成分股加總後比去年同月。
-        這是產業本身的成長，不是股價漲跌。</p>
+        這是產業本身的成長，不是股價漲跌。${
+        trend.some((t) => t.ym !== ym)
+          ? '<br><b>各族群取它自己最新的月份</b>——櫃買的月營收比證交所早出幾天，'
+            + '成員全是上市的族群會晚一個月，那幾族後面標了月份。' : ''}</p>
     </div>
     ${trend.map((t) => {
       const mine = myThemes.has(t.theme);
@@ -2849,7 +2854,8 @@ function renderTwThemes(el) {
           <span class="theme-yoy ${plClass(num(t.yoy))}">${signed(num(t.yoy) * 100, 1)}%</span>
         </div>
         <div class="row-between sub muted">
-          <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億</span>
+          <span>月營收 ${fmt(num(t.amount) / 100000, 1)} 億${
+            t.ym && t.ym !== ym ? `<span class="badge">${esc(rocYm(t.ym))}</span>` : ''}</span>
           <span>${fmt(t.members)} 檔・實際營收年增</span>
         </div>
         <div class="row-between sub muted">
