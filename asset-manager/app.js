@@ -39,6 +39,8 @@ const state = {
   alerts: [],      // 處置股與注意股
   screen: null,    // 選股條件
   screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
+  etfBoard: null, etfBusy: false,     // 主動型 ETF：成績與族群傾向，進到那一頁才抓
+  etfScope: 'tw', etfOpen: '',        // 看哪一組、展開哪一檔
   screenOpen: false,                  // 選股條件面板要不要展開
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
@@ -4375,9 +4377,144 @@ async function loadScreen(host, mk, after) {
   }
 }
 
+// ------------------------------------------------------------
+// 主動型 ETF
+//
+//   這一頁回答兩件事：
+//     1. 這些公開宣稱要打敗指數的人，**到底有沒有打敗**
+//     2. 他們的錢**押在哪些產業**
+//
+//   第二件事沒有持股資料。每日申購買回清單只在各家投信自己的網站上，
+//   十三家格式都不一樣，國泰那個網域還整站擋自動存取。
+//   所以改用報酬式風格分析推估——基金的日報酬跟哪個族群一起動，
+//   就是押在哪裡。**是相關性不是權重**，畫面上要講清楚，不能讓人誤會成持股。
+// ------------------------------------------------------------
+const ETF_SCOPES = [['tw', '台股', '0050'], ['us', '美股', '00662'], ['global', '全球', '00646']];
+
+async function loadEtf(host) {
+  if (state.etfBusy) return;
+  state.etfBusy = true;
+  try {
+    const { data, error } = await sb.rpc('etf_board');
+    if (error) throw error;
+    state.etfBoard = data || null;
+  } catch (e) {
+    toast(e.message || '主動型 ETF 資料讀取失敗');
+  } finally {
+    state.etfBusy = false;
+    renderEtf(host);
+  }
+}
+
+function renderEtf(host) {
+  const b = state.etfBoard;
+  if (!b) {
+    host.innerHTML = `<div class="card"><p class="muted">${
+      state.etfBusy ? '讀取中…' : '還沒有主動型 ETF 資料。'}</p></div>`;
+    return;
+  }
+  const all = (b.funds || []).filter((f) => isNum(f.days));
+  const scope = ETF_SCOPES.some((x) => x[0] === state.etfScope) ? state.etfScope : 'tw';
+  const meta = ETF_SCOPES.find((x) => x[0] === scope);
+  const rows = all.filter((f) => f.scope === scope);
+  const win = rows.filter((f) => num(f.excess) > 0).length;
+  const young = (b.funds || []).length - all.length;
+  // 只有一檔押的族群列出來沒有意義——那是單一基金的選擇不是共識，
+  // 而且尾巴一長串「1」會把真正集中的那幾個擠到看不見。
+  const crowdAll = (b.crowd || []).filter((c) => num(c.top5) > 0);
+  const crowd = crowdAll.filter((c) => num(c.top5) >= 2);
+  const crowdTail = crowdAll.length - crowd.length;
+  const rated = num(b.rated) || 1;
+
+  host.innerHTML = `
+    <div class="card">
+      <div class="list-title">主動型 ETF</div>
+      <p class="sub muted">${esc(b.as_of || '')}。代號 <b>A 結尾</b>的就是主動型，
+        這是主管機關的編碼規則。比較的對象不是指數而是<b>同期的被動 ETF</b>——
+        指數不能買，${esc(meta[2])} 可以，而且同樣台幣計價、同樣的交易時間。
+        報酬<b>含息</b>（還原除息與分割），不然高息型的會被當成在虧錢。</p>
+    </div>
+
+    <div class="seg nav-seg etf-seg">
+      ${ETF_SCOPES.map(([k, label]) => `<label><input type="radio" name="etfsc" value="${k}" ${
+        scope === k ? 'checked' : ''}><span>${label} ${
+        all.filter((f) => f.scope === k).length}</span></label>`).join('')}
+    </div>
+
+    <div class="card">
+      <div class="row-between">
+        <span class="list-title">贏過 ${esc(meta[2])} 的</span>
+        <span class="etf-score ${win * 2 >= rows.length ? 'gain' : 'loss'}">${win} / ${rows.length}</span>
+      </div>
+      <p class="sub muted">用<b>掛牌以來</b>的報酬比，而且對照組取同一段期間——
+        2025 年 4 月掛牌的跟 2026 年 8 月掛牌的，比絕對報酬等於在比誰運氣好。${
+        young ? `另有 ${young} 檔掛牌未滿 20 個交易日，先不列。` : ''}</p>
+    </div>
+
+    ${scope === 'tw' && crowd.length ? `<div class="card">
+      <div class="list-title">這些錢押在哪裡</div>
+      <p class="sub muted"><b>這是推估，不是持股。</b>每日持股各家投信只放在自己網站、
+        沒有集中來源，所以改看日報酬——一檔基金重押哪個族群，它就會跟那個族群一起動。
+        兩邊都先扣掉大盤，不然台股什麼跟什麼都相關 0.8。
+        下面是 ${rated} 檔台股主動型 ETF 裡，有幾檔把這個族群排進<b>前五名</b>。</p>
+      <div class="etf-crowd">
+        ${crowd.map((c) => `<div class="etf-crow" role="button" tabindex="0" data-tilt="${esc(c.theme)}">
+          <span class="etf-cname">${esc(c.theme)}</span>
+          <span class="etf-bar"><i style="width:${Math.round(num(c.top5) / rated * 100)}%"></i></span>
+          <span class="etf-cnum">${fmt(c.top5)}</span>
+        </div>`).join('')}
+      </div>
+      ${crowdTail ? `<p class="sub muted">另有 ${crowdTail} 個族群只有 1 檔基金押，沒列出來。</p>` : ''}
+    </div>` : ''}
+
+    <div class="card list">
+      ${rows.length ? rows.map((f) => {
+        const open = state.etfOpen === f.symbol;
+        const ex = num(f.excess);
+        return `<div class="etf-row${open ? ' open' : ''}" data-etf="${esc(f.symbol)}" role="button" tabindex="0">
+          <div class="row-between">
+            <span class="list-title">${esc(f.name || f.symbol)}</span>
+            <span class="theme-yoy ${plClass(ex)}">${signed(ex * 100, 1)}%</span>
+          </div>
+          <div class="row-between sub muted">
+            <span>${esc(f.symbol)}　${fmt(f.days)} 天</span>
+            <span>${signed(num(f.ret) * 100, 1)}% <span class="muted">vs ${
+              esc(f.bench)} ${signed(num(f.bench_ret) * 100, 1)}%</span></span>
+          </div>
+          ${(f.tilts || []).length ? `<div class="etf-tilts">${
+            (f.tilts || []).slice(0, open ? 6 : 3).map((t) => `<span class="etf-chip" role="button"
+              tabindex="0" data-tilt="${esc(t.theme)}">${esc(t.theme)}
+              <b>${Number(t.corr).toFixed(2)}</b></span>`).join('')}</div>` : ''}
+          ${open ? `<div class="sub muted etf-more">
+            ${esc(f.issuer || '')}${f.issuer ? '　' : ''}${esc(f.listed_on || '')} 掛牌　
+            年化波動 ${isNum(f.vol) ? pct(f.vol) : '–'}　
+            對照組 ${esc(f.bench)}（相關 ${isNum(f.bench_corr) ? Number(f.bench_corr).toFixed(2) : '–'}）
+          </div>` : ''}
+        </div>`;
+      }).join('') : '<p class="muted">這一組還沒有滿 20 個交易日的基金。</p>'}
+    </div>`;
+
+  $$('input[name=etfsc]', host).forEach((r) => (r.onchange = () => {
+    state.etfScope = r.value; state.etfOpen = '';
+    renderEtf(host);
+  }));
+  // 點族群就跳到產業鏈那一頁並且鎖定它，不用自己再找一次
+  $$('[data-tilt]', host).forEach((n) => (n.onclick = (e) => {
+    e.stopPropagation();
+    state.mapPick = n.dataset.tilt;
+    state.themeMarket = 'tw';
+    state.themeView = 'tree';
+    render();
+  }));
+  $$('[data-etf]', host).forEach((n) => (n.onclick = () => {
+    state.etfOpen = state.etfOpen === n.dataset.etf ? '' : n.dataset.etf;
+    renderEtf(host);
+  }));
+}
+
 function renderThemes(el) {
   const mk = state.themeMarket === 'us' ? 'us' : 'tw';
-  const vw = ['tree', 'day', 'screen'].includes(state.themeView) ? state.themeView : 'list';
+  const vw = ['tree', 'day', 'screen', 'etf'].includes(state.themeView) ? state.themeView : 'list';
   el.innerHTML = `<div class="seg nav-seg market-seg">
       <label><input type="radio" name="mkt" value="tw" ${mk === 'tw' ? 'checked' : ''}><span>台股</span></label>
       <label><input type="radio" name="mkt" value="us" ${mk === 'us' ? 'checked' : ''}><span>美股</span></label>
@@ -4388,17 +4525,21 @@ function renderThemes(el) {
       ${mk === 'tw'
         ? `<label><input type="radio" name="tvw" value="day" ${vw === 'day' ? 'checked' : ''}><span>今日</span></label>` : ''}
       <label><input type="radio" name="tvw" value="screen" ${vw === 'screen' ? 'checked' : ''}><span>選股</span></label>
+      ${mk === 'tw'
+        ? `<label><input type="radio" name="tvw" value="etf" ${vw === 'etf' ? 'checked' : ''}><span>主動ETF</span></label>` : ''}
     </div><div data-themebody></div>`;
   const host = $('[data-themebody]', el);
   // 今日只有台股有，證交所與櫃買的收盤檔本來就帶開高低，美股那邊沒有同一份資料
-  if (vw === 'day' && mk === 'tw') renderThemeDay(host);
+  if (vw === 'etf' && mk === 'tw') { renderEtf(host); if (!state.etfBoard) loadEtf(host); }
+  else if (vw === 'day' && mk === 'tw') renderThemeDay(host);
   else if (vw === 'screen') { renderScreener(host, mk); loadScreen(host, mk); }
   else if (vw === 'tree') renderThemeMap(host, mk);
   else (mk === 'us' ? renderUsThemes : renderTwThemes)(host);
   $$('input[name=mkt]', el).forEach((r) => (r.onchange = () => {
     state.themeMarket = r.value;
     // 「今日」只有台股有；選股兩邊都有，但換市場要重篩
-    if (r.value === 'us' && state.themeView === 'day') state.themeView = 'list';
+    // 「今日」與「主動ETF」只有台股有
+    if (r.value === 'us' && ['day', 'etf'].includes(state.themeView)) state.themeView = 'list';
     state.screenRows = [];
     renderThemes(el);
   }));

@@ -136,6 +136,9 @@ begin
     select s.symbol, coalesce(v.src, 'twse') as src
     from (
       select symbol from public.stock_universe where market = 'tw'
+      -- 主動型 ETF 也要算報酬/波動。他整套判斷的基準線是「有沒有贏過指數」，
+      -- 而這群人正是公開宣稱要贏過指數的，拿同一把尺量才有意義。
+      union select symbol from public.active_etf
       union select symbol from public.themes
       union select upper(btrim(symbol)) from public.stocks
       union select upper(btrim(symbol)) from public.futures where kind = 'stock' and symbol is not null

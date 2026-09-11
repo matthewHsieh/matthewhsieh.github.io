@@ -825,3 +825,52 @@ textarea.journal-input {
 .sc-story .sub { margin: 5px 0 0; line-height: 1.6; }
 .sc-caution { color: var(--text); }
 .badge.story-badge { background: var(--stage-2); color: #fff; }
+
+/* ---------- 主動型 ETF ---------- */
+.etf-seg { margin: 10px 0; }
+.etf-score { font-size: 22px; font-weight: 700; }
+
+/* 擁擠度：單一色相、由長度表達多寡，這是 sequential 的用法，
+   不要每一條給不同顏色——顏色在這裡沒有攜帶任何資訊。 */
+.etf-crowd { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.etf-crow {
+  display: grid;
+  grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 2.2em;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.etf-cname { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.etf-cnum { font-size: 13px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.etf-bar { display: block; height: 10px; border-radius: 5px; background: var(--border); overflow: hidden; }
+.etf-bar > i { display: block; height: 100%; border-radius: 5px; background: var(--stage-2); }
+.etf-crow:hover .etf-bar > i, .etf-crow:focus-visible .etf-bar > i { background: var(--primary); }
+
+.etf-row { padding: 10px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.etf-row:first-child { border-top: none; }
+.etf-tilts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.etf-chip {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+}
+.etf-chip b { color: var(--text); font-variant-numeric: tabular-nums; }
+.etf-chip:hover { border-color: var(--primary); color: var(--primary); }
+.etf-more { margin-top: 8px; }
+
+@media (min-width: 900px) {
+  /* 桌機把基金排成兩欄，不然一列字很短、右邊整片空白 */
+  .etf-row { border-top: none; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .card.list:has(.etf-row) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .etf-crow { grid-template-columns: minmax(0, 10em) minmax(0, 1fr) 2.5em; }
+  /* 擁擠度排成兩欄。一欄的話每一條長得離譜、而且整頁被拉長一倍 */
+  .etf-crowd { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 24px; }
+}

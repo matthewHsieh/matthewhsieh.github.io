@@ -25,6 +25,8 @@ begin
     'themes', 'theme_info', 'theme_meta', 'theme_links', 'us_themes',
     -- 交易所警示、契約對照
     'trade_alerts', 'fut_codes', 'fut_months', 'stock_universe', 'company_profile',
+    -- 轉型故事、主動型 ETF
+    'stock_story', 'active_etf', 'etf_perf', 'etf_tilt',
     -- 更新狀態（只有市場名稱與日期，沒有任何個人資料）
     'price_runs'
   ] loop
@@ -87,6 +89,8 @@ grant execute on function public.app_risk()                to anon;
 -- 只會看到自動抓的與人工整理的公開預估——這正是我們要的。
 grant execute on function public.eps_resolved()            to anon;
 grant execute on function public.stock_detail(text, text)  to anon;
+grant execute on function public.stock_stories()           to anon;
+grant execute on function public.etf_board()               to anon;
 
 -- ------------------------------------------------------------
 -- 登入者：市場資料那幾支照開，另外加上只跟自己有關的那幾支。
@@ -104,6 +108,8 @@ grant execute on function public.theme_chain(text, text)   to authenticated;
 grant execute on function public.active_alerts(integer)    to authenticated;
 grant execute on function public.eps_resolved()            to authenticated;
 grant execute on function public.stock_detail(text, text)  to authenticated;
+grant execute on function public.stock_stories()           to authenticated;
+grant execute on function public.etf_board()               to authenticated;
 grant execute on function public.my_valuation()            to authenticated;
 grant execute on function public.journal_days(integer)     to authenticated;
 grant execute on function public.refresh_market(text)      to authenticated;
@@ -127,7 +133,8 @@ begin
     and p.proname not in ('theme_trend', 'theme_members', 'theme_valuation', 'theme_day',
                           'stock_day', 'us_theme_trend', 'us_theme_members',
                           'theme_tree', 'theme_chain', 'active_alerts',
-                          'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk');
+                          'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
+                          'stock_stories', 'etf_board');
   if extra is not null then
     raise exception '這些函式不該開給匿名：%', extra;
   end if;
