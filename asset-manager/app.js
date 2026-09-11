@@ -41,6 +41,7 @@ const state = {
   screenRows: [], screenBusy: false,   // 選股結果（伺服器端篩，一次回 60 檔）
   etfBoard: null, etfBusy: false,     // 主動型 ETF：成績與族群傾向，進到那一頁才抓
   etfScope: 'tw', etfOpen: '',        // 看哪一組、展開哪一檔
+  marketLive: [], _live: null,        // 盤中報價（證交所 MIS），只在夠新時才蓋過收盤價
   screenOpen: false,                  // 選股條件面板要不要展開
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
@@ -280,14 +281,55 @@ function attachLookup(input, kind, onPick) {
 //   期貨名目 = 口數 × 價格 × size
 //     指數期貨 size = 每點價值；個股期貨 size = 等同股數（大 2000 / 小 100）
 // ============================================================
-function futNotional(f) {
-  return num(f.lots) * num(f.price) * num(f.size);
+// ------------------------------------------------------------
+// 盤中報價
+//
+//   market_prices 存的是收盤價，盤中價在 market_live（來源是證交所 MIS）。
+//   這裡把它疊上去，讓持倉、總覽、曝險三邊用的是同一個價，不會互相對不上。
+//
+//   **只蓋 price 一個欄位。** 股數與成本是他自己輸入的，永遠不動。
+//   而且只在報價夠新的時候才算數——收盤後 cron 就不再寫 market_live，
+//   資料自然變舊，會自己退回收盤價，不必在前端判斷交易時段與假日。
+// ------------------------------------------------------------
+const LIVE_FRESH_MS = 15 * 60 * 1000;
+
+function liveMap() {
+  const m = new Map();
+  const now = Date.now();
+  for (const r of state.marketLive || []) {
+    const t = Date.parse(r.at);
+    if (!Number.isFinite(t) || now - t > LIVE_FRESH_MS) continue;
+    if (!(num(r.price) > 0)) continue;
+    m.set(norm(r.symbol), { price: num(r.price), chg: num(r.chg), at: t });
+  }
+  return m;
 }
+
+// 有新鮮的盤中報價就用它，否則用存下來的收盤價
+const livePx = (sym) => (state._live || new Map()).get(norm(sym)) || null;
+// 盤中價一定要標出來。使用者看到的數字跟收盤價是兩件事，不標就會看錯。
+const liveTag = (sym) => {
+  const l = livePx(sym);
+  if (!l) return '';
+  const hm = new Date(l.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `<span class="badge live-badge">盤中 ${esc(hm)}</span>`;
+};
+const pxOf = (row, sym) => {
+  const l = livePx(sym === undefined ? row.symbol : sym);
+  return l ? l.price : num(row.price);
+};
+
+function futNotional(f) {
+  return num(f.lots) * futPx(f) * num(f.size);
+}
+// 個股期用標的的盤中價；指數期沒有 MIS 來源，維持原本的價
+const futPx = (f) => (f.kind === 'stock' && f.symbol ? pxOf(f, f.symbol) : num(f.price));
 // 期貨損益：多單 (現價 − 成本)、空單 (成本 − 現價)，再乘口數與規格
 // 沒填成本就回 null（跟股票一樣不顯示損益）
 function futPl(f) {
   if (!isNum(f.cost)) return null;
-  const diff = f.side === 'short' ? num(f.cost) - num(f.price) : num(f.price) - num(f.cost);
+  const px = futPx(f);
+  const diff = f.side === 'short' ? num(f.cost) - px : px - num(f.cost);
   return diff * num(f.lots) * num(f.size);
 }
 
@@ -512,7 +554,7 @@ function exposureSlices() {
   const rate = num(state.settings.usd_twd);
   const items = [];
   for (const s of state.stocks) {
-    const v = num(s.shares) * num(s.price);
+    const v = num(s.shares) * pxOf(s);
     if (v > 0) items.push({ label: `${norm(s.symbol)} ${s.name || ''}`.trim(), sub: '台股', value: v });
   }
   for (const f of state.futures) {
@@ -556,8 +598,8 @@ function compute() {
   const { settings, stocks, futures, us, balances } = state;
   const rate = num(settings.usd_twd);
 
-  const stockValue = sum(stocks, (s) => num(s.shares) * num(s.price));
-  const stockCost = sum(stocks, (s) => num(s.shares) * (isNum(s.cost) ? num(s.cost) : num(s.price)));
+  const stockValue = sum(stocks, (s) => num(s.shares) * pxOf(s));
+  const stockCost = sum(stocks, (s) => num(s.shares) * (isNum(s.cost) ? num(s.cost) : pxOf(s)));
 
   const usValueUsd = sum(us, (s) => num(s.shares) * num(s.price_usd));
   const usCostUsd = sum(us, (s) => num(s.shares) * (isNum(s.cost_usd) ? num(s.cost_usd) : num(s.price_usd)));
@@ -1010,10 +1052,11 @@ async function loadMarketOnly() {
     sb.rpc('theme_day', {}),
     sb.rpc('active_alerts', { p_days: 10 }),
     sb.rpc('theme_etf', {}),
+    sb.from('market_live').select('*'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
   const [trend, members, tinfo, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts,
-         tetf] = results;
+         tetf, mlive] = results;
   const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
   const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = { ...DEFAULT_SETTINGS };
@@ -1030,6 +1073,7 @@ async function loadMarketOnly() {
   state.themeDay = tday.data ?? [];
   state.alerts = alerts.data ?? [];
   state.themeEtf = tetf.data ?? [];
+  state.marketLive = mlive.data ?? [];
 }
 
 async function loadAll() {
@@ -1063,12 +1107,13 @@ async function loadAll() {
     sb.rpc('theme_day', {}),
     sb.rpc('active_alerts', { p_days: 10 }),
     sb.rpc('theme_etf', {}),
+    sb.from('market_live').select('*'),
     sb.from('rules').select('*').eq('active', true).order('sort'),
     sb.rpc('journal_days', { p_limit: 120 }),
     sb.from('price_status').select('market,as_of,updated_at,symbols'),
   ]);
   for (const r of results) if (r.error && r.error.code !== '42P01') throw r.error;
-  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, tetf, rules, jdays, prices] = results;
+  const [st, stocks, futures, us, balances, snaps, trades, opts, wars, ivh, fwds, trend, members, tinfo, val, tval, arisk, utrend, umem, tmeta, tlinks, tday, alerts, tetf, mlive, rules, jdays, prices] = results;
   const risk = { data: (arisk.data ?? []).filter((r) => r.market === 'tw') };
   const ustat = { data: (arisk.data ?? []).filter((r) => r.market === 'us') };
   state.settings = st.data ? { ...DEFAULT_SETTINGS, ...st.data } : { ...DEFAULT_SETTINGS };
@@ -1095,6 +1140,7 @@ async function loadAll() {
   state.themeDay = tday.data ?? [];
   state.alerts = alerts.data ?? [];
   state.themeEtf = tetf.data ?? [];
+  state.marketLive = mlive.data ?? [];
   state.rules = rules.data ?? [];
   state.journalDays = jdays.data ?? [];
   state.optExpiries = (fwds.data ?? [])
@@ -2443,12 +2489,13 @@ async function rollFutures(preId) {
 function renderHoldings(el) {
   const c = compute();
   const stockRows = state.stocks.map((s) => {
-    const v = num(s.shares) * num(s.price);
+    const v = num(s.shares) * pxOf(s);
     const pl = isNum(s.cost) ? v - num(s.shares) * num(s.cost) : null;
     return itemRow('stock', s.id,
       `${esc(s.symbol)} ${esc(s.name || '')}${alertBadge(alertOf(s.symbol))}${
         twKnown(s.symbol) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
-      `${fmtQty('tw', s.shares)} × ${fmtMax(s.price, 2)}${isNum(s.cost) ? `　均價 ${fmtMax(s.cost, 2)}` : ''}`,
+      `${fmtQty('tw', s.shares)} × ${fmtMax(pxOf(s), 2)}${livePx(s.symbol) ? liveTag(s.symbol) : ''}${
+        isNum(s.cost) ? `　均價 ${fmtMax(s.cost, 2)}` : ''}`,
       fmt(v),
       pl === null ? '' : `<span class="${plClass(pl)}">${signed(pl)}</span>`,
       `tw:${norm(s.symbol)}`);
@@ -2460,7 +2507,8 @@ function renderHoldings(el) {
       `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}<span class="badge">${f.side === 'short' ? '空' : '多'}</span>${
         isStock ? alertBadge(alertOf(f.symbol)) : ''}${
         autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
-      `${fmtMax(f.lots, 2)} 口 × ${fmtMax(f.price, 2)} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}${
+      `${fmtMax(f.lots, 2)} 口 × ${fmtMax(futPx(f), 2)}${
+        isStock && livePx(f.symbol) ? liveTag(f.symbol) : ''} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}${
         isNum(f.cost) ? `　均價 ${fmtMax(f.cost, 2)}` : ''}`,
       `名目 ${fmt(futNotional(f))}`,
       pl === null
@@ -3474,7 +3522,7 @@ function etfOwnHtml(e) {
     <p class="sub">${fmt(e.funds)} 檔主動型 ETF 把它放進<b>前十大持股</b>，
       單檔最重 <b>${fmt(e.max_weight, 1)}%</b>${
       heavy ? '，合計吃掉的股本已經到<b>浮額會變少</b>的量級' : ''}。</p>
-    <div class="etf-tilts">${list.map((x) => `<span class="etf-chip hold">${
+    <div class="etf-chips">${list.map((x) => `<span class="etf-chip hold">${
       esc(x.name || x.etf)} <b>${fmt(x.weight, 1)}%</b></span>`).join('')}${
       (e.list || []).length > list.length
         ? `<span class="etf-chip">還有 ${(e.list || []).length - list.length} 檔</span>` : ''}</div>
@@ -4548,7 +4596,7 @@ function renderEtf(host) {
             <span>${signed(num(f.ret) * 100, 1)}% <span class="muted">vs ${
               esc(f.bench)} ${signed(num(f.bench_ret) * 100, 1)}%</span></span>
           </div>
-          ${(f.holds || []).length ? `<div class="etf-tilts">${
+          ${(f.holds || []).length ? `<div class="etf-chips">${
             (f.holds || []).slice(0, open ? 10 : 4).map((h) => `<span class="etf-chip hold"
               role="button" tabindex="0" ${h.mkt === 'US' ? '' : `data-stock="tw:${esc(h.symbol)}"`}>${
               esc(h.name || h.symbol)} <b>${fmt(h.weight, 1)}%</b></span>`).join('')}</div>` : ''}
@@ -4556,10 +4604,6 @@ function renderEtf(host) {
             ${esc(f.issuer || '')}${f.issuer ? '　' : ''}${esc(f.listed_on || '')} 掛牌　
             年化波動 ${isNum(f.vol) ? pct(f.vol) : '–'}　
             對照組 ${esc(f.bench)}（相關 ${isNum(f.bench_corr) ? Number(f.bench_corr).toFixed(2) : '–'}）
-            ${(f.tilts || []).length ? `<div class="etf-est">前十大以外看不到，
-              用日報酬推估的風格：${(f.tilts || []).slice(0, 4).map((t) =>
-              `<span class="etf-chip" role="button" tabindex="0" data-tilt="${esc(t.theme)}">${
-              esc(t.theme)} <b>${Number(t.corr).toFixed(2)}</b></span>`).join('')}</div>` : ''}
           </div>` : ''}
         </div>`;
       }).join('') : '<p class="muted">這一組還沒有滿 20 個交易日的基金。</p>'}
@@ -4759,6 +4803,8 @@ const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: r
 const GUEST_TABS = ['themes'];
 
 function render() {
+  // 新鮮度會隨時間過期，所以每次畫面重繪都要重算一次
+  state._live = liveMap();
   if (!state.user && !state.guest) return;
   const allowed = (t) => !state.guest || GUEST_TABS.includes(t);
   if (!allowed(state.tab)) state.tab = GUEST_TABS[0];

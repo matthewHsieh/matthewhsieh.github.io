@@ -218,7 +218,12 @@ grant execute on function public.theme_etf() to anon, authenticated;
 -- 基金 32 檔、每檔十筆持股、族群 23 列，分開叫三次 RPC 沒有比較清楚，
 -- 而且 PostgREST 預設 1000 列上限踩過一次，包成一個 jsonb 最穩。
 --
--- **這支要放在最後。** 它同時讀 etf_perf、etf_tilt、etf_holding、stock_shares，
+-- 原本還回一份「日報酬相關性推估的族群風格」。**拿掉了**：
+-- 有了實際持股之後，同一頁擺兩套講同一件事的東西只會讓人搞不清楚
+-- 在看什麼。推估的管線（etf_tilt / px_daily）也一起停掉，
+-- 不然就是每天抓 250 檔日線去算一份沒有人看的數字。
+--
+-- **這支要放在最後。** 它同時讀 etf_perf、etf_holding、stock_shares，
 -- LANGUAGE SQL 建立時就會驗內文，放在前面的檔案裡全新資料庫會套用失敗。
 -- ------------------------------------------------------------
 create or replace function public.etf_board()
@@ -226,7 +231,6 @@ returns jsonb language sql stable security definer set search_path = public as $
   select jsonb_build_object(
     'as_of', (select max(last_day) from public.etf_perf),
     'hold_as_of', (select max(as_of) from public.etf_holding),
-    'rated', (select count(distinct symbol)::int from public.etf_tilt),
     'funds', coalesce((
       select jsonb_agg(to_jsonb(f)
                -- 實際持股（前十大，MoneyDJ）
@@ -235,13 +239,6 @@ returns jsonb language sql stable security definer set search_path = public as $
                                                         'mkt', h.mkt, 'weight', h.weight)
                            order by h.weight desc)
                     from public.etf_holding h where h.etf = f.symbol), '[]'::jsonb))
-               -- 風格推估（日報酬相關）。持股只有前十大，第十一名以後
-               -- 看不到，這一欄補的就是那一段。
-               || jsonb_build_object('tilts', coalesce((
-                    select jsonb_agg(jsonb_build_object('theme', t.theme, 'corr', t.corr))
-                    from (select t2.theme, t2.corr from public.etf_tilt t2
-                          where t2.symbol = f.symbol and t2.rk <= 6 order by t2.rk) t
-                  ), '[]'::jsonb))
              order by f.excess desc nulls last)
       from public.active_etf_perf() f), '[]'::jsonb),
     'crowd', coalesce((

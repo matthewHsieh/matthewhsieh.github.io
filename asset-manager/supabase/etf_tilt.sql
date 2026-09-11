@@ -200,3 +200,29 @@ revoke all on function public.refresh_etf_tilt() from public, anon;
 -- 內文，放在這裡的話全新資料庫依序套用會因為表還不存在而失敗。
 drop function if exists public.etf_tilts(text, integer);
 drop function if exists public.theme_crowding(numeric);
+
+-- ============================================================
+-- 【已停用】2026-09-11
+--
+-- 這整套（px_daily 日線 → etf_tilt 族群相關性）是在還拿不到實際持股時
+-- 用來**推估**主動型 ETF 押在哪些產業的。後來發現 MoneyDJ 有前十大持股
+-- （見 etf_holding.sql），畫面改用實際持股，這份推估就沒有人看了。
+--
+-- 留著檔案是因為方法本身是對的（Sharpe 的報酬式風格分析），
+-- 哪天需要看「前十大以外」那一段還可以復用；但**排程停掉**，
+-- 不然就是每天去抓 250 檔日線算一份沒有人讀的數字。
+-- ============================================================
+do $do$
+begin
+  perform cron.unschedule(j) from unnest(array['am-etf-px', 'am-etf-tilt']) j
+  where exists (select 1 from cron.job where jobname = j);
+end $do$;
+
+drop function if exists public.etf_tilts(text, integer);
+drop table if exists public.etf_tilt;
+drop table if exists public.px_daily;
+drop table if exists public.px_src;
+
+drop function if exists public.refresh_etf_tilt();
+drop function if exists public.refresh_px_daily(integer);
+drop function if exists public.px_wanted();

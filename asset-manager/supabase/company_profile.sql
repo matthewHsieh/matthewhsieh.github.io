@@ -192,3 +192,98 @@ begin
 end $fn$;
 
 revoke all on function public.refresh_us_profiles(integer) from public, anon;
+
+-- ============================================================
+-- 補漏：Yahoo 的「主要經營業務」
+--
+-- MOPS 是最好的來源（公司自己申報的原文），但它**累積限流**：
+-- 打到大約一千次之後成功率從 37/40 掉到 9/60，所以 1,974 檔要磨好幾週。
+-- 目前 516 檔有業務描述，選股器的關鍵字搜尋等於有七成的股票搜不到。
+--
+-- Yahoo 的個股資料頁有「主要經營業務」，涵蓋率是全部，而且跟 MOPS
+-- 不是同一個主機、沒有觀察到限流。**但它比較粗**：給的是營業項目的
+-- 分類（金居 → 電子零組件製造業／金屬表面處理業／鍊銅業），
+-- 不是 MOPS 那種完整敘述。
+--
+-- 所以定位是補漏不是取代：
+--   * Yahoo 只寫「還沒有業務描述」或「上次也是 Yahoo 寫的」那些
+--   * MOPS 照跑，抓到就覆蓋掉 Yahoo 的
+-- biz_src 記來源，才知道哪些還可以被 MOPS 升級。
+-- ============================================================
+alter table public.company_profile add column if not exists biz_src text;
+
+-- 既有的：台股來自 MOPS，美股來自 stockanalysis。
+-- **不要一律標成 mops**，美股那 2,161 檔根本沒碰過 MOPS。
+update public.company_profile set biz_src = case when market = 'us' then 'sa' else 'mops' end
+where business is not null and biz_src is null;
+
+-- 版型固定：<span>主要經營業務</span></span><div class="…">甲\r\n乙\r\n丙</div>
+-- **量詞全部非貪婪**，理由同 MOPS 那支：Postgres 的貪婪與否由第一個
+-- 帶偏好的量詞決定，前面放一個貪婪的 .* 會讓整串一路吃到頁尾。
+create or replace function public.pm_yahoo_business(p_body text)
+returns text language sql immutable as $fn$
+  select nullif(btrim(regexp_replace(
+           regexp_replace((regexp_match(p_body,
+             '主要經營業務</span></span><div[^>]*?>(.*?)</div>'))[1],
+             '<[^>]*?>', '', 'g'),
+           '[\r\n]+', '・', 'g')), '');
+$fn$;
+
+create or replace function public.refresh_business_yahoo(p_limit integer default 40)
+returns integer language plpgsql security definer set search_path = public, extensions as $fn$
+declare r record; body text; biz text; n integer := 0;
+begin
+  -- 實測一頁約 330KB，40 檔一批大約 20 秒，遠低於預設的 120 秒上限。
+  -- （函式內 set_config('statement_timeout') 是無效的，上限在語句開始時就鎖定。）
+  for r in
+    select u.symbol,
+           -- 上市是 .TW、上櫃是 .TWO，用 market_prices.exch 判斷
+           case when m.exch = 'tpex' then '.TWO' else '.TW' end as suffix
+    from public.stock_universe u
+    left join public.company_profile c on c.symbol = u.symbol
+    left join public.market_prices m on m.market = 'tw' and m.symbol = u.symbol
+    where u.market = 'tw'
+      and (c.business is null or c.biz_src = 'yahoo')
+      and (c.updated_at is null or c.updated_at < now() - interval '30 days')
+    order by c.updated_at nulls first
+    limit p_limit
+  loop
+    begin
+      body := public.pm_fetch('https://tw.stock.yahoo.com/quote/' || r.symbol || r.suffix || '/profile');
+      biz := public.pm_yahoo_business(body);
+      if biz is not null then
+        insert into public.company_profile (symbol, business, biz_src, as_of, updated_at)
+        values (r.symbol, biz, 'yahoo', current_date, now())
+        on conflict (symbol) do update
+          -- MOPS 寫過的不要蓋掉，那份比較完整
+          set business = case when company_profile.biz_src = 'mops'
+                              then company_profile.business else excluded.business end,
+              biz_src  = case when company_profile.biz_src = 'mops' then 'mops' else 'yahoo' end,
+              updated_at = now();
+        n := n + 1;
+      end if;
+      perform pg_sleep(0.3);
+    exception when others then
+      perform public.pm_log('biz_yahoo ' || r.symbol, 0, false, sqlerrm);
+    end;
+  end loop;
+
+  perform public.pm_log('biz_yahoo', n, true, null);
+  return n;
+end $fn$;
+
+revoke all on function public.refresh_business_yahoo(integer) from public, anon;
+revoke all on function public.pm_yahoo_business(text) from public, anon;
+
+-- 一天四班。60 檔一批實測約 50 秒，遠低於預設的 120 秒上限
+-- （一定要分成獨立的 cron job，理由見 etf_cron.sql）。
+-- 一天補 240 檔，剩下的一千多檔大約一週補完。
+do $do$
+begin
+  perform cron.unschedule(j) from unnest(array['am-biz-1','am-biz-2','am-biz-3','am-biz-4']) j
+  where exists (select 1 from cron.job where jobname = j);
+  perform cron.schedule('am-biz-1', '10 16 * * *', $c$select public.refresh_business_yahoo(60)$c$);
+  perform cron.schedule('am-biz-2', '10 18 * * *', $c$select public.refresh_business_yahoo(60)$c$);
+  perform cron.schedule('am-biz-3', '10 20 * * *', $c$select public.refresh_business_yahoo(60)$c$);
+  perform cron.schedule('am-biz-4', '10 22 * * *', $c$select public.refresh_business_yahoo(60)$c$);
+end $do$;

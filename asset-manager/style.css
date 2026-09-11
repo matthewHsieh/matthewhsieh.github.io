@@ -835,7 +835,6 @@ textarea.journal-input {
 .etf-crowd { display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
 .etf-citem { display: flex; flex-direction: column; gap: 2px; }
 .etf-cfoot { padding-left: 2px; }
-.etf-est { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .etf-crow {
   display: grid;
   grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 2.2em;
@@ -852,7 +851,7 @@ textarea.journal-input {
 
 .etf-row { padding: 10px 0; border-top: 1px solid var(--border); cursor: pointer; }
 .etf-row:first-child { border-top: none; }
-.etf-tilts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.etf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .etf-chip {
   font-size: 12px;
   padding: 3px 8px;
@@ -907,3 +906,11 @@ textarea.journal-input {
 .metf.hot { background: var(--gain); color: #fff; }
 .mnode:not(.talent) .metf { margin-left: 6px; }
 .mdisc .metf { position: absolute; top: -4px; right: -6px; }
+
+/* 盤中報價：跟收盤價是兩件事，一定要標示 */
+.live-badge {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  font-variant-numeric: tabular-nums;
+}

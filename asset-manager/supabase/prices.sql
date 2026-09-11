@@ -71,6 +71,11 @@ exception when others then
   return null;
 end $$;
 
+-- 交易所別。**不能用 src 當交易所別**——update_quotes_live 補上櫃收盤時
+-- 會把 src 寫成 'mis'，交易所別就沒了。這一欄只有下面證交所／櫃買的
+-- 正式檔案會寫，即時行情不碰。
+alter table public.market_prices add column if not exists exch text;
+
 create or replace function public.pm_fetch(p_url text)
 returns text language plpgsql security definer set search_path = public, extensions as $fn$
 declare body text;
@@ -192,19 +197,20 @@ begin
             -- 第 9 欄是漲跌方向，證交所把它包在 HTML 裡（<p style= color:green>-</p>），
             -- 所以判斷負號要用字串比對，第 10 欄才是絕對值
             insert into public.market_prices (market, symbol, name, price,
-                                              chg, open, high, low, as_of, src, updated_at)
+                                              chg, open, high, low, as_of, src, exch, updated_at)
             select 'tw', upper(btrim(r ->> 0)), btrim(r ->> 1), public.pm_num(r ->> 8),
                    case when position('-' in coalesce(r ->> 9, '')) > 0
                         then -public.pm_num(r ->> 10) else public.pm_num(r ->> 10) end,
                    public.pm_num(r ->> 5), public.pm_num(r ->> 6), public.pm_num(r ->> 7),
-                   d - i, 'twse', now()
+                   d - i, 'twse', 'twse', now()
             from jsonb_array_elements(tbl -> 'data') r
             where btrim(r ->> 0) ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(r ->> 8) > 0
             on conflict (market, symbol) do update
               set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
                   chg = excluded.chg, open = excluded.open,
                   high = excluded.high, low = excluded.low,
-                  as_of = excluded.as_of, src = excluded.src, updated_at = now();
+                  as_of = excluded.as_of, src = excluded.src, exch = excluded.exch,
+                  updated_at = now();
             get diagnostics n = row_count; total := total + n;
             perform public.pm_log('twse_mi_index ' || to_char(d - i, 'YYYY-MM-DD'), n, true, null);
             got := true;
@@ -224,14 +230,16 @@ begin
     if not got then
       begin
         payload := public.pm_fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL')::jsonb;
-        insert into public.market_prices (market, symbol, name, price, as_of, src, updated_at)
+        insert into public.market_prices (market, symbol, name, price, as_of, src, exch, updated_at)
         select 'tw', upper(btrim(e ->> 'Code')), btrim(e ->> 'Name'),
-               public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'), 'twse', now()
+               public.pm_num(e ->> 'ClosingPrice'), public.pm_roc_date(e ->> 'Date'),
+               'twse', 'twse', now()
         from jsonb_array_elements(payload) e
         where btrim(e ->> 'Code') ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(e ->> 'ClosingPrice') > 0
         on conflict (market, symbol) do update
           set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
-              as_of = excluded.as_of, src = excluded.src, updated_at = now();
+              as_of = excluded.as_of, src = excluded.src, exch = excluded.exch,
+              updated_at = now();
         get diagnostics n = row_count; total := total + n;
         perform public.pm_log('twse_stock_day_all(備援)', n, true, null);
       exception when others then
@@ -254,18 +262,19 @@ begin
         'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes', 3, 1000);
       -- 櫃買的 Change 已經帶正負號，不用像證交所那樣拆
       insert into public.market_prices (market, symbol, name, price,
-                                        chg, open, high, low, as_of, src, updated_at)
+                                        chg, open, high, low, as_of, src, exch, updated_at)
       select 'tw', upper(btrim(e ->> 'SecuritiesCompanyCode')), btrim(e ->> 'CompanyName'),
              public.pm_num(e ->> 'Close'), public.pm_num(e ->> 'Change'),
              public.pm_num(e ->> 'Open'), public.pm_num(e ->> 'High'), public.pm_num(e ->> 'Low'),
-             public.pm_roc_date(e ->> 'Date'), 'tpex', now()
+             public.pm_roc_date(e ->> 'Date'), 'tpex', 'tpex', now()
       from jsonb_array_elements(payload) e
       where btrim(e ->> 'SecuritiesCompanyCode') ~ '^[0-9]{4,6}[A-Z]?$' and public.pm_num(e ->> 'Close') > 0
       on conflict (market, symbol) do update
         set price = excluded.price, name = coalesce(excluded.name, market_prices.name),
             chg = excluded.chg, open = excluded.open,
             high = excluded.high, low = excluded.low,
-            as_of = excluded.as_of, src = excluded.src, updated_at = now();
+            as_of = excluded.as_of, src = excluded.src, exch = excluded.exch,
+            updated_at = now();
       get diagnostics n = row_count; total := total + n;
       perform public.pm_log('tpex', n, true, null);
     exception when others then
