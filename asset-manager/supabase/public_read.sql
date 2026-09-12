@@ -49,8 +49,17 @@ end $$;
 --   snapshot_month_end()   會寫進 snapshots
 -- 第一支等於把資料庫變成別人的跳板，第二支是免費的流量炸彈。
 --
--- 所以這裡的做法是：先 revoke public schema 底下所有函式的 PUBLIC 與 anon 權限，
--- 再把該開的開回來。**日後新增函式一定要重跑這個檔**，否則又會預設全開。
+-- 所以這裡的做法是：先 revoke public schema 底下所有函式的權限，再把該開的開回來。
+-- **日後新增函式一定要重跑這個檔**，否則又會預設全開。
+--
+-- **一定要連 authenticated 一起 revoke，不能只 revoke public 與 anon。**
+-- Supabase 的預設權限是分別授予 anon / authenticated / service_role 的，
+-- 只收 PUBLIC 收不掉 authenticated 那一份。實測：103 支函式裡有 100 支
+-- 任何登入者都叫得動，其中 32 支會 pm_fetch 對外抓資料。
+-- 單人自用看不出問題，開放註冊之後就是：
+--   pm_live_channels()    直接回傳**所有使用者**持有的代號清單（別人的持股外洩）
+--   refresh_risk_stats()  任何人都能觸發整批 Yahoo 抓取，跑滿 120 秒才逾時
+--   refresh_warrant_prices() 一次下載 20MB
 -- ------------------------------------------------------------
 do $$
 declare f record;
@@ -60,7 +69,7 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.prokind = 'f'
   loop
-    execute format('revoke all on function %s from public, anon', f.sig);
+    execute format('revoke all on function %s from public, anon, authenticated', f.sig);
   end loop;
 end $$;
 
@@ -119,6 +128,10 @@ grant execute on function public.journal_days(integer)     to authenticated;
 grant execute on function public.refresh_market(text)      to authenticated;
 grant execute on function public.refresh_prices(boolean)   to authenticated;
 grant execute on function public.sync_my_positions()       to authenticated;
+-- 新帳號第一次登入時 app.js 會叫這一支補上預設規則。
+-- **原本漏了**，只是靠「預設全開」才沒出事；收緊 authenticated 之後
+-- 沒補上的話，新使用者會完全沒有紀律規則，而且只有新帳號會踩到。
+grant execute on function public.bootstrap_me()            to authenticated;
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
                                                numeric, numeric, numeric, text, text, integer) to authenticated;
 grant execute on function public.app_risk()                to authenticated;
@@ -141,6 +154,30 @@ begin
                           'stock_stories', 'etf_board', 'theme_etf');
   if extra is not null then
     raise exception '這些函式不該開給匿名：%', extra;
+  end if;
+end $$;
+
+-- ------------------------------------------------------------
+-- 驗一次：登入者能叫的也要跟白名單一模一樣。
+-- 這一段比匿名那一段更重要——開放註冊之後，「任何人註冊一個帳號」
+-- 就是攻擊者的起點，能叫的函式愈少愈好。
+-- ------------------------------------------------------------
+do $$
+declare extra text;
+begin
+  select string_agg(p.proname, ', ' order by p.proname) into extra
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.prokind = 'f'
+    and has_function_privilege('authenticated', p.oid, 'execute')
+    and p.proname not in ('theme_trend', 'theme_members', 'theme_valuation', 'theme_day',
+                          'stock_day', 'us_theme_trend', 'us_theme_members',
+                          'theme_tree', 'theme_chain', 'active_alerts',
+                          'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
+                          'stock_stories', 'etf_board', 'theme_etf',
+                          'my_valuation', 'journal_days', 'bootstrap_me',
+                          'refresh_market', 'refresh_prices', 'sync_my_positions');
+  if extra is not null then
+    raise exception '這些函式不該開給登入者：%', extra;
   end if;
 end $$;
 
