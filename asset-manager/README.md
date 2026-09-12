@@ -1289,6 +1289,100 @@ RLS 擋著（實測新帳號查 stocks / trades / snapshots 全部回 0 列）�
 再把該開的十二支開給 anon、十七支開給 authenticated，最後驗一次對外清單。
 **日後新增函式一定要重跑 `public_read.sql`**，否則又會預設全開。
 
+## 給別人用之前
+
+2026-09-12 補齊的四件事。**排序的依據是「不做會出事」而不是「做了比較好看」。**
+
+### 免責聲明（`legal.js`）
+
+這個 App 會把「26F 本益比 14.2x」跟「報酬/波動 1.74」排在一起，兩個都長得像結論，
+但其中一部分的分母是**人工維護的預估**。看的人有權知道哪些是事實、哪些是猜測。
+
+文字只存一份，三個地方共用：登入頁底下一行、總覽第一次進來一張可以按掉的橫幅、
+設定頁的完整版。完整版分四段：這是什麼（不是投資建議、沒串券商、不經手資金）、
+哪些數字是事實哪些是猜測、可能出錯的地方（上櫃收盤 14:15 才出、來源改版會缺資料）、
+資料來源與授權，以及你的資料存在哪。
+
+橫幅**不擋畫面**。擋起來的東西使用者只會急著關掉，沒有人會讀；
+放在最上面、按一下才消失，讀到的機率反而高。按掉之後只移除那一張卡，
+不整頁 `render()`——按個確認鈕不該把甜甜圈跟捲動位置一起重置。
+
+### 刪除帳號（`supabase/account.sql`）
+
+開放註冊就要能刪，而且不該需要寄信拜託開發者。
+
+`delete_me()` 是全站唯一會刪使用者資料的函式，所以設計原則是**沒有任何方式能刪到別人**：
+不收參數（要刪誰完全由 `auth.uid()` 決定）、沒登入直接 raise、只 grant 給 `authenticated`。
+
+表的清單是**查出來的不是寫死的**——以後新增一張帶 `user_id` 的表會自動一起刪。
+寫死清單的話，漏掉那張就是「以為刪了其實沒刪」，最難發現。
+`auth.users` 的外鍵本來就是 cascade，逐表 delete 是第二道保險，順便回報每張表刪了幾列。
+先刪各表再刪 `auth.users`，順序反過來 cascade 會讓回報的數字全變成 0。
+
+前端要求**把 email 打出來**才執行。一個 `confirm()` 太便宜了——這是全 App 唯一
+不可逆的動作，手滑按到跟真心想刪的代價差太多。
+
+實測（拋棄式帳號）：匿名呼叫回 401 `permission denied`；登入者呼叫回
+`{"rules":4,"stocks":1,"trades":1,"balances":1,"settings":1}`，之後各表全空、
+`auth.users` 那一列也沒了；本人帳號的 2 檔台股／82 筆交易／6 筆快照完全沒動。
+
+### ↻ 的全站共用冷卻（`supabase/refresh_gate.sql`）
+
+按一次 ↻ 會對證交所、櫃買、期交所、Yahoo 連續發 14 輪請求。單人自用沒問題，
+開放註冊之後，一個人連點就是拿我們的資料庫去打別人的網站。
+
+**冷卻是「全站共用」而不是「每人一份」，這是刻意的。** 收盤價是全站共用的一份資料，
+A 剛抓完 10 秒後 B 再按，B 要的東西早就在資料庫裡了。所以 gate 的主鍵是 `kind`，
+不是 `(user_id, kind)`。
+
+| 類別 | 冷卻 |
+|---|---|
+| 報價、匯率（盤中會變） | 60 秒 |
+| 月營收、季報、分析師預估、報酬波動（一天只變一次） | 10 分鐘 |
+| `sync`（把快取的價套到自己持倉） | 不冷卻，只讀本地、只動自己的列 |
+
+失敗不寫 gate：refresh 拋例外時整個交易回滾，來源壞掉時使用者還能重試，不會被鎖住。
+前端另外擋 60 秒，純粹是為了**立刻給回應**——連點時與其跑 14 輪 RPC 再收到 14 個
+「cached」，不如馬上說「剛剛才更新過」。真正的保護在伺服器。
+
+### 可以裝起來用（PWA）
+
+192／512／512-maskable 三個 PNG 圖示（maskable 那個要滿版底色、圖形縮在安全區內，
+因為系統會裁成圓形）、manifest 補上 `id` 與三個捷徑、淺色深色各一個 `theme-color`。
+
+捷徑帶 `?go=…` 進來，**manifest 宣告了就要真的處理**，不然長按選「記一筆交易」
+還是開在總覽。參數只認白名單，直接把網址參數當分頁名會讓人用網址叫出任意分頁；
+用過就 `replaceState` 拿掉，重整不要又跳出來。
+
+`sw.js` 一律 **network-first，不是 cache-first**。cache-first 會讓使用者更新程式之後
+還跑舊版，而且是「清了瀏覽器快取也沒用、要自己去反註冊 service worker」的卡法。
+一個每天要看部位的工具卡在舊版，比慢 200ms 嚴重得多。
+
+**絕對不碰 Supabase 的請求**——那些是部位與交易紀錄，存進 Cache Storage 等於
+把個人資料落地在裝置上。用網域白名單只收自己的檔案與 CDN，實測快取裡
+34 個自己的檔、9 個 CDN、**0 筆 supabase.co**。
+
+帶參數的首頁不另外存一份，否則離線開首頁會拿到 `?go=trade` 那一版，一進去就自己
+彈出交易表單；查詢字串是一次性的動作，不是一個要被快取的頁面。
+
+### 載入失敗要講出來，不能顯示 0
+
+原本連不上時只留一張空白分頁加一個四秒後消失的 toast。現在畫一張「連不上伺服器」，
+說明資料沒有任何變動，並附一個重新載入鈕。
+
+**刻意不畫正常畫面。** `state` 的預設值全是空陣列，硬畫下去 `compute()` 會算出
+「淨資產 0」——那是一個看起來完全正常、實際上完全錯誤的數字。離線時寧可什麼都不顯示，
+也不能顯示假的錢。已經有畫面的話則留著上一次成功載入的真實資料，只 toast 提醒。
+
+### 還沒做的：SMTP
+
+後台目前 `mailer_autoconfirm: true`，註冊不需要收信，**所以 SMTP 不是註冊的阻礙**。
+它擋到的只有「忘記密碼」：沒有自訂 SMTP 時用內建信箱，一小時只寄得出兩封
+（`rate_limit_email_sent: 2`）。要接需要一個寄信服務的帳號，那是站台擁有者才辦得到的。
+
+另外 `disable_signup: false`（開放註冊）且 `security_captcha_enabled: false`，
+機器人可以自己註冊。要不要開驗證碼是個取捨，還沒決定。
+
 ## 資料安全
 
 **更新程式不會動到已輸入的資料與買賣紀錄。** schema 變更一律只做 `add column if not exists`
@@ -1297,17 +1391,37 @@ RLS 擋著（實測新帳號查 stocks / trades / snapshots 全部回 0 列）�
 
 ## 檔案說明
 
+2026-09 把原本 5,012 行的單一 `app.js` 拆成 25 支模組，切法照「誰依賴誰」。
+`core.js` 是葉節點，不 import 任何自家模組。
+
 ```
 asset-manager/
 ├── index.html            頁面骨架（登入、7 個分頁、編輯對話框）
-├── app.js                所有邏輯：登入、CRUD、計算、畫面
+├── app.js                入口：登入、分頁綁定、?go= 捷徑、service worker 註冊
+├── core.js               state、supabase client、$ / $$、格式化小工具（葉節點）
+├── symbols.js            台股代號表、名稱→代號解析、指數期貨規格
+├── instruments.js        選擇權／權證／個股期貨／槓桿型美股 ETF 的算式
+├── live.js               盤中報價疊在收盤價上（只蓋 price）
+├── trades.js             當沖配對、交易成本、已實現損益
+├── portfolio.js          compute()：總資產、曝險、槓桿
+├── rules.js              紀律規則檢查
+├── alerts.js             處置股與注意股
+├── data.js               loadAll / refresh / 分段更新報價 / 載入失敗的畫面
+├── render.js             分頁切換與 RENDERERS 表
+├── dialog.js             通用對話框
+├── forms.js              所有新增／編輯表單、期貨轉倉
+├── widgets.js            卡片、列、按鈕這類共用片段
+├── legal.js              免責聲明（一份文字，登入頁／總覽／設定頁共用）
+├── views/*.js            七個分頁各一支；族群頁再拆 themes/map/screener/etf/stock
 ├── style.css             手機優先樣式，支援深色模式
 ├── config.js             Supabase URL / anon key（要自己填）
-├── charts.js             圓餅圖與折線圖（純 SVG，無外部套件）
+├── charts.js             圓餅圖、折線圖、長條圖（純 SVG，無外部套件）
 ├── tw-stocks.json        台股代號→名稱（自動帶名稱用）
 ├── scripts/build-tw-stocks.mjs  重新產生上面那個檔
-├── manifest.webmanifest  讓 Chrome 可「加到主畫面」
-├── icon.svg              App 圖示
+├── manifest.webmanifest  可安裝成 App：圖示、捷徑、顯示模式
+├── sw.js                 service worker，一律 network-first（見「可以裝起來用」）
+├── icon.svg              App 圖示（向量）
+├── icon-192.png / icon-512.png / icon-512-maskable.png   安裝用的點陣圖示
 └── supabase/
     ├── schema.sql          資料表 + RLS
     ├── prices.sql          每日自動更新報價、月營收、估值的排程
@@ -1331,6 +1445,8 @@ asset-manager/
     ├── company_profile.sql 公司主要經營業務（台股走 MOPS、美股走 stockanalysis）
     ├── stock_story.sql     轉型故事（含走到哪一步、以及但書）
     ├── onboarding.sql      新帳號的起始紀律規則
+    ├── account.sql         刪除帳號（delete_me，不收參數，只作用在 auth.uid()）
+    ├── refresh_gate.sql    ↻ 的全站共用冷卻與快取
     └── screener.sql        伺服器端選股（篩選＋排序＋關鍵字＋只回前 60 檔）
 ```
 
