@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b1220">
+  <!-- 淺色模式下瀏覽器的網址列要跟著白，不然頁面是白的、上面一條深藍很突兀 -->
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -42,6 +44,7 @@
       <button type="button" class="block" id="guest-btn">不登入，先看產業地圖</button>
       <p class="sub muted">族群、產業鏈、今日漲跌、選股都看得到。持倉、交易紀錄與心得要登入。</p>
     </div>
+    <p class="sub muted auth-legal" id="auth-legal"></p>
   </div>
 </section>
 

@@ -132,6 +132,9 @@ grant execute on function public.sync_my_positions()       to authenticated;
 -- **原本漏了**，只是靠「預設全開」才沒出事；收緊 authenticated 之後
 -- 沒補上的話，新使用者會完全沒有紀律規則，而且只有新帳號會踩到。
 grant execute on function public.bootstrap_me()            to authenticated;
+-- 刪除帳號。定義在 account.sql，這裡補 grant——上面那段 revoke 會把它一起收掉，
+-- **少了這一行「刪除帳號」按下去就會是 permission denied**。
+grant execute on function public.delete_me()               to authenticated;
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
                                                numeric, numeric, numeric, text, text, integer) to authenticated;
 grant execute on function public.app_risk()                to authenticated;
@@ -174,7 +177,7 @@ begin
                           'theme_tree', 'theme_chain', 'active_alerts',
                           'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
                           'stock_stories', 'etf_board', 'theme_etf',
-                          'my_valuation', 'journal_days', 'bootstrap_me',
+                          'my_valuation', 'journal_days', 'bootstrap_me', 'delete_me',
                           'refresh_market', 'refresh_prices', 'sync_my_positions');
   if extra is not null then
     raise exception '這些函式不該開給登入者：%', extra;

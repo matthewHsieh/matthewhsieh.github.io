@@ -23,6 +23,7 @@
 // ============================================================
 import { $, $$, fail, sb, state, toast } from './core.js';
 import { refresh, refreshPrices } from './data.js';
+import { DISCLAIMER_ONE_LINE } from './legal.js';
 import { GUEST_TABS, render } from './render.js';
 import { loadTwStocks } from './symbols.js';
 
@@ -123,6 +124,27 @@ function bindAuth() {
   };
 }
 
+// 桌面／主畫面圖示的長按選單（manifest 的 shortcuts）會帶 ?go=…
+// 進來。manifest 宣告了就要真的處理，不然長按選「族群」還是開在總覽。
+// **只認白名單裡的字串**，直接把網址參數當分頁名會讓人用網址叫出任意分頁。
+const GO_TAB = { trade: 'holdings', themes: 'themes', journal: 'journal' };
+
+const goParam = () => {
+  try { return new URL(location.href).searchParams.get('go') || ''; } catch { return ''; }
+};
+
+const startTab = () => GO_TAB[goParam()] || 'overview';
+
+// ?go=trade 是「記一筆交易」那個捷徑，要真的把表單打開，
+// 只切到持倉頁等於沒做到它答應的事。等畫面畫完再開，
+// 不然對話框會蓋在還沒 render 的空白頁上。
+async function runStartAction() {
+  if (goParam() !== 'trade' || !state.user) return;
+  history.replaceState(null, '', location.pathname + location.hash);   // 用過就拿掉，重整不要又跳出來
+  const { logTrade } = await import('./forms.js');
+  logTrade();
+}
+
 async function setUser(user) {
   const changedUser = (user?.id ?? null) !== (state.user?.id ?? null);
   state.user = user;
@@ -130,7 +152,7 @@ async function setUser(user) {
   $('#auth-view').hidden = !!user || state.guest;
   $('#app-view').hidden = !user && !state.guest;
   if (user && changedUser) {
-    state.tab = 'overview';
+    state.tab = startTab();
     await refresh();
     // 新帳號一條規則都沒有，「心得」頁的自動檢查會完全沒作用。
     // bootstrap_me() 本身會擋重複，所以這裡放心叫。
@@ -157,6 +179,12 @@ async function init() {
   bindAuth();
   bindNav();
   $('#guest-btn').onclick = () => enterGuest().catch(fail);
+  // 免責聲明的文字只存在 legal.js 一份，這裡注入而不是寫死在 HTML，
+  // 免得改了一個地方另一個地方還是舊的。
+  // **要防 null。** 加了 service worker 之後，「舊的 HTML ＋ 新的 JS」
+  // 變成真的會發生的組合，少一個元素就讓整個 init() 掛掉、畫面全白。
+  const legal = $('#auth-legal');
+  if (legal) legal.textContent = DISCLAIMER_ONE_LINE;
   await loadTwStocks();
 
   if (!sb) {
@@ -168,6 +196,7 @@ async function init() {
   const { data: { session } } = await sb.auth.getSession();
   await setUser(session?.user ?? null);
   if (!session?.user) $('#auth-view').hidden = false;
+  await runStartAction();
 
   sb.auth.onAuthStateChange((event, session) => {
     setTimeout(async () => {
@@ -185,4 +214,14 @@ async function init() {
   });
 }
 
+// Service worker。**放在最後、而且失敗不能擋住 app**——
+// 它只負責「可以安裝」與「離線打得開」，沒有它整個 app 照常運作。
+// file:// 開啟或舊瀏覽器沒有 serviceWorker 時直接跳過。
+function registerSw() {
+  if (!('serviceWorker' in navigator)) return;
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
+  navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('sw 註冊失敗', e));
+}
+
 init();
+registerSw();

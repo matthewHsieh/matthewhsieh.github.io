@@ -88,6 +88,9 @@
     --loss: #4ade80;
     --warn: #fbbf24;
     --crit: #fca5a5;
+    /* 深色底下 #dc2626 對比只有 3.5:1，刪除鈕與錯誤訊息都偏暗。
+       亮色模式那一個紅在白底上很清楚，直接沿用到深色就不行。 */
+    --danger: #fca5a5;
     /* 深色底的陰影要更深才看得出來，淺色那組在深底上等於不存在 */
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
     --shadow-2: 0 2px 6px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .3);
@@ -155,6 +158,24 @@ label input, label select { color: var(--text); }
   border-radius: var(--radius); padding: 24px;
 }
 .auth-card h1 { margin: 0 0 12px; font-size: 24px; }
+/* 登入頁的免責聲明。用一條上緣線跟上面的按鈕分開，字級最小、不搶版面，
+   但一定看得到——放在需要按下去才展開的地方等於沒放。 */
+.auth-legal {
+  margin: 16px 0 0; padding-top: 12px;
+  border-top: 1px solid var(--border); line-height: 1.7;
+}
+
+/* 第一次進來的確認橫幅。
+   **不能跟 hero 一樣用藍色淡底**——兩張藍卡上下相疊，
+   讀者第一眼會分不出哪一張是這頁的重點（是淨資產，不是這張）。
+   所以這裡只用左側一條色帶點出「先看這個」，底色維持中性。
+   也刻意不用警告色：它不是錯誤，只是一段要先讀的說明。 */
+.ack-card {
+  border-left: 3px solid var(--primary);
+  background: var(--card-2);
+}
+.ack-card .sub { margin: 6px 0 0; line-height: 1.7; }
+.ack-card #ack-btn { margin-top: 14px; }
 .auth-switch { font-size: 14px; color: var(--muted); }
 
 /* ---------- App 骨架 ---------- */
@@ -279,6 +300,14 @@ div.bar {
   border: 1px solid var(--border);
 }
 .bar-fill { height: 100%; background: var(--primary); border-radius: 99px; transition: width .3s; }
+/* 不可逆動作放在卡片最底下，用一條線隔開。
+   跟上面的「登出」擺在一起會讓人以為是同一類的操作。 */
+.danger-zone {
+  margin-top: var(--sp-4); padding-top: var(--sp-3);
+  border-top: 1px solid color-mix(in srgb, var(--crit) 30%, var(--border));
+}
+.danger-zone .sub { margin: 8px 0 0; line-height: 1.7; }
+
 .defs dt { font-weight: 600; margin-top: var(--sp-2); }
 .defs dd { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
 

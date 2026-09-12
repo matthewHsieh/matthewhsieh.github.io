@@ -1,4 +1,4 @@
-import { $, DEFAULT_SETTINGS, fail, num, round2, sb, state, toast, todayISO } from './core.js';
+import { $, DEFAULT_SETTINGS, esc, fail, num, round2, sb, state, toast, todayISO } from './core.js';
 import { ivSince } from './instruments.js';
 import { compute } from './portfolio.js';
 import { render } from './render.js';
@@ -92,13 +92,41 @@ export async function loadAll() {
   state.priceInfo = [...state.priceStatus].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))[0] ?? null;
 }
 
+// 載入失敗時畫這一張，**不要去畫正常的分頁**。
+//   state 的預設值全是空陣列，硬畫下去 compute() 會算出「淨資產 0」，
+//   而那是一個看起來完全正常、實際上完全錯誤的數字。
+//   離線時寧可什麼都不顯示，也不能顯示假的錢。
+function renderLoadFailure(err) {
+  const el = $(`.tab-panel[data-tab="${state.tab}"]`);
+  if (!el) return;
+  // 已經有畫面就留著——那是上一次成功載入的真實資料，比清空有用
+  if (el.innerHTML.trim()) return toast('更新失敗，畫面上是上次載入的資料', 4000);
+
+  const off = typeof navigator !== 'undefined' && navigator.onLine === false;
+  el.innerHTML = `
+    <div class="card">
+      <div class="list-title">${off ? '目前離線' : '連不上伺服器'}</div>
+      <p class="sub">${off
+        ? '沒有網路，讀不到你的部位與行情。'
+        : '連得上網路，但伺服器沒有回應。'}
+        <b>你的資料沒有任何變動</b>，連上線之後按下面重新載入就會回來。</p>
+      <p class="sub muted">這裡刻意不顯示任何數字。抓不到資料時把欄位填 0，
+        看起來會像「淨資產歸零」，那比空白危險得多。</p>
+      <button type="button" class="primary block" id="retry-load">重新載入</button>
+      <p class="hint">${esc(String(err?.message || err || '').slice(0, 160))}</p>
+    </div>`;
+  const b = $('#retry-load', el);
+  if (b) b.onclick = () => { b.disabled = true; b.textContent = '載入中…'; refresh(); };
+}
+
 export async function refresh(msg) {
   try {
     await loadAll();
     render();
     if (msg) toast(msg);
   } catch (e) {
-    fail(e);
+    console.error(e);
+    renderLoadFailure(e);
   }
 }
 
@@ -119,7 +147,7 @@ export async function runStagedRefresh(onStage) {
     try {
       const { data, error } = await sb.rpc('refresh_market', { p_kind: kind });
       if (error) throw error;
-      done.push({ kind, label, ok: true, rows: data?.rows ?? 0 });
+      done.push({ kind, label, ok: true, rows: data?.rows ?? 0, cached: !!data?.cached });
     } catch (e) {
       console.warn('refresh ' + kind, e);
       done.push({ kind, label, ok: false, msg: e?.message || String(e) });
@@ -134,7 +162,24 @@ export function refreshSummary(done) {
   return bad.map((d) => d.label).join('、') + ' 更新失敗';
 }
 
+// 全部都是伺服器回的快取 = 剛剛才有人抓過，資料庫裡就是最新的。
+// 要講出來，不然使用者看到一秒就跑完會以為沒動作。
+export const allCached = (done) => done.length > 0 && done.every((d) => d.ok && d.cached);
+
+// 前端的冷卻。伺服器那邊 refresh_market() 已經有一份全站共用的冷卻，
+// 這裡再擋一層純粹是為了**立刻給回應**——
+// 連點的時候與其跑 14 輪 RPC 再收到 14 個「cached」，
+// 不如馬上說「剛剛才更新過」。真正的保護在伺服器，這裡只是禮貌。
+const MANUAL_COOLDOWN_MS = 60_000;
+let lastManualRefresh = 0;
+
 export async function refreshPrices() {
+  const waited = Date.now() - lastManualRefresh;
+  if (waited < MANUAL_COOLDOWN_MS) {
+    return toast(`剛剛才更新過，${Math.ceil((MANUAL_COOLDOWN_MS - waited) / 1000)} 秒後可以再按`);
+  }
+  lastManualRefresh = Date.now();
+
   const btn = $('#refresh-btn');
   btn.classList.add('spin');
   try {
@@ -142,8 +187,14 @@ export async function refreshPrices() {
     await loadAll();
     render();
     const bad = refreshSummary(done);
-    toast(bad ? bad + '，其餘已更新' : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`, bad ? 5000 : 2500);
+    toast(
+      bad ? bad + '，其餘已更新'
+        : allCached(done) ? '已是最新（剛剛更新過，直接用快取）'
+          : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`,
+      bad ? 5000 : 2500);
   } catch (e) {
+    // 整批失敗就把冷卻放掉，不要讓使用者被鎖著不能重試
+    lastManualRefresh = 0;
     fail(e);
   } finally {
     btn.classList.remove('spin');

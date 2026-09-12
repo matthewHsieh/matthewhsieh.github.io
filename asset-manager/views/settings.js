@@ -1,5 +1,6 @@
 import { $, esc, fail, fmt, num, sb, state, toast } from '../core.js';
-import { MARKET_NAME, loadAll, newestAsOf, refreshSummary, runStagedRefresh, statusOf } from '../data.js';
+import { MARKET_NAME, allCached, loadAll, newestAsOf, refreshSummary, runStagedRefresh, statusOf } from '../data.js';
+import { disclaimerCardHtml } from '../legal.js';
 import { render } from '../render.js';
 import { TW_ENTRIES } from '../symbols.js';
 import { DEFAULT_FEES, feeCfg } from '../trades.js';
@@ -65,13 +66,24 @@ export function renderSettings(el) {
       <button type="button" class="block" id="force-price">立即重新抓取報價</button>
       <p class="hint">每個交易日 14:30、16:00、18:00、21:00（台股／期貨／選擇權／權證／匯率）與隔日 06:00（美股）自動更新，
         並自動存一筆快照。手機沒開也會跑，平常不需要按這個按鈕。
-        按下去會一項一項抓，大約 6 秒；某一項失敗不影響其他項。</p>
+        按下去會一項一項抓，大約 6 秒；某一項失敗不影響其他項。
+        報價是<b>全站共用的一份</b>，剛剛已經有人抓過的話會直接給你那一份，不會再去打來源一次
+        （報價 60 秒內、營收與分析師預估 10 分鐘內）。</p>
     </div>
     <div class="card">
       <div class="list-title">帳號</div>
       <p class="muted">${esc(state.user.email || '')}</p>
       <button type="button" class="block" id="logout-btn">登出</button>
+      <div class="danger-zone">
+        <div class="row-between">
+          <span><b>刪除帳號</b></span>
+          <button type="button" class="small danger" id="del-acct">刪除帳號</button>
+        </div>
+        <p class="sub muted">把部位、交易紀錄、快照、心得、紀律規則與設定全部刪掉，並註銷登入帳號。
+          <b>刪掉就救不回來</b>，這裡沒有備份也沒有垃圾桶。要留底的話先到「紀錄」頁自己抄一份。</p>
+      </div>
     </div>
+    ${disclaimerCardHtml()}
     <div class="card">
       <div class="list-title">數字怎麼算</div>
       <dl class="defs">
@@ -125,7 +137,11 @@ export function renderSettings(el) {
       const done = await runStagedRefresh((label) => { b.textContent = `更新中：${label}…`; });
       await loadAll(); render();
       const bad = refreshSummary(done);
-      toast(bad ? bad + '，其餘已更新' : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`, bad ? 5000 : 2500);
+      toast(
+        bad ? bad + '，其餘已更新'
+          : allCached(done) ? '已是最新（剛剛更新過，直接用快取）'
+            : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`,
+        bad ? 5000 : 2500);
     } catch (e) {
       fail(e);
       b.disabled = false; b.textContent = '立即重新抓取報價';
@@ -134,5 +150,30 @@ export function renderSettings(el) {
   $('#logout-btn', el).onclick = async () => {
     const { error } = await sb.auth.signOut();
     if (error) fail(error);
+  };
+
+  // 刪帳號要打字確認，不能只按一次 OK。
+  // **一個 confirm() 太便宜了**——這是全 app 唯一不可逆的動作，
+  // 手滑按到跟真心想刪的代價差太多，所以要求把 email 打出來。
+  $('#del-acct', el).onclick = async () => {
+    const email = String(state.user.email || '');
+    const typed = prompt(
+      `這會刪掉你所有的資料，而且救不回來。\n\n確定的話，請輸入你的 email：\n${email}`);
+    if (typed === null) return;                       // 按取消
+    if (typed.trim().toLowerCase() !== email.toLowerCase()) return toast('email 不符，已取消');
+
+    const b = $('#del-acct', el);
+    b.disabled = true; b.textContent = '刪除中…';
+    const { data, error } = await sb.rpc('delete_me', {});
+    if (error) {
+      b.disabled = false; b.textContent = '刪除帳號';
+      return fail(error);
+    }
+    // 回報刪了什麼。使用者按下去之後看到「刪了 82 筆交易紀錄」，
+    // 比只看到一句「已刪除」更確定事情真的發生了。
+    const n = Object.values(data || {}).reduce((a, v) => a + num(v), 0);
+    toast(`已刪除 ${fmt(n)} 筆資料，帳號已註銷`, 5000);
+    await sb.auth.signOut();
+    location.reload();
   };
 }

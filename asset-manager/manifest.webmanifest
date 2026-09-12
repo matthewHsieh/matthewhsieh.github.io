@@ -1,15 +1,65 @@
 {
+  "id": "/asset-manager/",
   "name": "資產管理",
   "short_name": "資產",
   "description": "股票、期貨、複委託、負債、淨資產與槓桿追蹤",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "orientation": "portrait",
   "background_color": "#0b1220",
   "theme_color": "#0b1220",
   "lang": "zh-Hant",
+  "dir": "ltr",
+  "categories": [
+    "finance",
+    "productivity"
+  ],
   "icons": [
-    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "記一筆交易",
+      "short_name": "記帳",
+      "url": "./?go=trade"
+    },
+    {
+      "name": "族群趨勢",
+      "short_name": "族群",
+      "url": "./?go=themes"
+    },
+    {
+      "name": "今日心得",
+      "short_name": "心得",
+      "url": "./?go=journal"
+    }
   ]
 }

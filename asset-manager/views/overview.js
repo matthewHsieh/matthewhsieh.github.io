@@ -2,6 +2,7 @@ import { donutChart } from '../charts.js';
 import { ALERT_LABEL, alertBadge, heldAlerts } from '../alerts.js';
 import { $, $$, esc, fmt, fmtCompact, fmtX, isNum, norm, num, pct, plClass, signed, state, sum } from '../core.js';
 import { saveSnapshot } from '../data.js';
+import { ackBannerHtml, ackDisclaimer, disclaimerAcked } from '../legal.js';
 import { compute, exposureSlices } from '../portfolio.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
@@ -13,6 +14,7 @@ export function renderOverview(el) {
   const progressWidth = Math.min(100, Math.max(0, (isNum(c.progress) ? c.progress : 0) * 100)).toFixed(1);
 
   el.innerHTML = `
+    ${disclaimerAcked() ? '' : ackBannerHtml()}
     <div class="card hero">
       <div class="label">淨資產 (TWD)</div>
       <div class="big">${fmt(c.netAssets)}</div>
@@ -133,6 +135,10 @@ export function renderOverview(el) {
   drawDonut();
 
   $('#snap-btn', el).onclick = saveSnapshot;
+  // 按掉之後只重畫這一張卡，不要整頁 render()——
+  // 整頁重畫會把甜甜圈與捲動位置一起重置，按個確認鈕不該有那種副作用。
+  const ackBtn = $('#ack-btn', el);
+  if (ackBtn) ackBtn.onclick = () => { ackDisclaimer(); ackBtn.closest('.ack-card').remove(); };
   bindListActions(el);
   bindStockOpen(el);
 }
