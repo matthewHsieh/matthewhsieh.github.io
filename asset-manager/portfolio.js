@@ -1,5 +1,5 @@
 import { fmt, fmtMax, isNum, norm, num, state, sum } from './core.js';
-import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
+import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
 import { futNotional, futPl, pxOf } from './live.js';
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -24,8 +24,14 @@ export function exposureSlices() {
     });
   }
   for (const u of state.us) {
-    const v = num(u.shares) * num(u.price_usd) * rate;
-    if (v > 0) items.push({ label: `${norm(u.symbol)} ${u.name || ''}`.trim(), sub: '複委託', value: v });
+    // 槓桿型的要用曝險不是市值，否則圓餅圖會把 2X 的部位畫成一半大小
+    const v = usExposureUsd(u) * rate;
+    const lv = usLevLabel(u);
+    if (v > 0) items.push({
+      label: `${norm(u.symbol)} ${u.name || ''}`.trim(),
+      sub: lv ? `複委託・${lv}` : '複委託',
+      value: v,
+    });
   }
   for (const w of state.warrants) {
     const v = Math.abs(warExposure(w) ?? 0);
@@ -62,6 +68,11 @@ export function compute() {
   const usValueUsd = sum(us, (s) => num(s.shares) * num(s.price_usd));
   const usCostUsd = sum(us, (s) => num(s.shares) * (isNum(s.cost_usd) ? num(s.cost_usd) : num(s.price_usd)));
   const usValue = usValueUsd * rate;
+  // **槓桿型 ETF 的曝險要乘倍數，資產價值不行。**
+  // MUU 是 2X MU：買 US$3,143 只拿得回 US$3,143（資產），
+  // 但承受的是 MU 的 US$6,286 波動（曝險）。跟期貨「權益 vs 名目」一樣。
+  const usExposure = sum(us, usExposureUsd) * rate;
+  const usLevExtra = usExposure - usValue;   // 純粹因為槓桿多出來的曝險
 
   const longs = futures.filter((f) => f.side !== 'short');
   const shorts = futures.filter((f) => f.side === 'short');
@@ -103,7 +114,7 @@ export function compute() {
 
   const totalAssets = stockValue + usValue + futEquity + cash + optMarket + warMarket;
   const netAssets = totalAssets - liabilities;
-  const exposure = stockValue + usValue + futGross + optExposure + warExp;
+  const exposure = stockValue + usExposure + futGross + optExposure + warExp;
 
   const leverageAsset = netAssets > 0 ? totalAssets / netAssets : NaN;
   // 曝險槓桿以「總資產」為分母：淨資產為負時仍算得出來
@@ -113,7 +124,7 @@ export function compute() {
   const progress = target > 0 ? netAssets / target : NaN;
 
   return {
-    rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue,
+    rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
     optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optRiskUnlimited, optNoDelta,
     warMarket, warExp, warProfit, warMaxLoss, warTheta, warNoDelta,

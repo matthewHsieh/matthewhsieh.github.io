@@ -105,3 +105,51 @@ export function fmtQty(market, q) {
 }
 
 export const fmtNet = (net) => (net === 0 ? '無部位' : `${net > 0 ? '多' : '空'} ${fmtMax(Math.abs(net), 2)} 口`);
+
+// ------------------------------------------------------------
+// 槓桿型美股 ETF
+//
+//   MUU 是「Direxion Daily MU Bull 2X」——買 US$3,143 承受的是 MU 的
+//   US$6,286 波動。**曝險要乘倍數，資產價值不能乘**：賣掉只拿得回市值。
+//   跟期貨「名目 vs 權益」是同一回事。
+//
+//   倍數優先用使用者自己填的（us_stocks.leverage），沒填就從名稱推。
+//   發行商的命名其實很固定，兩種寫法都要認：
+//     數字      Bull 2X / 2X Long / Bear 1X / 3X Shares
+//     ProShares Ultra = 2、UltraPro = 3，不寫數字
+//   **推不出來就回 1，而且畫面上要把推出來的倍數標出來**——
+//   標出來使用者才看得到推錯了，默默算錯是最糟的。
+// ------------------------------------------------------------
+export function usLeverage(u) {
+  if (isNum(u?.leverage)) return num(u.leverage);
+  const nm = String(u?.name || '');
+  if (!nm) return 1;
+
+  // ProShares 把倍數寫成字，而且 Short 是黏在一起的（UltraShort、UltraPro Short）。
+  // 這幾個不能靠詞邊界去切——"UltraShort" 裡的 ultra 與 short 中間沒有邊界。
+  if (/ultra\s*pro\s*short/i.test(nm)) return -3;
+  if (/ultra\s*short/i.test(nm)) return -2;
+  if (/ultra\s*pro/i.test(nm)) return 3;
+
+  // 其餘看數字：Bull 2X / 2X Long / Bear 1X / 3X Shares
+  const digit = nm.match(/(?:^|[\s(-])(\d(?:\.\d)?)\s*[xX]\b/);
+  if (digit) {
+    const x = Number(digit[1]);
+    if (!Number.isFinite(x) || x <= 0) return 1;
+    // **方向只在真的找到倍數時才判斷。**
+    // 不然 iShares Short Treasury Bond 這種名字裡有 short 的債券 ETF
+    // 會被當成反向，倍數標成 -1X。
+    return /\b(bear|short|inverse)\b/i.test(nm) ? -x : x;
+  }
+  if (/\bultra\b/i.test(nm)) return 2;
+  return 1;
+}
+
+// 曝險取絕對值：反向 ETF 一樣有部位風險，跟期貨空單的算法一致
+export const usExposureUsd = (u) => num(u.shares) * num(u.price_usd) * Math.abs(usLeverage(u));
+
+// 1 倍的不用標，標了只是雜訊
+export const usLevLabel = (u) => {
+  const x = usLeverage(u);
+  return Math.abs(x) === 1 && x > 0 ? '' : `${x < 0 ? '-' : ''}${Math.abs(x)}X`;
+};

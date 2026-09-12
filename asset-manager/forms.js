@@ -33,6 +33,7 @@ const ENTITIES = {
       { key: 'shares', label: '股數', type: 'number', required: true },
       { key: 'price_usd', label: '現價 (USD，每日自動更新)', type: 'number', required: true },
       { key: 'cost_usd', label: '平均成本 (USD，選填)', type: 'number' },
+      { key: 'leverage', label: '槓桿倍數（選填，留空會從名稱判斷；反向填負數）', type: 'number' },
     ],
   },
   balance: {

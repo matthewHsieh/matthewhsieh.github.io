@@ -1,7 +1,7 @@
 import { alertBadge, alertOf } from '../alerts.js';
 import { $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
-import { fmtQty, futDisplayName, ivChange, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
+import { fmtQty, futDisplayName, ivChange, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
@@ -40,9 +40,13 @@ export function renderHoldings(el) {
   const usRows = state.us.map((s) => {
     const v = num(s.shares) * num(s.price_usd);
     const pl = isNum(s.cost_usd) ? v - num(s.shares) * num(s.cost_usd) : null;
+    // 槓桿型要把倍數標出來，而且把曝險寫清楚——
+    // 市值跟曝險是兩個數字，不寫出來使用者會以為只承受市值的風險
+    const lv = usLevLabel(s);
     return itemRow('us', s.id,
-      `${esc(s.symbol)} ${esc(s.name || '')}`,
-      `${fmtMax(s.shares, 4)} 股 × ${fmtMax(s.price_usd, 2)}${isNum(s.cost_usd) ? `　均價 ${fmtMax(s.cost_usd, 2)}` : ''}`,
+      `${esc(s.symbol)} ${esc(s.name || '')}${lv ? `<span class="badge lev-badge">${esc(lv)}</span>` : ''}`,
+      `${fmtMax(s.shares, 4)} 股 × ${fmtMax(s.price_usd, 2)}${isNum(s.cost_usd) ? `　均價 ${fmtMax(s.cost_usd, 2)}` : ''}${
+        lv ? `　曝險 US$ ${fmt(usExposureUsd(s), 2)}` : ''}`,
       `US$ ${fmt(v, 2)}`,
       pl === null ? `≈ ${fmt(v * c.rate)}` : `<span class="${plClass(pl)}">${signed(pl, 2)}</span> ≈ ${fmt(v * c.rate)}`,
       `us:${norm(s.symbol)}`);

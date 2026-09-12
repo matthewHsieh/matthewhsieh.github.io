@@ -66,6 +66,7 @@ export function renderOverview(el) {
       <div class="list-title">曝險</div>
       ${line('台股市值', c.stockValue)}
       ${line('複委託市值', c.usValue)}
+      ${c.usLevExtra > 0 ? line('　└ 槓桿型多出來的曝險', c.usLevExtra) : ''}
       ${line('指數期貨名目', c.futIndex)}
       ${line('個股期貨名目', c.futStock)}
       ${line('選擇權 delta 曝險', c.optExposure)}

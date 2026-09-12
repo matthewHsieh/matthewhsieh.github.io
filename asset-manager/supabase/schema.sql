@@ -114,9 +114,16 @@ create table if not exists public.us_stocks (
   shares     numeric not null default 0,
   price_usd  numeric not null default 0,         -- 每日自動更新
   cost_usd   numeric,
+  -- 槓桿型 ETF 的倍數（MUU 是 2、TQQQ 是 3、反向的填負數）。
+  -- **只影響曝險，不影響資產價值**——賣掉只拿得回市值，
+  -- 但你承受的是標的的兩倍波動。跟期貨「名目 vs 權益」是同一回事。
+  -- 留空的話從名稱推（見 usLeverage），推不出來就當 1。
+  leverage   numeric,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- 既有資料庫補欄位（additive，不動任何已輸入的內容）
+alter table public.us_stocks add column if not exists leverage numeric;
 
 -- ------------------------------------------------------------
 -- 現金、負債、期貨權益數（同一張表，用 kind 區分）

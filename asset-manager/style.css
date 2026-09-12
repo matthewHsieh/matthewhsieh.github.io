@@ -964,3 +964,6 @@ textarea.journal-input {
   .tab-panel[data-tab="holdings"] > * { break-inside: avoid; margin: 0 0 12px; }
   .tab-panel[data-tab="holdings"] > button.block { column-span: all; width: 100%; }
 }
+
+/* 槓桿型 ETF 的倍數標記。曝險是市值的好幾倍，一定要在部位旁邊看得到 */
+.lev-badge { background: var(--gain); color: #fff; font-weight: 700; }
