@@ -4,7 +4,10 @@ import { futNotional, futPl, pxOf } from './live.js';
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
 // 依金額由大到小排，前 7 名各給一個顏色，其餘合併成「其他」
-const POS_COLORS = ['var(--pos-1)', 'var(--pos-2)', 'var(--pos-3)', 'var(--pos-4)', 'var(--pos-5)', 'var(--pos-6)', 'var(--pos-7)'];
+// 六色，不是七色。**紅與綠刻意不用**——在這個 app 紅是漲、綠是跌，
+// 拿來當部位識別色會讓人以為那一塊在漲跌。狀態色要留給狀態。
+// 第七名以後併進「其他」，圓餅圖本來也不該切超過六塊。
+const POS_COLORS = ['var(--pos-1)', 'var(--pos-2)', 'var(--pos-3)', 'var(--pos-4)', 'var(--pos-5)', 'var(--pos-6)'];
 
 const POS_MAX = POS_COLORS.length;
 

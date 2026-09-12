@@ -66,14 +66,14 @@ export function renderOverview(el) {
       <div class="list-title">曝險</div>
       ${line('台股市值', c.stockValue)}
       ${line('複委託市值', c.usValue)}
-      ${c.usLevExtra > 0 ? line('　└ 槓桿型多出來的曝險', c.usLevExtra) : ''}
+      ${c.usLevExtra > 0 ? line('　└ 槓桿型多出來的曝險', c.usLevExtra, 0, 'sub') : ''}
       ${line('指數期貨名目', c.futIndex)}
       ${line('個股期貨名目', c.futStock)}
       ${line('選擇權 delta 曝險', c.optExposure)}
       ${line('權證 delta 曝險', c.warExp)}
       ${line('期貨名目・多單', c.futLong)}
       ${line('期貨名目・空單', c.futShort)}
-      ${line('總曝險', c.exposure)}
+      ${line('總曝險', c.exposure, 0, 'total')}
       ${c.warNoDelta || c.optNoDelta ? `<p class="hint warn-hint">⚠ 有${
         [c.warNoDelta ? '權證' : '', c.optNoDelta ? '選擇權' : ''].filter(Boolean).join('、')
         }部位還沒算出 delta，<b>這些部位目前沒有計入上面的總曝險</b>，實際曝險比顯示的高。

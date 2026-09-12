@@ -1,16 +1,71 @@
 :root {
-  --bg: #f3f4f6;
+  /* ---------- 表面 ----------
+     三層：頁面底 → 卡片 → 卡片內的凹陷區塊。
+     原本只有 bg 與 card 兩層，所有卡片看起來一樣重，
+     讀者分不出「淨資產」跟「目標金額」哪個是重點。 */
+  --bg: #f2f4f7;
   --card: #ffffff;
-  --text: #111827;
-  --muted: #6b7280;
-  --border: #e5e7eb;
+  --card-2: #f7f8fa;        /* 卡片內部的次級區塊 */
+  --border: #e3e6ea;
+  --border-strong: #cfd4db;
+
+  /* ---------- 文字 ----------
+     三階：主要 / 次要 / 標籤。標籤比 muted 再弱一階，
+     這樣「總資產」這種欄位名就不會跟數值搶注意力。 */
+  --text: #0f172a;
+  --muted: #64748b;
+  --faint: #94a3b8;
+
   --primary: #2563eb;
   --on-primary: #ffffff;
   --danger: #dc2626;
   --gain: #dc2626;   /* 台灣慣例：紅漲 */
   --loss: #16a34a;   /* 綠跌 */
+
+  /* ---------- 狀態色 ----------
+     **漲跌色不能拿來當狀態色。** 原本 warn-badge 用 --danger #dc2626，
+     跟 --gain 是同一個紅——「無分析師覆蓋」的紅標籤跟旁邊在漲的紅數字
+     長得一模一樣，而且 alert-punish、lev-badge 也直接用 --gain。
+     狀態另外給一組；標籤一律淡底＋彩色字，
+     跟「數字本身被染色」的漲跌在形狀上就分得開。 */
+  --warn: #b45309;   /* 琥珀：注意股、模型不適用、槓桿倍數 */
+  --crit: #b91c1c;   /* 深紅：處置股這種真的嚴重的 */
+
+  /* ---------- 字級 ----------
+     1.20 左右的比例。原本字級散在各處硬寫，改不動也對不齊。 */
+  --fs-xs: 11px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+  --fs-hero: 40px;
+
+  /* ---------- 間距 ----------
+     4px 基準。卡片之間比卡片內部大，層次才出得來。 */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  /* ---------- 立體 ----------
+     很輕的陰影。財務資料不需要華麗，但卡片要浮得起來，
+     不然一整頁平的看不出分組。 */
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, .04), 0 1px 3px rgba(15, 23, 42, .06);
+  --shadow-2: 0 2px 4px rgba(15, 23, 42, .05), 0 6px 16px rgba(15, 23, 42, .08);
+
   --nav-h: 60px;
-  --radius: 14px;
+  /* 內容欄寬。頁首標題、底部導覽都跟著它對齊——
+     不然在 1440px 螢幕上標題貼最左、導覽七顆按鈕攤滿整個寬度，
+     中間的卡片卻只有 720px，看起來像兩個不同的畫面。 */
+  --container: 720px;
+  /* 頁首與底部導覽對齊的寬度。**刻意不跟著 --container 一起放寬**——
+     只有持倉與族群會用到 1120px，其餘分頁都是 720px，
+     外框跟著最寬的那兩頁走的話，多數頁面的標題會離第一張卡片兩百多 px。 */
+  --rail: 720px;
+  --radius: 16px;
+  --radius-sm: 10px;
+
   /* 產業地圖三段。明暗共用一組，兩種模式都通過 dataviz 的六項檢查
      （亮度帶、彩度、色盲分離 ΔE 19.3、一般視覺 23.3、對比 ≥3:1）。
      冷 → 中 → 暖，順序本身就在表達上游到下游的流向。 */
@@ -20,14 +75,22 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0b1220;
-    --card: #161f31;
-    --text: #e5e7eb;
+    --bg: #0a0f1a;
+    --card: #141c2b;
+    --card-2: #1b2435;
+    --border: #253045;
+    --border-strong: #36425c;
+    --text: #e8edf5;
     --muted: #94a3b8;
-    --border: #283548;
+    --faint: #6b7a90;
     --primary: #3b82f6;
     --gain: #f87171;
     --loss: #4ade80;
+    --warn: #fbbf24;
+    --crit: #fca5a5;
+    /* 深色底的陰影要更深才看得出來，淺色那組在深底上等於不存在 */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-2: 0 2px 6px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .3);
   }
 }
 
@@ -51,12 +114,12 @@ button {
   border-radius: 10px;
   padding: 10px 14px;
 }
-button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 600; }
+button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 600; box-shadow: var(--shadow-1); }
 button.danger { color: var(--danger); border-color: var(--danger); }
 button.link { background: none; border: none; padding: 0; color: var(--primary); text-decoration: underline; }
 button.link.danger { color: var(--danger); }
 button.small { padding: 6px 10px; font-size: 14px; }
-button.block { display: block; width: 100%; padding: 14px; margin: 8px 0; }
+button.block { display: block; width: 100%; padding: 14px; margin: var(--sp-2) 0; border-radius: var(--radius-sm); }
 button.icon { border: none; background: none; font-size: 22px; padding: 4px 8px; line-height: 1; }
 button:disabled { opacity: .6; cursor: default; }
 
@@ -75,9 +138,14 @@ label input, label select { color: var(--text); }
 .muted { color: var(--muted); }
 .gain { color: var(--gain); }
 .loss { color: var(--loss); }
-.hint { color: var(--muted); font-size: 13px; padding: 0 4px; line-height: 1.6; }
+.hint { color: var(--muted); font-size: var(--fs-sm); padding: 0 4px; line-height: 1.7; }
 .msg { min-height: 1.4em; color: var(--danger); font-size: 14px; }
-.warn { background: #fef3c7; color: #92400e; padding: 10px; border-radius: 10px; font-size: 14px; }
+.warn {
+  background: color-mix(in srgb, var(--warn) 13%, var(--card));
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent);
+  padding: 10px; border-radius: var(--radius-sm); font-size: 14px;
+}
 
 /* ---------- 登入 ---------- */
 .auth { min-height: 100dvh; display: flex; align-items: center; justify-content: center; padding: 20px; }
@@ -93,61 +161,163 @@ label input, label select { color: var(--text); }
 .topbar {
   position: sticky; top: 0; z-index: 5;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px;
+  padding: 12px max(var(--sp-4), calc((100% - var(--rail)) / 2 + var(--sp-3)));
   padding-top: calc(12px + env(safe-area-inset-top));
-  background: var(--card); border-bottom: 1px solid var(--border);
-  font-weight: 700; font-size: 18px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+  font-weight: 700; font-size: var(--fs-lg); letter-spacing: .01em;
 }
 #main {
   padding: 12px 12px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom));
-  max-width: 720px; margin: 0 auto;
+  max-width: var(--container); margin: 0 auto;
 }
 .bottom-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
   display: flex;
-  background: var(--card); border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom);
+  padding-inline: max(0px, calc((100% - var(--rail)) / 2));
 }
 .bottom-nav button {
+  position: relative;
   flex: 1; border: none; border-radius: 0; background: none;
-  height: var(--nav-h); font-size: 13px; color: var(--muted);
+  height: var(--nav-h); font-size: var(--fs-sm); color: var(--muted);
 }
 .bottom-nav button.active { color: var(--primary); font-weight: 700; }
+/* 現在在哪一頁，只靠顏色不夠明顯，補一條頂端指示線 */
+.bottom-nav button.active::before {
+  content: ''; position: absolute; top: -1px; left: 22%; right: 22%;
+  height: 2px; border-radius: 0 0 2px 2px; background: var(--primary);
+}
 
-/* ---------- 卡片 ---------- */
+/* ---------- 卡片 ----------
+   **層級是這一版最主要的修正。** 原本每張卡片同一個邊框同一個 padding，
+   淨資產（結論）跟目標金額（附註）看起來一樣重，一整頁讀不出重點。
+   現在分三階：hero（頭條）→ 一般卡片 → 卡片內的次級區塊。 */
 .card {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+  border-radius: var(--radius); padding: var(--sp-4);
+  margin-bottom: var(--sp-3);
+  box-shadow: var(--shadow-1);
 }
-.hero { text-align: center; padding: 20px 14px; }
-.hero .big { font-size: 36px; font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; margin: 4px 0; }
-.label { font-size: 13px; color: var(--muted); }
-.sub { font-size: 13px; }
-.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-bottom: 12px; }
+
+/* 頭條：淨資產。
+   **只靠陰影不夠**——深色模式下陰影幾乎看不見，頭條還是跟下面的
+   總資產／負債長得一樣。所以再加一層很淡的品牌色底，
+   讓它在兩種模式下都明顯是「這一頁的結論」。 */
+.hero {
+  text-align: center; padding: var(--sp-5) var(--sp-4);
+  box-shadow: var(--shadow-2);
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--border));
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--primary) 9%, var(--card)) 0%,
+      var(--card) 72%);
+}
+/* 漲跌幅做成藥丸，跟旁邊的說明文字分開，數字才不會混在句子裡 */
+.hero .sub {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--card-2); border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.hero .sub.gain { background: color-mix(in srgb, var(--gain) 12%, transparent); border-color: color-mix(in srgb, var(--gain) 28%, transparent); }
+.hero .sub.loss { background: color-mix(in srgb, var(--loss) 12%, transparent); border-color: color-mix(in srgb, var(--loss) 28%, transparent); }
+.hero .big {
+  font-size: var(--fs-hero); font-weight: 800; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; margin: var(--sp-2) 0 var(--sp-1);
+  line-height: 1.1;
+}
+
+/* 欄位名。比 muted 再弱一階、加一點字距，才不會跟數值搶注意力 */
+.label {
+  font-size: var(--fs-sm); color: var(--faint);
+  letter-spacing: .03em; font-weight: 500;
+}
+.sub { font-size: var(--fs-sm); }
+.grid2 {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-3); margin-bottom: var(--sp-3);
+}
 .grid2 .card { margin: 0; }
-.stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.list-title { font-weight: 700; }
-.line { padding: 8px 0; font-variant-numeric: tabular-nums; }
+.stat .value {
+  font-size: var(--fs-xl); font-weight: 700; margin-top: var(--sp-1);
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+}
+.row-between { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
+.list-title { font-weight: 700; font-size: var(--fs-md); letter-spacing: .01em; }
+.line { padding: 10px 0; font-variant-numeric: tabular-nums; }
 .line + .line { border-top: 1px solid var(--border); }
-.list-footer { padding-top: 10px; margin-top: 6px; border-top: 1px solid var(--border); text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-.bar { height: 10px; background: var(--border); border-radius: 99px; overflow: hidden; margin: 10px 0 6px; }
+
+/* 合計列：它是結論，不能跟上面九行等重。
+   曝險那張卡有九行，原本「總曝險」混在裡面完全看不出來。 */
+.line.total {
+  margin-top: var(--sp-1);
+  border-top: 2px solid var(--border-strong);
+  font-weight: 700; font-size: var(--fs-md);
+}
+.line.total .label, .line.total > span:first-child { color: var(--text); }
+/* 縮排的附屬列（例如「└ 槓桿型多出來的曝險」）要弱一階 */
+.line.sub-line { color: var(--muted); font-size: var(--fs-sm); }
+
+.list-footer {
+  padding-top: 10px; margin-top: var(--sp-1);
+  border-top: 2px solid var(--border-strong);
+  text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+/* **一定要寫成 div.bar，不能只寫 .bar。**
+   長條圖的每一根也叫 .bar（<rect class="bar gain">），
+   而 height 在 SVG2 是可以用 CSS 設的幾何屬性，CSS 又贏過 presentation
+   attribute——只寫 .bar 的話，這裡的 height:8px 會把圖上每一根長條
+   全部壓成同高 8px，數值大小完全看不出來。跟 svg.line 是同一個坑。 */
+div.bar {
+  height: 8px; background: var(--card-2); border-radius: 99px;
+  overflow: hidden; margin: var(--sp-3) 0 var(--sp-2);
+  border: 1px solid var(--border);
+}
 .bar-fill { height: 100%; background: var(--primary); border-radius: 99px; transition: width .3s; }
-.defs dt { font-weight: 600; margin-top: 8px; }
+.defs dt { font-weight: 600; margin-top: var(--sp-2); }
 .defs dd { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
 
 /* ---------- 清單項目（可點擊編輯） ---------- */
 .item {
-  display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px;
+  display: flex; justify-content: space-between; align-items: center; gap: var(--sp-3);
+  /* 100% + 兩側各借回 8px，不然負 margin 會讓它往右溢出 8px */
+  width: calc(100% + var(--sp-4));
   text-align: left; background: none; border: none; border-radius: 0;
-  border-top: 1px solid var(--border); padding: 12px 0;
+  border-top: 1px solid var(--border);
+  /* 反白要比文字寬一點才不會貼著字邊，用負 margin 往外借卡片的 padding */
+  padding: 13px var(--sp-2); margin-inline: calc(var(--sp-2) * -1);
 }
+.item:hover { background: var(--card-2); }
 .item:active { opacity: .6; }
 .item-main { display: flex; flex-direction: column; min-width: 0; }
-.item-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.item-sub { font-size: 13px; color: var(--muted); }
+.item-title { font-weight: 600; font-size: var(--fs-md); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-sub { font-size: var(--fs-sm); color: var(--muted); margin-top: 2px; }
 .item-right { display: flex; flex-direction: column; align-items: flex-end; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--border); color: var(--muted); margin-left: 6px; vertical-align: middle; }
+.badge {
+  display: inline-block; font-size: var(--fs-xs); font-weight: 600;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--card-2); border: 1px solid var(--border);
+  color: var(--muted); margin-left: 6px; vertical-align: middle;
+  letter-spacing: .02em;
+}
+/* 狀態標籤：淡底＋彩色字＋同色淡邊。
+   原本每一種各自寫死一個實心色塊，一排實心紅綠又吵又跟漲跌撞色。
+   顏色只由 --bc 決定，配方共用一份。 */
+.badge.warn-badge, .badge.lev-badge, .badge.alert-near { --bc: var(--warn); }
+.badge.alert-punish { --bc: var(--crit); }
+.badge.day-badge { --bc: var(--primary); }
+.badge.story-badge { --bc: var(--stage-2); }
+.badge.warn-badge, .badge.lev-badge, .badge.alert-near,
+.badge.alert-punish, .badge.day-badge, .badge.story-badge {
+  background: color-mix(in srgb, var(--bc) 14%, var(--card));
+  border-color: color-mix(in srgb, var(--bc) 36%, transparent);
+  color: var(--bc);
+}
 
 /* ---------- 表格 ---------- */
 .table-wrap { overflow-x: auto; margin: 8px -14px 0; padding: 0 14px; }
@@ -270,13 +440,14 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
 /* ---------- 圖例（同時是數值表） ---------- */
 .legend { margin-top: 8px; }
 .legend-row {
-  display: grid; grid-template-columns: 12px 1fr auto auto;
-  align-items: center; gap: 8px; padding: 7px 4px; border-radius: 8px;
+  display: grid; grid-template-columns: 10px 1fr auto auto;
+  align-items: center; gap: 10px; padding: 9px 4px; border-radius: var(--radius-sm);
   font-size: 14px; font-variant-numeric: tabular-nums; cursor: default;
 }
 .legend-row + .legend-row { border-top: 1px solid var(--border); }
-.legend-row.active { background: var(--bg); }
-.legend .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.legend-row.active { background: var(--card-2); }
+/* 圓點比方塊安靜，而且在小尺寸下形狀更好認 */
+.legend .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
 .legend-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .legend-value { font-weight: 600; }
 .legend-pct { color: var(--muted); min-width: 3.6em; text-align: right; }
@@ -321,17 +492,27 @@ dialog input[readonly] { opacity: .7; }
 
 /* ============================================================
    曝險明細圓餅圖：每一筆部位一塊
-   固定 7 色順序（藍→橘→綠松→黃→洋紅→綠→紅），第 8 塊以後併成「其他」用灰色。
+   固定 6 色順序（藍→橘→綠松→黃→洋紅→靛），第 7 塊以後併成「其他」用灰色。
    相鄰配色與環狀收尾都經過色盲模擬驗證；每一塊在下方圖例都有文字標籤與金額。
    ============================================================ */
 :root {
-  --pos-1: #2a78d6; --pos-2: #eb6834; --pos-3: #1baf7a; --pos-4: #eda100;
-  --pos-5: #e87ba4; --pos-6: #008300; --pos-7: #e34948; --pos-other: #9ca3af;
+  /* 部位識別色。**刻意不用紅與綠**——在這個 app 紅是漲、綠是跌，
+     拿同樣的紅綠去標「哪一檔部位」會讓人以為那一塊在漲或在跌。
+     狀態色要留給狀態，這是 dataviz 的硬規則。
+     去掉紅綠之後剩六色，第七名以後併進「其他」（原本七色的紅配綠
+     相鄰 ΔE 只有 7.2，落在警告帶）。
+     六色經 validate_palette 驗過：淺色與深色都全數通過，
+     最差相鄰色盲分離 ΔE 9.1（淺）/ 8.4（深），一般視覺 19.6 / 19.3。
+     淺色有三色對比低於 3:1，靠圖例的文字標示補償（規則允許）。 */
+  --pos-1: #2a78d6; --pos-2: #eb6834; --pos-3: #1baf7a;
+  --pos-4: #eda100; --pos-5: #e87ba4; --pos-6: #4a3aa7;
+  --pos-other: #9ca3af;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --pos-1: #3987e5; --pos-2: #d95926; --pos-3: #199e70; --pos-4: #c98500;
-    --pos-5: #d55181; --pos-6: #008300; --pos-7: #e66767; --pos-other: #6b7280;
+    --pos-1: #3987e5; --pos-2: #d95926; --pos-3: #199e70;
+    --pos-4: #c98500; --pos-5: #d55181; --pos-6: #9085e9;
+    --pos-other: #6b7280;
   }
 }
 
@@ -348,19 +529,19 @@ dialog input[readonly] { opacity: .7; }
 .legend-label { display: flex; flex-direction: column; line-height: 1.25; }
 .legend-sub { font-size: 11px; color: var(--muted); }
 
-/* 提醒用的小標籤 */
-.badge.warn-badge { background: var(--danger); color: #fff; }
-
 /* 資料日期落後的提醒 */
-.hint.warn-hint { color: var(--danger); }
+.hint.warn-hint { color: var(--crit); }
 
 /* ---------- 買賣收益 ---------- */
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 4px; }
-.mini { background: var(--bg); border-radius: 10px; padding: 9px 10px; text-align: center; }
+.mini {
+  background: var(--card-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 9px 10px; text-align: center;
+}
 .mini .label { font-size: 12px; color: var(--muted); }
 .mini .value { font-size: 16px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .chart-sub { margin-top: 14px; }
-.badge.day-badge { background: var(--primary); color: var(--on-primary); }
+.badge.day-badge { font-weight: 700; }
 
 /* 長條圖 */
 /* 長條圖的 svg class 是 .bars 不是 .line，所以上面那組
@@ -510,22 +691,24 @@ textarea.journal-input {
   border-left: 2px solid var(--gain); padding-left: 8px;
   background: color-mix(in srgb, var(--gain) 6%, transparent);
 }
-.warn-text { color: var(--gain); margin: 8px 0 0; line-height: 1.6; }
+.warn-text { color: var(--crit); margin: 8px 0 0; line-height: 1.6; }
 .link { color: var(--primary); cursor: pointer; }
 
 /* ---------- 交易所警示 ---------- */
-.alert-card { border: 1px solid var(--gain); }
+/* 整圈飽和紅太搶，改成淡紅底＋半透明紅邊，警示感還在但不吵 */
+.alert-card {
+  border-color: color-mix(in srgb, var(--crit) 40%, var(--border));
+  background: color-mix(in srgb, var(--crit) 5%, var(--card));
+}
 .alert-row { padding: 7px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
 .alert-row:last-of-type { border-bottom: none; }
-.badge.alert-punish { background: var(--gain); color: #fff; }
-.badge.alert-near   { background: #b45309; color: #fff; }
-.badge.alert-notice { background: var(--border); color: var(--text); }
+.badge.alert-punish, .badge.alert-near { font-weight: 700; }
 .alert-box {
   margin-top: 12px; padding: 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg);
 }
-.alert-box.alert-punish { border-color: var(--gain); }
-.alert-box.alert-near   { border-color: #b45309; }
+.alert-box.alert-punish { border-color: color-mix(in srgb, var(--crit) 45%, var(--border)); }
+.alert-box.alert-near   { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .alert-box .sub { margin-top: 3px; line-height: 1.55; }
 
 /* ---------- 選股 ---------- */
@@ -834,7 +1017,7 @@ textarea.journal-input {
 .sc-story-title { margin: 6px 0 4px; font-size: 14px; font-weight: 600; line-height: 1.45; }
 .sc-story .sub { margin: 5px 0 0; line-height: 1.6; }
 .sc-caution { color: var(--text); }
-.badge.story-badge { background: var(--stage-2); color: #fff; }
+.badge.story-badge { font-weight: 600; }
 
 /* ---------- 主動型 ETF ---------- */
 .etf-seg { margin: 10px 0; }
@@ -932,7 +1115,13 @@ textarea.journal-input {
    族群清單有 43 張卡，一欄要捲很久，兩欄剛好。
    總覽不動——它是有閱讀順序的儀表板，拆兩欄反而要來回找。 */
 @media (min-width: 1180px) {
-  #main { max-width: 1120px; }
+  :root { --container: 1120px; }
+
+  /* 持倉與族群會把 1120px 用滿，外框要跟著一起放寬，
+     不然標題停在 720px 的位置、卡片卻從更左邊開始，看起來像沒對齊。
+     其餘分頁維持 720px 的 --rail。 */
+  body:has(.tab-panel[data-tab="holdings"]:not([hidden])),
+  body:has(.tab-panel[data-tab="themes"]:not([hidden])) { --rail: 1120px; }
 
   /* **只有真的用得到兩欄的分頁才放寬。**
      其餘維持原本的 720px：折線圖的 viewBox 是固定的 340px、再用
@@ -966,4 +1155,4 @@ textarea.journal-input {
 }
 
 /* 槓桿型 ETF 的倍數標記。曝險是市值的好幾倍，一定要在部位旁邊看得到 */
-.lev-badge { background: var(--gain); color: #fff; font-weight: 700; }
+.lev-badge { font-weight: 700; }

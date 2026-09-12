@@ -7,9 +7,12 @@ import { openStock } from './views/stock.js';
 export const stat = (label, value, extra = '') =>
   `<div class="card stat"><div class="label">${label}</div><div class="value">${value}</div>${extra ? `<div class="sub muted">${extra}</div>` : ''}</div>`;
 
-export const line = (label, value, total) => {
+// kind：'total' 是合計列（結論，要比上面幾行重），'sub' 是縮排的附屬列（要弱一階）。
+// 曝險那張卡有九行，原本「總曝險」跟其他八行等重，完全看不出哪個是結論。
+export const line = (label, value, total, kind) => {
   const share = total > 0 && isNum(value) ? ` <span class="muted">(${pct(value / total)})</span>` : '';
-  return `<div class="row-between line"><span>${label}</span><span>${fmt(value)}${share}</span></div>`;
+  const cls = kind === 'total' ? ' total' : kind === 'sub' ? ' sub-line' : '';
+  return `<div class="row-between line${cls}"><span>${label}</span><span>${fmt(value)}${share}</span></div>`;
 };
 
 export const section = (title, kind, rows, footer, addDefaults = {}) =>
