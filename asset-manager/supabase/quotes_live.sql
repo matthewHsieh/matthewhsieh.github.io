@@ -39,7 +39,7 @@ $fn$;
 
 create or replace function public.update_quotes_live()
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
-declare ch text; body text; n integer := 0; today date; nowt time;
+declare ch text; body text; n integer := 0; got integer; today date; nowt time;
 begin
   today := (now() at time zone 'Asia/Taipei')::date;
   nowt  := (now() at time zone 'Asia/Taipei')::time;
@@ -47,48 +47,49 @@ begin
   -- 漲跌幅、從低點拉起這些數字全部對不上。
   if nowt < time '13:31' then return 0; end if;
 
-  -- 只補**持倉相關**而且還沒有今天資料的那幾檔。
+  -- 只補**持倉相關**而且還沒有今天資料的那幾檔，一批一批問
+  -- （為什麼要分批見 pm_live_channels）。
   -- 全市場有 MI_INDEX 與櫃買的正式檔案可以用，不需要拿即時行情去打。
-  -- 上市要 tse_ 前綴、上櫃要 otc_，用上一個交易日的 src 判斷是哪一種。
-  select string_agg(case when s.exch = 'tpex' then 'otc_' else 'tse_' end || s.symbol || '.tw', '|')
-    into ch
-  from (
-    select distinct m.symbol, coalesce(m.exch, m.src) as exch
-    from public.market_prices m
-    where m.market = 'tw' and m.as_of < today
-      and m.symbol in (
-        select st.symbol from public.stocks st
-        union select f.symbol from public.futures f where f.symbol is not null
-        union select w.underlying from public.warrants w where w.underlying is not null)
-    limit 50
-  ) s;
+  for ch in
+    select string_agg(c, '|')
+    from (
+      select case when s.exch = 'tpex' then 'otc_' else 'tse_' end || s.symbol || '.tw' as c,
+             (row_number() over (order by s.symbol) - 1) / 50 as batch
+      from (
+        select distinct m.symbol, coalesce(m.exch, m.src) as exch
+        from public.market_prices m
+        where m.market = 'tw' and m.as_of < today
+          and m.symbol in (
+            select st.symbol from public.stocks st
+            union select f.symbol from public.futures f where f.symbol is not null
+            union select w.underlying from public.warrants w where w.underlying is not null)
+      ) s
+    ) x
+    group by x.batch order by x.batch
+  loop
+    begin
+      body := public.pm_fetch('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='
+                              || replace(ch, '|', '%7C') || '&json=1&delay=0');
+      insert into public.market_prices (market, symbol, price, chg, open, high, low,
+                                        as_of, src, updated_at)
+      select 'tw', q.symbol, q.price,
+             case when q.prev > 0 then q.price - q.prev end,
+             q.open, q.high, q.low, q.d, 'mis', now()
+      from public.pm_mis_quotes(body) q
+      -- 只接受今天的。MIS 在非交易日會回上一個交易日的資料。
+      where q.d = today
+      on conflict (market, symbol) do update
+        set price = excluded.price, chg = excluded.chg,
+            open = excluded.open, high = excluded.high, low = excluded.low,
+            as_of = excluded.as_of, src = excluded.src, updated_at = now();
+      get diagnostics got = row_count;
+      n := n + got;
+    exception when others then
+      perform public.pm_log('mis', 0, false, sqlerrm);
+    end;
+  end loop;
 
-  if ch is null then
-    perform public.pm_log('mis(不用補)', 0, true, null);
-    return 0;
-  end if;
-
-  begin
-    body := public.pm_fetch('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='
-                            || replace(ch, '|', '%7C') || '&json=1&delay=0');
-    insert into public.market_prices (market, symbol, price, chg, open, high, low,
-                                      as_of, src, updated_at)
-    select 'tw', q.symbol, q.price,
-           case when q.prev > 0 then q.price - q.prev end,
-           q.open, q.high, q.low, q.d, 'mis', now()
-    from public.pm_mis_quotes(body) q
-    -- 只接受今天的。MIS 在非交易日會回上一個交易日的資料。
-    where q.d = today
-    on conflict (market, symbol) do update
-      set price = excluded.price, chg = excluded.chg,
-          open = excluded.open, high = excluded.high, low = excluded.low,
-          as_of = excluded.as_of, src = excluded.src, updated_at = now();
-    get diagnostics n = row_count;
-    perform public.pm_log('mis', n, true, null);
-  exception when others then
-    perform public.pm_log('mis', 0, false, sqlerrm);
-  end;
-
+  perform public.pm_log(case when n > 0 then 'mis' else 'mis(不用補)' end, n, true, null);
   return n;
 end $fn$;
 
@@ -149,49 +150,61 @@ grant select on public.market_live to anon, authenticated;
 -- 會把 src 改成 'mis'，交易所別就消失了——下一次組通道 8358 金居變成
 -- tse_8358.tw，MIS 直接不回。**我們想修的那一檔，補過一次就再也補不到。**
 -- 所以另外存 exch，只有證交所／櫃買的正式檔案會寫它，MIS 不碰。
+-- 回傳型別從 text 變成 setof text，要先 drop（create or replace 改不了回傳型別）
+drop function if exists public.pm_live_channels();
 create or replace function public.pm_live_channels()
-returns text language sql stable security definer set search_path = public as $fn$
-  select string_agg(case when s.exch = 'tpex' then 'otc_' else 'tse_' end || s.symbol || '.tw', '|')
+returns setof text language sql stable security definer set search_path = public as $fn$
+  -- **一次回一批、每批 50 個，不是只回前 50 個。**
+  -- 原本結尾是 limit 50，單人自用只有六檔看不出問題；多個使用者之後
+  -- 所有人的持股聯集會超過 50，第 51 檔以後**不會報錯，就是靜默不更新**——
+  -- 那種 bug 最難發現。改成分批，呼叫端跑迴圈。
+  -- 50 是 MIS 那支 API 一次問得動的上限，不是我們自己的限制。
+  select string_agg(ch, '|')
   from (
-    select distinct m.symbol, coalesce(m.exch, m.src) as exch
-    from public.market_prices m
-    where m.market = 'tw'
-      and m.symbol in (
-        select st.symbol from public.stocks st
-        union select f.symbol from public.futures f where f.symbol is not null
-        union select w.underlying from public.warrants w where w.underlying is not null)
-    limit 50
-  ) s;
+    select case when s.exch = 'tpex' then 'otc_' else 'tse_' end || s.symbol || '.tw' as ch,
+           (row_number() over (order by s.symbol) - 1) / 50 as batch
+    from (
+      select distinct m.symbol, coalesce(m.exch, m.src) as exch
+      from public.market_prices m
+      where m.market = 'tw'
+        and m.symbol in (
+          select st.symbol from public.stocks st
+          union select f.symbol from public.futures f where f.symbol is not null
+          union select w.underlying from public.warrants w where w.underlying is not null)
+    ) s
+  ) x
+  group by x.batch order by x.batch;
 $fn$;
 
 create or replace function public.refresh_live()
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
-declare ch text; body text; n integer := 0; nowt time; dow integer;
+declare ch text; body text; n integer := 0; got integer; nowt time; dow integer;
 begin
   nowt := (now() at time zone 'Asia/Taipei')::time;
   dow  := extract(isodow from (now() at time zone 'Asia/Taipei'));
   -- 只在台股交易時段內跑。收盤後的補抓是 update_quotes_live 的事。
   if dow > 5 or nowt < time '09:00' or nowt > time '13:35' then return 0; end if;
 
-  ch := public.pm_live_channels();
-  if ch is null then return 0; end if;
-
-  begin
-    body := public.pm_fetch('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='
-                            || replace(ch, '|', '%7C') || '&json=1&delay=0');
-    insert into public.market_live (market, symbol, price, chg, open, high, low, at)
-    select 'tw', q.symbol, q.price,
-           case when q.prev > 0 then q.price - q.prev end,
-           q.open, q.high, q.low, now()
-    from public.pm_mis_quotes(body) q
-    where q.d = (now() at time zone 'Asia/Taipei')::date
-    on conflict (market, symbol) do update
-      set price = excluded.price, chg = excluded.chg, open = excluded.open,
-          high = excluded.high, low = excluded.low, at = now();
-    get diagnostics n = row_count;
-  exception when others then
-    perform public.pm_log('live', 0, false, sqlerrm);
-  end;
+  -- 一批一批問。單一使用者只會有一批，人多了才會有第二批。
+  for ch in select * from public.pm_live_channels() loop
+    begin
+      body := public.pm_fetch('https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch='
+                              || replace(ch, '|', '%7C') || '&json=1&delay=0');
+      insert into public.market_live (market, symbol, price, chg, open, high, low, at)
+      select 'tw', q.symbol, q.price,
+             case when q.prev > 0 then q.price - q.prev end,
+             q.open, q.high, q.low, now()
+      from public.pm_mis_quotes(body) q
+      where q.d = (now() at time zone 'Asia/Taipei')::date
+      on conflict (market, symbol) do update
+        set price = excluded.price, chg = excluded.chg, open = excluded.open,
+            high = excluded.high, low = excluded.low, at = now();
+      get diagnostics got = row_count;
+      n := n + got;
+    exception when others then
+      perform public.pm_log('live', 0, false, sqlerrm);
+    end;
+  end loop;
   return n;
 end $fn$;
 
