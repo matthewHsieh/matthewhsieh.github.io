@@ -192,6 +192,9 @@ function edgeState(mk, sel, l) {
 function drawEdges(wrap, mk, sel) {
   const svg = $('.medges', wrap);
   if (!svg) return;
+  // 直式（手機）與橫式（桌機）用同一套程式，只是把座標軸對調。
+  // 兩邊的資料、節點、關係完全一樣，差別只在往哪個方向流。
+  const vert = wrap.classList.contains('vert');
   const box = wrap.getBoundingClientRect();
   const pos = new Map();
   $$('.mnode', wrap).forEach((n) => {
@@ -199,6 +202,8 @@ function drawEdges(wrap, mk, sel) {
     const r = ($('.mdisc', n) || n).getBoundingClientRect();
     pos.set(n.dataset.node, {
       l: r.left - box.left, r: r.right - box.left,
+      t: r.top - box.top, b: r.top - box.top + r.height,
+      cx: r.left - box.left + r.width / 2,
       cy: r.top - box.top + r.height / 2,
       col: Number(n.dataset.col),
     });
@@ -220,7 +225,25 @@ function drawEdges(wrap, mk, sel) {
     let x1, y1, x2, y2, d;
     // **判斷依據是實際座標，不是欄位編號。** 中游排成兩個子欄，
     // CCL（左子欄）→ PCB（右子欄）其實是左到右，照同欄處理會繞一大圈。
-    if (a.r + 10 <= b.l) {
+    if (vert) {
+      if (a.b + 10 <= b.t) {
+        // 來源在目標上方：直接往下接，控制點放在垂直中點
+        x1 = a.cx; y1 = a.b; x2 = b.cx; y2 = b.t;
+        const mid = (y1 + y2) / 2;
+        d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
+      } else {
+        // 同一段內部（中游→中游有 10 條）：從側邊繞出去再繞回來。
+        // 往左或往右看誰比較靠邊，免得繞出畫面——手機只有 390px，
+        // 繞錯邊線就消失了。
+        const leftSide = (a.cx + b.cx) / 2 < box.width / 2;
+        // 夾在畫布內。手機只有 390px，繞出去就被裁掉，線會整段不見。
+        const x = Math.max(3, Math.min(box.width - 3,
+          leftSide ? Math.min(a.l, b.l) - 18 : Math.max(a.r, b.r) + 18));
+        x1 = leftSide ? a.l : a.r; y1 = a.cy;
+        x2 = leftSide ? b.l : b.r; y2 = b.cy;
+        d = `M ${x1} ${y1} C ${x} ${y1}, ${x} ${y2}, ${x2} ${y2}`;
+      }
+    } else if (a.r + 10 <= b.l) {
       x1 = a.r; y1 = a.cy; x2 = b.l; y2 = b.cy;
       const mid = (x1 + x2) / 2;
       d = `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
@@ -313,18 +336,13 @@ export function renderThemeMap(host, mk) {
   };
 
   // 桌機是圓形圖示節點（名字在下面），手機維持方塊（390px 放不下圖示 + 名字）
+  // **手機與桌機用同一種節點。** 原本手機是一格一格的長方形清單，
+  // 桌機才是圓盤天賦樹，等於兩套介面。使用者問「手機能不能也用天賦樹，
+  // 只是變成上到下」——這個方向是對的：畫不下連線的限制是**寬度**，
+  // 轉成由上往下流之後高度要多少有多少，限制就不存在了。
   const tile = (m, col) => {
     const s = themeStats(mk, m.theme);
     const owned = mine.has(m.theme);
-    if (!desk) {
-      return `<button type="button" class="mnode${owned ? ' mine' : ''}"
-        data-node="${esc(m.theme)}" data-col="${col}">
-        <span class="mname">${esc(m.theme)}${etfMark(m.theme)}</span>
-        <span class="mrow"><span class="${plClass(num(s.growth))}">${
-          isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
-          <span class="muted">${fmt(s.members)} 檔</span></span>
-      </button>`;
-    }
     return `<button type="button" class="mnode talent${owned ? ' mine' : ''}"
       data-node="${esc(m.theme)}" data-col="${col}">
       <span class="mdisc"><span class="mglyph">${esc(glyphOf(m.theme))}</span>
@@ -333,6 +351,25 @@ export function renderThemeMap(host, mk) {
       <span class="mstat ${plClass(num(s.growth))}">${
         isNum(s.growth) ? signed(num(s.growth) * 100, 0) + '%' : '–'}</span>
     </button>`;
+  };
+
+  // 一條帶子的內容：標題 ＋ 依大類分群的節點。兩種版面共用，
+  // 差別只在外面包 .mcol（桌機三欄並排）還是 .mband（手機三段堆疊）。
+  const bandInner = (st, title, sub, i) => {
+    const list = orderColumn(byStage(st), state.themeLinks.filter((l) => l.market === mk));
+    if (!list.length) return '';
+    const clus = [];
+    for (const m of list) {
+      let g = clus.find((x) => x.name === m.parent);
+      if (!g) { g = { name: m.parent, list: [] }; clus.push(g); }
+      g.list.push(m);
+    }
+    return `<div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
+        <span class="sub muted">${sub}</span></div>
+      ${clus.map((g) => `<div class="mclus">
+        <div class="mclus-label">${esc(g.name)}</div>
+        <div class="mclus-nodes">${g.list.map((m) => tile(m, i)).join('')}</div>
+      </div>`).join('')}`;
   };
 
   // 大類篩選在這裡就過濾掉，不要留給 CSS——用 display:none 藏格子的話，
@@ -395,41 +432,24 @@ export function renderThemeMap(host, mk) {
           grp === p ? ' on' : ''}" data-group="${esc(p)}">${esc(p)}</button>`).join('')}
       </div>
     </div>
-    <div class="mapwrap${desk ? ' desk' : ''}">
-      ${desk ? '<svg class="medges" aria-hidden="true"></svg>' : ''}
+    <div class="mapwrap${desk ? ' desk' : ' vert'}">
+      <svg class="medges" aria-hidden="true"></svg>
       ${desk ? detail : ''}
-      ${desk ? `<div class="mcols">${STAGES.map(([st, title, sub], i) => {
-        const list = orderColumn(byStage(st), state.themeLinks.filter((l) => l.market === mk));
-        if (!list.length) return '';
-        // 中游有 21 個、上下游各 8 與 10，單欄排下去高度會差三倍。
-        // 超過 12 個就排成兩欄，三欄的高度才接近。
-        // 欄內再依大類分群。天賦樹的分支感就是這樣來的——
+      ${desk
+        // 桌機：三欄並排，由左往右流。中游有 21 個、上下游各 8 與 10，
+        // 欄內依大類分群——天賦樹的分支感就是這樣來的，
         // 一欄裡不是 21 個並排，是三四個有名字的小群。
-        const clus = [];
-        for (const m of list) {
-          let g = clus.find((x) => x.name === m.parent);
-          if (!g) { g = { name: m.parent, list: [] }; clus.push(g); }
-          g.list.push(m);
-        }
-        return `<div class="mcol band-${i}">
-          <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
-            <span class="sub muted">${sub}</span></div>
-          ${clus.map((g) => `<div class="mclus">
-            <div class="mclus-label">${esc(g.name)}</div>
-            <div class="mclus-nodes">${g.list.map((m) => tile(m, i)).join('')}</div>
-          </div>`).join('')}
-        </div>`;
-      }).join('')}</div>`
-      : STAGES.map(([st, title, sub], i) => {
-        const list = byStage(st);
-        if (!list.length) return '';
-        return `<div class="mband band-${i}">
-          <div class="mband-head"><b>${st}</b><span class="muted">${title}</span>
-            <span class="sub muted">${sub}</span></div>
-          <div class="mgrid">${list.map((m) => tile(m, i)).join('')}</div>
-        </div>
-        ${i < STAGES.length - 1 ? '<div class="mflow">↓</div>' : ''}`;
-      }).join('')}
+        ? `<div class="mcols">${STAGES.map(([st, title, sub], i) => {
+            const inner = bandInner(st, title, sub, i);
+            return inner ? `<div class="mcol band-${i}">${inner}</div>` : '';
+          }).join('')}</div>`
+        // 手機：同一棵樹轉九十度，由上往下流。
+        // 帶子之間留一段空白讓連線有地方走，不用再放那個 ↓ 符號——
+        // 線本身就說明了方向，而且說得更準（哪一格接到哪一格）。
+        : `<div class="mbands">${STAGES.map(([st, title, sub], i) => {
+            const inner = bandInner(st, title, sub, i);
+            return inner ? `<div class="mband band-${i}">${inner}</div>` : '';
+          }).join('')}</div>`}
     </div>
     ${desk ? '' : detail}
     <p class="hint">格子的位置就是它在供應鏈的位置，不用再讀標籤。
@@ -505,13 +525,14 @@ export function renderThemeMap(host, mk) {
   // 如果只在桌機分支呼叫，手機點下去就什麼都不會亮。
   applyFocus(host, mk, sel);
 
-  if (desk) {
+  {
     const wrap = $('.mapwrap', host);
-    // 量位置一定要等版面排完，所以排進下一幀
+    // 量位置一定要等版面排完，所以排進下一幀。
+    // **手機也要畫線**——轉成直式之後線是畫得下的，這正是重做的目的。
     requestAnimationFrame(() => {
       drawEdges(wrap, mk, sel);
       applyFocus(host, mk, sel);
-      placePop(wrap, sel);
+      if (desk) placePop(wrap, sel);
     });
     // 視窗寬度變了，線的位置就不對了
     clearTimeout(state.mapResizeT);

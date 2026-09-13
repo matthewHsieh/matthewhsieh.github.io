@@ -905,40 +905,72 @@ textarea.journal-input {
 .mchips .chip { font-size: 12px; padding: 5px 10px; }
 .mchips .chip.on { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 
-.mapwrap { margin-top: 12px; }
-.mband {
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 10px 12px; background: var(--card);
-  border-left-width: 3px;
-}
-.band-0 { border-left-color: var(--stage-1); }
-.band-1 { border-left-color: var(--stage-2); }
-.band-2 { border-left-color: var(--stage-3); }
-.band-0 .mnode.mine { border-left-color: var(--stage-1); }
-.band-1 .mnode.mine { border-left-color: var(--stage-2); }
-.band-2 .mnode.mine { border-left-color: var(--stage-3); }
-.mband-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-.mband-head b { font-size: 15px; }
-.mband-head .muted { font-size: 13px; }
-.mband-head .sub { flex-basis: 100%; margin: 0; }
-/* 一行三格，minmax(0,·) 免得長族群名把格線撐破 */
-.mgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.mflow { text-align: center; color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 0; }
+.mapwrap { margin-top: 12px; position: relative; }
 
+/* ---------- 產業地圖：一棵樹，兩個方向 ----------
+   原本手機是一格一格的長方形清單、桌機才是圓盤天賦樹，等於兩套介面。
+   **畫不下連線的限制是寬度，不是空間。** 轉成由上往下流之後，
+   高度要多少有多少，同一棵樹就畫得下了。
+   所以節點、分群、連線全部共用，下面只分「三欄並排」與「三段堆疊」。 */
+
+.mband-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mband-head b { font-size: 16px; letter-spacing: .02em; color: var(--st); }
+.mband-head .muted { font-size: 13px; }
+.mband-head .sub { flex-basis: 100%; margin: 4px 0 0; font-size: 12px; }
+.band-0 { --st: var(--stage-1); }
+.band-1 { --st: var(--stage-2); }
+.band-2 { --st: var(--stage-3); }
+
+/* 天賦節點：圓形圖示 + 名字在下面。方形文字框看起來就是清單，
+   圓盤才有「一個天賦」的感覺，而且名字外置之後盤面可以做狀態。 */
 .mnode {
-  position: relative; display: flex; flex-direction: column; gap: 3px;
-  padding: 7px 8px; border: 1px solid var(--border); border-radius: 9px;
-  background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
-  min-width: 0;
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 0; border: none; background: none; box-shadow: none;
+  color: var(--text); font: inherit; cursor: pointer; min-width: 0;
+  transition: transform var(--dur-fast), opacity var(--dur), filter var(--dur);
 }
-.mnode.mine { border-left: 3px solid var(--primary); }
-.mname { font-size: 13px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
-.mrow { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }
+.mdisc {
+  position: relative; border-radius: 50%;
+  display: grid; place-items: center; flex: none;
+  background: radial-gradient(circle at 35% 30%,
+    color-mix(in srgb, var(--st) 30%, var(--card)), var(--card) 72%);
+  border: 2px solid color-mix(in srgb, var(--st) 55%, var(--border));
+  box-shadow: inset 0 0 10px color-mix(in srgb, var(--st) 18%, transparent);
+  transition: border-color .14s, box-shadow .14s, transform var(--dur-fast);
+}
+.mglyph { font-weight: 700; line-height: 1; color: var(--text); }
+.mnode .mname {
+  font-weight: 600; line-height: 1.2; text-align: center; overflow-wrap: anywhere;
+}
+.mstat { font-size: 11px; line-height: 1; }
+/* 檔數掛在盤緣，像天賦的「3/5」 */
+.mcount {
+  position: absolute; right: -4px; bottom: -4px;
+  min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+}
+/* 已點亮＝有持股 */
+.mnode.mine .mdisc {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent),
+              0 0 16px color-mix(in srgb, var(--primary) 35%, transparent),
+              inset 0 0 12px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+.mnode.mine .mglyph { color: var(--primary); }
+
 /* 選了一格之後，沒關係的整個變暗——關係直接顯示在圖上，不用開面板 */
-.mnode.dim { opacity: .25; }
-.mnode.rel-self { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary) inset; }
-.mnode.rel-up { border-color: var(--stage-1); }
-.mnode.rel-down { border-color: var(--stage-3); }
+.mnode.dim { opacity: .28; filter: saturate(.25); }
+.mnode.rel-self .mdisc {
+  border-color: var(--primary); transform: scale(1.14);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 28%, transparent),
+              0 0 22px color-mix(in srgb, var(--primary) 45%, transparent);
+}
+.mnode.rel-up .mdisc { border-color: var(--stage-1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-1) 26%, transparent); }
+.mnode.rel-down .mdisc { border-color: var(--stage-3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-3) 26%, transparent); }
 .mflag {
   position: absolute; top: -7px; right: 6px; font-size: 10px; padding: 1px 5px;
   border-radius: 999px; background: var(--card); border: 1px solid var(--border); color: var(--muted);
@@ -946,20 +978,69 @@ textarea.journal-input {
 .mnode.rel-up .mflag { color: var(--stage-1); border-color: var(--stage-1); }
 .mnode.rel-down .mflag { color: var(--stage-3); border-color: var(--stage-3); }
 
-.mdetail { border: 1px solid var(--primary); }
-.mgroup { margin-top: 10px; }
-.mlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.mlink { display: flex; align-items: baseline; gap: 6px; padding: 3px 0; flex-wrap: wrap; }
-.marrow { color: var(--muted); flex: none; }
-.mlink .link { background: none; border: none; padding: 0; font: inherit; font-size: 14px; }
-.mlink .sub { flex-basis: 100%; margin: 0 0 0 18px; line-height: 1.45; }
+/* 大類分群：一段裡不是 21 個並排，是幾個有名字的小群 */
+.mclus-label {
+  font-size: 11px; color: var(--muted); letter-spacing: .06em; padding-left: 2px;
+}
+.mclus-nodes { display: flex; flex-wrap: wrap; }
+
+/* 連線畫在格子底下，才不會擋住點擊。
+   **不要用負的 inset 去撐大**——svg 沒有內在尺寸，那樣量出來的 rect 會是 0，
+   viewBox 變成 "0 0 0 0"，線就整個不見了。繞出去的弧改成往有空間的那一側走。 */
+.medges { position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 0; }
+.medges .e {
+  fill: none; stroke-width: 1.6; stroke-linecap: round; opacity: .5;
+  transition: opacity .18s, stroke-width .18s;
+}
+/* 沒選的時候全部一樣淡；選了之後只有相關的亮起來，其餘壓到幾乎看不見。
+   幾十條線全部畫滿一樣粗只會變成一團毛線。 */
+.medges .e.off { opacity: .07; }
+.medges .e.up, .medges .e.down { stroke-width: 2.6; opacity: 1; }
+
+/* ---------- 手機：同一棵樹，由上往下 ---------- */
+/* 帶子之間留 44px 讓連線有地方走。**底色不能填滿**——
+   線畫在 z-index 0，帶子有不透明背景的話跨帶的線會整段被蓋住。 */
+.mbands { position: relative; z-index: 1; display: grid; gap: 44px; }
+.mband { background: none; border: none; padding: 0; }
+.mband .mband-head {
+  margin: 0 0 12px; padding: 0 0 8px; border-bottom: 2px solid var(--st);
+}
+.mapwrap.vert .mclus { margin-top: 14px; }
+.mapwrap.vert .mclus-label { margin-bottom: 8px; }
+.mapwrap.vert .mclus-nodes { gap: 14px 8px; }
+.mapwrap.vert .mnode { width: 76px; }
+.mapwrap.vert .mdisc { width: 46px; height: 46px; }
+.mapwrap.vert .mglyph { font-size: 17px; }
+.mapwrap.vert .mnode .mname { font-size: 11px; }
+/* 手機沒有 hover，按下去要有回饋 */
+.mapwrap.vert .mnode:active { transform: scale(.94); }
+/* **直式的線要更淡。** 桌機有 1240px 把線攤開，直式只有 390px，
+   四十幾條線全擠在同樣的寬度裡，用桌機的 .5 會變成一團毛線。
+   靜止時當成一層淡淡的紋理就好——真正要看的是點下去之後那一條路徑。 */
+.mapwrap.vert .medges .e { opacity: .2; stroke-width: 1.4; }
+.mapwrap.vert .medges .e.off { opacity: .05; }
+.mapwrap.vert .medges .e.up, .mapwrap.vert .medges .e.down { stroke-width: 3; opacity: 1; }
+/* 分群標籤會被線穿過去，墊一層底色把那一段線蓋掉 */
+.mapwrap.vert .mclus-label {
+  background: var(--bg); display: inline-block;
+  padding: 1px 6px 1px 2px; border-radius: 4px; position: relative; z-index: 1;
+}
+
+/* 平板與小視窗（≥560px 但還沒到三欄）：節點放大到跟桌機一樣。
+   76px 是為了 390px 一行排得下四個；寬度有了就不必再壓縮。 */
+@media (min-width: 560px) and (max-width: 899px) {
+  .mapwrap.vert .mnode { width: 92px; }
+  .mapwrap.vert .mdisc { width: 52px; height: 52px; }
+  .mapwrap.vert .mglyph { font-size: 19px; }
+  .mapwrap.vert .mnode .mname { font-size: 12px; }
+  .mapwrap.vert .mclus-nodes { gap: 16px 12px; }
+}
 
 /* ---------- 產業地圖：桌機版（≥900px） ---------- */
-/* 手機只能靠變暗表達關係，390px 畫不下線。螢幕夠寬就把三段轉成三欄、
-   把線真的畫出來。#main 卡在 720px，這裡要突破，否則三欄會擠成一團。 */
+/* #main 卡在 720px，這裡要突破，否則三欄會擠成一團。 */
 @media (min-width: 900px) {
   .mapwrap.desk {
-    position: relative;
     width: min(1240px, calc(100vw - 48px));
     margin-left: calc(50% - min(620px, (100vw - 48px) / 2));
   }
@@ -969,104 +1050,25 @@ textarea.journal-input {
     display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 44px; align-items: start;
   }
 
-  /* 欄位不用邊框框住——那看起來像表格。改成頂上一條該段顏色的細線，
-     加一層幾乎看不見的同色底，讓它是「一區」而不是「一個框」。 */
+  /* 欄位不用邊框框住——那看起來像表格。改成頂上一條該段顏色的細線。 */
   .mcol { border: none; padding: 0; background: none; }
-  .mcol-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  /* 中游 21 格、上下游各 8 與 10，單欄排下去高度差三倍 */
-  .mcol.two .mcol-body { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .mcol .mband-head { margin: 0 0 12px; padding: 0 0 10px; border-bottom: 2px solid var(--st); }
+  .mcol .mband-head b { font-size: 17px; }
 
-  .mcol .mband-head {
-    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-    margin: 0 0 12px; padding: 0 0 10px; border-bottom: 2px solid var(--st);
-  }
-  .mcol .mband-head b { font-size: 17px; letter-spacing: .02em; color: var(--st); }
-  .mcol .mband-head .muted { font-size: 13px; }
-  .mcol .mband-head .sub { flex-basis: 100%; margin: 4px 0 0; font-size: 12px; }
-  .mcol.band-0 { --st: var(--stage-1); }
-  .mcol.band-1 { --st: var(--stage-2); }
-  .mcol.band-2 { --st: var(--stage-3); }
+  .mcol .mnode { width: 92px; }
+  .mcol .mdisc { width: 52px; height: 52px; }
+  .mcol .mglyph { font-size: 19px; }
+  .mcol .mnode .mname { font-size: 12px; }
+  .mclus { margin-top: 16px; }
+  .mcol .mclus-label { margin-bottom: 10px; }
+  .mcol .mclus-nodes { gap: 16px 12px; }
 
-  /* 天賦節點：圓形圖示 + 名字在下面。方形文字框看起來就是清單，
-     圓盤才有「一個天賦」的感覺，而且名字外置之後盤面可以做狀態。 */
-  .mcol .mnode.talent {
-    display: flex; flex-direction: column; align-items: center; gap: 5px;
-    width: 92px; padding: 0; border: none; background: none; box-shadow: none;
-    transition: transform .12s, opacity .18s, filter .18s;
-  }
-  .mcol .mnode.talent::before { content: none; }
-  .mdisc {
-    position: relative; width: 52px; height: 52px; border-radius: 50%;
-    display: grid; place-items: center; flex: none;
-    background: radial-gradient(circle at 35% 30%,
-      color-mix(in srgb, var(--st) 30%, var(--card)), var(--card) 72%);
-    border: 2px solid color-mix(in srgb, var(--st) 55%, var(--border));
-    box-shadow: inset 0 0 10px color-mix(in srgb, var(--st) 18%, transparent);
-    transition: border-color .14s, box-shadow .14s, transform .12s;
-  }
-  .mglyph { font-size: 19px; font-weight: 700; line-height: 1; color: var(--text); }
-  .mnode.talent .mname {
-    font-size: 12px; font-weight: 600; line-height: 1.25; text-align: center;
-    overflow-wrap: anywhere;
-  }
-  .mstat { font-size: 11px; line-height: 1; }
-  /* 檔數掛在盤緣，像天賦的「3/5」 */
-  .mcount {
-    position: absolute; right: -4px; bottom: -4px;
-    min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
-    display: grid; place-items: center;
-    font-size: 10px; font-weight: 700; line-height: 1;
-    background: var(--bg); border: 1px solid var(--border); color: var(--muted);
-  }
-
-  .mcol .mnode.talent:hover { transform: translateY(-2px); }
-  .mcol .mnode.talent:hover .mdisc {
+  .mcol .mnode:hover { transform: translateY(-2px); }
+  .mcol .mnode:hover .mdisc {
     border-color: var(--st);
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--st) 18%, transparent),
                 inset 0 0 12px color-mix(in srgb, var(--st) 30%, transparent);
   }
-  /* 已點亮＝有持股 */
-  .mnode.talent.mine .mdisc {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent),
-                0 0 16px color-mix(in srgb, var(--primary) 35%, transparent),
-                inset 0 0 12px color-mix(in srgb, var(--primary) 22%, transparent);
-  }
-  .mnode.talent.mine .mglyph { color: var(--primary); }
-
-  .mcol .mnode.dim { opacity: .28; filter: saturate(.25); }
-  .mcol .mnode.rel-self .mdisc {
-    border-color: var(--primary); transform: scale(1.14);
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 28%, transparent),
-                0 0 22px color-mix(in srgb, var(--primary) 45%, transparent);
-  }
-  .mcol .mnode.rel-up .mdisc { border-color: var(--stage-1);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-1) 26%, transparent); }
-  .mcol .mnode.rel-down .mdisc { border-color: var(--stage-3);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--stage-3) 26%, transparent); }
-
-  /* 大類分群：一欄裡不是 21 個並排，是幾個有名字的小群 */
-  .mclus { margin-top: 16px; }
-  .mclus-label {
-    font-size: 11px; color: var(--muted); letter-spacing: .06em;
-    margin-bottom: 10px; padding-left: 2px;
-  }
-  .mclus-nodes { display: flex; flex-wrap: wrap; gap: 16px 12px; }
-
-  /* 連線畫在格子底下，才不會擋住點擊 */
-  /* 跟容器同一個框。**不要用負的 inset 去撐大**——svg 沒有內在尺寸，
-     那樣量出來的 rect 會是 0，viewBox 變成 "0 0 0 0"，線就整個不見了。
-     繞出去的弧改成往有空間的那一側走（最後一欄往左），所以不需要多出來的空間。 */
-  .medges { position: absolute; inset: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 0; }
-  .medges .e {
-    fill: none; stroke-width: 1.6; stroke-linecap: round; opacity: .5;
-    transition: opacity .18s, stroke-width .18s;
-  }
-  /* 沒選的時候全部一樣淡；選了之後只有相關的亮起來，其餘壓到幾乎看不見。
-     38 條線全部畫滿一樣粗只會變成一團毛線。 */
-  .medges .e.off { opacity: .07; }
-  .medges .e.up, .medges .e.down { stroke-width: 2.6; opacity: 1; }
 
   .mhead, .mapwrap.desk ~ .hint {
     width: min(1240px, calc(100vw - 48px));
