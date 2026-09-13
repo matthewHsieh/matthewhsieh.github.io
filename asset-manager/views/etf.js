@@ -57,7 +57,7 @@ export function renderEtf(host) {
 
   host.innerHTML = `
     <div class="card">
-      <div class="list-title">主動型 ETF</div>
+      <div class="list-title" role="heading" aria-level="2">主動型 ETF</div>
       <p class="sub muted">${esc(b.as_of || '')}。代號 <b>A 結尾</b>的就是主動型，
         這是主管機關的編碼規則。比較的對象不是指數而是<b>同期的被動 ETF</b>——
         指數不能買，${esc(meta[2])} 可以，而且同樣台幣計價、同樣的交易時間。
@@ -72,7 +72,7 @@ export function renderEtf(host) {
 
     <div class="card">
       <div class="row-between">
-        <span class="list-title">贏過 ${esc(meta[2])} 的</span>
+        <span class="list-title" role="heading" aria-level="2">贏過 ${esc(meta[2])} 的</span>
         <span class="etf-score ${win * 2 >= rows.length ? 'gain' : 'loss'}">${win} / ${rows.length}</span>
       </div>
       <p class="sub muted">用<b>掛牌以來</b>的報酬比，而且對照組取同一段期間——
@@ -81,7 +81,7 @@ export function renderEtf(host) {
     </div>
 
     ${scope === 'tw' && crowd.length ? `<div class="card">
-      <div class="list-title">這些錢押在哪裡</div>
+      <div class="list-title" role="heading" aria-level="2">這些錢押在哪裡</div>
       <p class="sub muted">${esc(b.hold_as_of || '')}的<b>實際持股</b>。長條是族群裡
         被吃最兇的那一檔<b>佔它股本的幾 %</b>——不是基金檔數，因為每檔基金都放台積電
         不代表台積電是題材，但被二十檔合計吃掉 7% 股本就是浮額真的變少了。</p>
@@ -106,7 +106,7 @@ export function renderEtf(host) {
         const ex = num(f.excess);
         return `<div class="etf-row${open ? ' open' : ''}" data-etf="${esc(f.symbol)}" role="button" tabindex="0">
           <div class="row-between">
-            <span class="list-title">${esc(f.name || f.symbol)}</span>
+            <span class="list-title" role="heading" aria-level="2">${esc(f.name || f.symbol)}</span>
             <span class="theme-yoy ${plClass(ex)}">${signed(ex * 100, 1)}%</span>
           </div>
           <div class="row-between sub muted">

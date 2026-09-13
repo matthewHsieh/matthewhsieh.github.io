@@ -18,7 +18,7 @@ export const line = (label, value, total, kind) => {
 export const section = (title, kind, rows, footer, addDefaults = {}) =>
   `<div class="card list">
     <div class="row-between">
-      <span class="list-title">${esc(title)}</span>
+      <span class="list-title" role="heading" aria-level="2">${esc(title)}</span>
       <button type="button" class="small" data-add="${kind}" data-defaults="${esc(JSON.stringify(addDefaults))}">＋ 新增</button>
     </div>
     ${rows.length ? rows.join('') : '<p class="muted">尚無資料，按「＋ 新增」登記，或用上方「記一筆交易」。</p>'}
@@ -131,7 +131,7 @@ export function valuationCard() {
   const missing = state.valuation.filter((v) => !FWD_YEARS.some(([, pk]) => isNum(v[pk])));
   return `<div class="card">
     <div class="row-between">
-      <span class="list-title">估值</span>
+      <span class="list-title" role="heading" aria-level="2">估值</span>
       <span class="sub muted">${asOf ? esc(asOf) : ''}</span>
     </div>
     ${state.valuation.map(valuationRow).join('')}

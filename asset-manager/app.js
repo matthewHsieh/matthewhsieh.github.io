@@ -24,12 +24,46 @@
 import { $, $$, fail, sb, state, toast } from './core.js';
 import { refresh, refreshPrices } from './data.js';
 import { DISCLAIMER_ONE_LINE } from './legal.js';
-import { GUEST_TABS, render } from './render.js';
+import { GUEST_TABS, switchTab } from './render.js';
 import { loadTwStocks } from './symbols.js';
+
+// ------------------------------------------------------------
+// 讓 role="button" 的元素真的能用鍵盤按
+//
+//   畫面上有 11 處是 <div role="button" tabindex="0">：交易所警示那一列、
+//   族群卡、主動 ETF 的展開列、持股列等等。它們**看起來**是按鈕、
+//   螢幕閱讀器也**報成**按鈕、Tab 也停得下來——但按 Enter 或空白鍵毫無反應，
+//   因為只有真正的 <button> 才會把 Enter 轉成 click。實測兩個鍵都是死的。
+//
+//   與其在 11 個地方各補一次 keydown，這裡用一個委派處理器一次解決，
+//   以後新增的也自動有。行為照 ARIA 的慣例：
+//   Enter 按下去就觸發，空白鍵是放開才觸發（按住時先擋掉捲動）。
+//
+//   **輸入框裡不能攔。** 在 <input> 或可編輯區域按空白鍵是打字，不是按鈕。
+// ------------------------------------------------------------
+function bindFakeButtonKeys() {
+  const fake = (e) => {
+    const el = e.target.closest?.('[role="button"]');
+    if (!el || el.tagName === 'BUTTON' || el.getAttribute('aria-disabled') === 'true') return null;
+    if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return null;
+    return el;
+  };
+  document.addEventListener('keydown', (e) => {
+    const el = fake(e);
+    if (!el) return;
+    if (e.key === 'Enter') { e.preventDefault(); el.click(); }
+    else if (e.key === ' ' || e.key === 'Spacebar') e.preventDefault();   // 先擋捲動，放開才動作
+  });
+  document.addEventListener('keyup', (e) => {
+    const el = fake(e);
+    if (el && (e.key === ' ' || e.key === 'Spacebar')) { e.preventDefault(); el.click(); }
+  });
+}
 
 function bindNav() {
   $$('.bottom-nav button').forEach((b) => {
-    b.onclick = () => { state.tab = b.dataset.tab; render(); window.scrollTo({ top: 0 }); };
+    // switchTab 會先把導覽狀態畫出來再做重的那一段，見 render.js
+    b.onclick = () => { switchTab(b.dataset.tab); window.scrollTo({ top: 0 }); };
   });
   $('#refresh-btn').onclick = refreshPrices;
   $('#login-btn').onclick = () => {
@@ -178,6 +212,7 @@ async function enterGuest() {
 async function init() {
   bindAuth();
   bindNav();
+  bindFakeButtonKeys();
   $('#guest-btn').onclick = () => enterGuest().catch(fail);
   // 免責聲明的文字只存在 legal.js 一份，這裡注入而不是寫死在 HTML，
   // 免得改了一個地方另一個地方還是舊的。

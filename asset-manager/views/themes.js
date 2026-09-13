@@ -21,7 +21,7 @@ function renderTwThemes(el) {
 
   el.innerHTML = `
     <div class="card">
-      <div class="list-title">產業營收年增率</div>
+      <div class="list-title" role="heading" aria-level="2">產業營收年增率</div>
       <p class="sub muted">${ym ? rocYm(ym) + ' 月營收' : ''}，同族群成分股加總後比去年同月。
         這是產業本身的成長，不是股價漲跌。${
         trend.some((t) => t.ym !== ym)
@@ -37,7 +37,7 @@ function renderTwThemes(el) {
         && num(info.niche_cagr) > num(info.cagr) * 2;
       return `<div class="card theme-card${mine ? ' mine' : ''}" data-theme="${esc(t.theme)}">
         <div class="row-between">
-          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}${
+          <span class="list-title" role="heading" aria-level="2">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}${
             partial ? '<span class="badge warn-badge">看小眾</span>' : ''}</span>
           <span class="theme-yoy ${plClass(num(t.yoy))}">${signed(num(t.yoy) * 100, 1)}%</span>
         </div>
@@ -150,7 +150,7 @@ function renderUsThemes(host) {
 
   host.innerHTML = `
     <div class="card">
-      <div class="list-title">美股 AI 產業地圖</div>
+      <div class="list-title" role="heading" aria-level="2">美股 AI 產業地圖</div>
       <p class="sub muted">用<b>分析師的營收預估</b>加總，看整個產業被預期要長多快。
         這是前瞻指標，跟台股那頁用已公告的月營收（落後指標）方向相反。
         基準線是那斯達克 100，報酬/波動 ${isNum(ndx) ? fmtMax(ndx, 2) : '–'}。</p>
@@ -159,7 +159,7 @@ function renderUsThemes(host) {
       const mine = myThemes.has(t.theme);
       return `<div class="card theme-card${mine ? ' mine' : ''}" data-ustheme="${esc(t.theme)}">
         <div class="row-between">
-          <span class="list-title">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
+          <span class="list-title" role="heading" aria-level="2">${esc(t.theme)}${mine ? '<span class="badge day-badge">持有</span>' : ''}</span>
           <span class="theme-yoy ${plClass(num(t.growth_next))}">${
             isNum(t.growth_next) ? signed(num(t.growth_next) * 100, 1) + '%' : '–'}</span>
         </div>
@@ -254,7 +254,7 @@ function renderThemeDay(host) {
 
   host.innerHTML = `
     <div class="card">
-      <div class="list-title">今日族群漲跌</div>
+      <div class="list-title" role="heading" aria-level="2">今日族群漲跌</div>
       <p class="sub muted">${esc(asOf || '')} 收盤。取<b>中位數</b>不取平均，一檔漲停就會把平均拉爛。
         <b>整群在漲</b>（中位數 &gt;2% 且過半上漲）的會標紅框——
         <b>那是不能去空的族群。</b></p>
@@ -263,7 +263,7 @@ function renderThemeDay(host) {
       ${rows.map((t) => `<div class="day-theme${hot(t) ? ' hot' : ''}${
         mineThemes.has(t.theme) ? ' mine' : ''}">
         <div class="row-between">
-          <span class="list-title">${esc(t.theme)}${
+          <span class="list-title" role="heading" aria-level="2">${esc(t.theme)}${
             mineThemes.has(t.theme) ? '<span class="badge day-badge">持有</span>' : ''}${
             hot(t) ? '<span class="badge warn-badge">整群在漲</span>' : ''}</span>
           <span class="theme-yoy ${plClass(num(t.chg_med))}">${signed(num(t.chg_med) * 100, 2)}%</span>

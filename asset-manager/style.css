@@ -10,17 +10,21 @@
   --border-strong: #cfd4db;
 
   /* ---------- 文字 ----------
-     三階：主要 / 次要 / 標籤。標籤比 muted 再弱一階，
-     這樣「總資產」這種欄位名就不會跟數值搶注意力。 */
+     **只有兩階，不是三階。** 原本多一階 --faint 給欄位名用，
+     實測 #94a3b8 在白底 13px 只有 2.56:1，WCAG AA 要 4.5:1——
+     而「總資產」「負債」這種欄位名正是最需要讀得到的東西。
+     那一階從頭到尾也只有 .label 一個地方在用，
+     等於為了一個用不到的層級把最該讀的字弄到讀不清楚。砍掉。 */
   --text: #0f172a;
-  --muted: #64748b;
-  --faint: #94a3b8;
+  --muted: #64748b;   /* 白底 4.76:1 */
 
   --primary: #2563eb;
   --on-primary: #ffffff;
   --danger: #dc2626;
-  --gain: #dc2626;   /* 台灣慣例：紅漲 */
-  --loss: #16a34a;   /* 綠跌 */
+  --gain: #dc2626;   /* 台灣慣例：紅漲。白底 4.83:1 */
+  /* 綠跌。原本 #16a34a 在白底只有 3.30:1，而虧損的數字是本文大小，
+     要 4.5:1。換成深一階的綠之後 5.02:1，紅綠兩邊也配得比較平衡。 */
+  --loss: #15803d;
 
   /* ---------- 狀態色 ----------
      **漲跌色不能拿來當狀態色。** 原本 warn-badge 用 --danger #dc2626，
@@ -54,6 +58,14 @@
   --shadow-1: 0 1px 2px rgba(15, 23, 42, .04), 0 1px 3px rgba(15, 23, 42, .06);
   --shadow-2: 0 2px 4px rgba(15, 23, 42, .05), 0 6px 16px rgba(15, 23, 42, .08);
 
+  /* ---------- 動效 ----------
+     時間一律取 50ms 的整數倍（Wise Design 的作法，對得齊也好記）。
+     **進場與退場不同長度**：退場約進場的三分之二，
+     這是 Stripe Sail 的結構——關掉的東西不該跟打開時一樣慢。 */
+  --dur-fast: 100ms;
+  --dur: 200ms;
+  --dur-out: 150ms;
+
   --nav-h: 60px;
   /* 內容欄寬。頁首標題、底部導覽都跟著它對齊——
      不然在 1440px 螢幕上標題貼最左、導覽七顆按鈕攤滿整個寬度，
@@ -81,8 +93,7 @@
     --border: #253045;
     --border-strong: #36425c;
     --text: #e8edf5;
-    --muted: #94a3b8;
-    --faint: #6b7a90;
+    --muted: #94a3b8;   /* 深色卡片 6.65:1 */
     --primary: #3b82f6;
     --gain: #f87171;
     --loss: #4ade80;
@@ -106,6 +117,20 @@ html, body {
   -webkit-text-size-adjust: 100%;
 }
 [hidden] { display: none !important; }
+
+/* ---------- 鍵盤對焦 ----------
+   瀏覽器預設的對焦框在深色底上幾乎看不見，而這個 app 兩種模式都要用。
+   規格照 Wise Design 公開的那一套：2px 邊框、跟元件之間留 2px，
+   顏色直接用既有的 primary，所以在任何表面上都跟著主題走。
+   WCAG 2.2 的最低是 2px，這裡等於剛好達標而不是超額——
+   真正讓它明顯的是那 2px 的間距，貼著邊的框會跟元件邊框糊在一起。
+   用 :where() 讓權重歸零，元件自己寫的對焦樣式照樣蓋得過。 */
+:where(a, button, input, select, textarea, summary, [tabindex], [role="button"]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+/* 滑鼠點下去不要跳出對焦框，只有鍵盤操作才顯示 */
+:where(a, button, input, select, textarea):focus:not(:focus-visible) { outline: none; }
 code { font-size: 90%; }
 
 /* ---------- 基本元件 ---------- */
@@ -123,7 +148,15 @@ button.link { background: none; border: none; padding: 0; color: var(--primary);
 button.link.danger { color: var(--danger); }
 button.small { padding: 6px 10px; font-size: 14px; }
 button.block { display: block; width: 100%; padding: 14px; margin: var(--sp-2) 0; border-radius: var(--radius-sm); }
-button.icon { border: none; background: none; font-size: 22px; padding: 4px 8px; line-height: 1; }
+/* 實測只有 34x30，而它是頁首唯一的動作。放大到 44 見方（iOS 的建議值），
+   字級不動，靠 flex 置中把周圍變成可按的範圍。 */
+button.icon {
+  border: none; background: none; font-size: 22px; line-height: 1; padding: 0;
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+}
+button.icon:active { background: var(--card-2); }
 button:disabled { opacity: .6; cursor: default; }
 
 input, select {
@@ -189,6 +222,10 @@ label input, label select { color: var(--text); }
   border-bottom: 1px solid var(--border);
   font-weight: 700; font-size: var(--fs-lg); letter-spacing: .01em;
 }
+/* 頁首標題是 <h1>，但外觀要跟原本的 <span> 一樣。
+   改標籤純粹是為了讓螢幕閱讀器有一個可以跳的階層起點——
+   原本整個 app 一個標題元素都沒有。 */
+#topbar-title { margin: 0; font-size: inherit; font-weight: inherit; line-height: inherit; }
 #main {
   padding: 12px 12px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom));
   max-width: var(--container); margin: 0 auto;
@@ -208,6 +245,10 @@ label input, label select { color: var(--text); }
   height: var(--nav-h); font-size: var(--fs-sm); color: var(--muted);
 }
 .bottom-nav button.active { color: var(--primary); font-weight: 700; }
+/* **按下去要馬上有反應。** 在中階手機上重畫一個分頁要好幾百毫秒，
+   這段期間如果連按鈕都沒變，使用者會以為沒按到而重複點。
+   （真正讓它畫得出來的是 render() 裡讓出一幀，見 render.js） */
+.bottom-nav button:active { background: var(--card-2); }
 /* 現在在哪一頁，只靠顏色不夠明顯，補一條頂端指示線 */
 .bottom-nav button.active::before {
   content: ''; position: absolute; top: -1px; left: 22%; right: 22%;
@@ -253,9 +294,10 @@ label input, label select { color: var(--text); }
   line-height: 1.1;
 }
 
-/* 欄位名。比 muted 再弱一階、加一點字距，才不會跟數值搶注意力 */
+/* 欄位名。**顏色不能再弱下去了**——它是「這個數字是什麼」的唯一說明。
+   要跟數值分開靠的是字級與字重的落差，不是把它調到看不清楚。 */
 .label {
-  font-size: var(--fs-sm); color: var(--faint);
+  font-size: var(--fs-sm); color: var(--muted);
   letter-spacing: .03em; font-weight: 500;
 }
 .sub { font-size: var(--fs-sm); }
@@ -310,6 +352,25 @@ div.bar {
 
 .defs dt { font-weight: 600; margin-top: var(--sp-2); }
 .defs dd { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+
+/* ---------- 骨架 ----------
+   切換分頁時先畫這個，讓使用者馬上知道按到了。
+   **不是轉圈。** 轉圈只說「在忙」，骨架連「等一下會出現什麼形狀」都說了，
+   而且不會在內容進來時讓版面跳動。
+   微光 1.4s ease-in-out，照 Stripe Sail 的參數；減少動態時整個停掉。 */
+@keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.skel {
+  background-color: var(--card-2);
+  background-image: linear-gradient(90deg, var(--card-2) 40%, var(--border) 55%, var(--card-2) 70%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+.skel-line { height: 14px; margin-bottom: var(--sp-3); }
+.skel-big  { height: 38px; width: 65%; }
+.skel-row  { height: 16px; margin-bottom: var(--sp-3); }
+.skel-row:last-child { margin-bottom: 0; }
+.w40 { width: 40%; } .w60 { width: 60%; } .w80 { width: 80%; }
 
 /* ---------- 清單項目（可點擊編輯） ---------- */
 .item {
@@ -516,6 +577,21 @@ svg.line .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3
 @keyframes spin { to { transform: rotate(360deg); } }
 .icon.spin { animation: spin .8s linear infinite; }
 
+/* ---------- 減少動態 ----------
+   **不是把所有動畫時間設成 0。** 全部歸零會讓對話框憑空出現，
+   使用者看不出它是從哪裡來的，反而更難懂。
+   作法是：留下顏色與透明度的過場（它們不會引起動暈），
+   拿掉位移、旋轉、寬度變化這些真的在動的東西。 */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-property: opacity, background-color, color, border-color, box-shadow !important;
+    transition-duration: var(--dur-fast) !important;
+    scroll-behavior: auto !important;
+  }
+  .icon.spin { animation: none; opacity: .5; }
+  .skel { animation: none; }
+}
+
 /* 對話框內唯讀欄位 */
 dialog input[readonly] { opacity: .7; }
 
@@ -548,7 +624,8 @@ dialog input[readonly] { opacity: .7; }
 /* 圓餅圖切換 */
 .seg-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
 .seg-toggle button {
-  border: none; border-radius: 0; background: none; padding: 6px 11px;
+  border: none; border-radius: 0; background: none;
+  padding: 0 14px; min-height: 40px;
   font-size: 13px; color: var(--muted);
 }
 .seg-toggle button + button { border-left: 1px solid var(--border); }
@@ -729,7 +806,8 @@ textarea.journal-input {
   border-color: color-mix(in srgb, var(--crit) 40%, var(--border));
   background: color-mix(in srgb, var(--crit) 5%, var(--card));
 }
-.alert-row { padding: 7px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.alert-row { padding: 7px 0; min-height: 44px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.alert-row:active { background: var(--card-2); }
 .alert-row:last-of-type { border-bottom: none; }
 .badge.alert-punish, .badge.alert-near { font-weight: 700; }
 .alert-box {

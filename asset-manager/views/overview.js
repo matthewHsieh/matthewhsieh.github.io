@@ -33,7 +33,7 @@ export function renderOverview(el) {
       const as = heldAlerts();
       if (!as.length) return '';
       return `<div class="card alert-card">
-        <div class="list-title">交易所警示　<span class="sub muted">${fmt(as.length)} 檔</span></div>
+        <div class="list-title" role="heading" aria-level="2">交易所警示　<span class="sub muted">${fmt(as.length)} 檔</span></div>
         ${as.map((a) => `<div class="row-between alert-row" role="button" tabindex="0"
             data-stock="tw:${esc(norm(a.symbol))}">
           <span>${alertBadge(a)}<b>${esc(a.symbol)}</b> ${esc(a.name || '')}</span>
@@ -47,7 +47,7 @@ export function renderOverview(el) {
       </div>`;
     })()}
     <div class="card">
-      <div class="row-between"><span class="list-title">目標金額</span><span>${c.target > 0 ? fmt(c.target) : '<span class="muted">未設定</span>'}</span></div>
+      <div class="row-between"><span class="list-title" role="heading" aria-level="2">目標金額</span><span>${c.target > 0 ? fmt(c.target) : '<span class="muted">未設定</span>'}</span></div>
       <div class="bar"><div class="bar-fill" style="width:${progressWidth}%"></div></div>
       <div class="row-between sub">
         <span>${pct(c.progress)}</span>
@@ -56,7 +56,7 @@ export function renderOverview(el) {
     </div>
     <div class="card" id="donut-card">
       <div class="row-between">
-        <span class="list-title">組成</span>
+        <span class="list-title" role="heading" aria-level="2">組成</span>
         <div class="seg-toggle" id="donut-toggle">
           <button type="button" data-donut="assets">資產組成</button>
           <button type="button" data-donut="exposure">曝險明細</button>
@@ -65,7 +65,7 @@ export function renderOverview(el) {
       <div id="donut-slot"></div>
     </div>
     <div class="card list">
-      <div class="list-title">曝險</div>
+      <div class="list-title" role="heading" aria-level="2">曝險</div>
       ${line('台股市值', c.stockValue)}
       ${line('複委託市值', c.usValue)}
       ${c.usLevExtra > 0 ? line('　└ 槓桿型多出來的曝險', c.usLevExtra, 0, 'sub') : ''}
@@ -82,7 +82,7 @@ export function renderOverview(el) {
         按右上角 ↻ 重新整理，或等下次自動更新。</p>` : ''}
     </div>
     ${state.warrants.length ? `<div class="card list">
-      <div class="list-title">權證風險</div>
+      <div class="list-title" role="heading" aria-level="2">權證風險</div>
       ${line('權證市值', c.warMarket)}
       ${line('delta 曝險', c.warExp)}
       ${line('最大損失（買方賠光權利金）', c.warMaxLoss)}
@@ -91,7 +91,7 @@ export function renderOverview(el) {
         系統每天記錄各檔隱波，被調降時會在「持倉」標示。${c.warNoDelta ? '<br>⚠ 有部位還沒算出 delta。' : ''}</p>
     </div>` : ''}
     ${state.options.length ? `<div class="card list">
-      <div class="list-title">選擇權風險</div>
+      <div class="list-title" role="heading" aria-level="2">選擇權風險</div>
       ${line('權利金市值（買方正、賣方負）', c.optMarket)}
       ${line('delta 曝險（絕對值加總）', c.optExposure)}
       ${line('淨方向部位（多為正）', c.optNetDelta)}

@@ -358,7 +358,7 @@ export function renderThemeMap(host, mk) {
     // 就像天賦樹的 tooltip：出現與消失都不會動到樹本身。
     return `<div class="mpop${desk ? ' anchored' : ' sheet'}${pinned ? ' pinned' : ''}">
       <div class="row-between">
-        <span class="list-title">${esc(sel)}</span>
+        <span class="list-title" role="heading" aria-level="2">${esc(sel)}</span>
         ${pinned ? '<button type="button" class="small" data-node-clear>關閉</button>'
           : '<span class="sub muted">點一下鎖定</span>'}
       </div>
@@ -384,7 +384,7 @@ export function renderThemeMap(host, mk) {
 
   host.innerHTML = `
     <div class="card mhead">
-      <div class="list-title">產業地圖</div>
+      <div class="list-title" role="heading" aria-level="2">產業地圖</div>
       <p class="sub muted">由上往下是供應鏈的流向。${mk === 'tw'
         ? '台股 39 個族群裡有 35 個互相連通，而且<b>全部匯流到伺服器組裝</b>——這不是很多條鏈，是一條大鏈。'
         : '美股這張圖同樣由上往下流，終點是雲端與 AI 應用。'}

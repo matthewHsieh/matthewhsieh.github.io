@@ -83,7 +83,7 @@ export function renderScreener(host, mk) {
   host.innerHTML = `
     <div class="card">
       <div class="row-between">
-        <span class="list-title">選股<span class="muted sub">　${mk === 'us' ? '美股' : '台股'}全市場</span></span>
+        <span class="list-title" role="heading" aria-level="2">選股<span class="muted sub">　${mk === 'us' ? '美股' : '台股'}全市場</span></span>
         <span class="sub muted" data-screen-count>${state.screenBusy ? '篩選中…'
           : `${fmt(total)} 檔符合${total > rows.length ? `，顯示前 ${fmt(rows.length)} 檔` : ''}`}</span>
       </div>

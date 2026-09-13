@@ -38,7 +38,7 @@ export function ackDisclaimer() {
 // 沒有人會讀。放在總覽最上面、要按一下才消失，讀到的機率反而高。
 export const ackBannerHtml = () => `
   <div class="card ack-card">
-    <div class="list-title">開始之前</div>
+    <div class="list-title" role="heading" aria-level="2">開始之前</div>
     <p class="sub">${DISCLAIMER_ONE_LINE}</p>
     <p class="sub muted">完整說明在「設定 → 免責聲明與資料來源」，隨時可以回去看。</p>
     <button type="button" class="block" id="ack-btn">我了解了</button>
@@ -48,7 +48,7 @@ export const ackBannerHtml = () => `
 // 因為使用者真正會問的就是這四件事。
 export const disclaimerCardHtml = () => `
   <div class="card">
-    <div class="list-title">免責聲明與資料來源</div>
+    <div class="list-title" role="heading" aria-level="2">免責聲明與資料來源</div>
 
     <dl class="defs">
       <dt>這是什麼</dt>

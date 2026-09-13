@@ -13,10 +13,10 @@ export function renderHistory(el) {
   const asc = [...snaps].reverse(); // 折線圖由舊到新
 
   el.innerHTML = `
-    <div class="card" id="chart-assets"><div class="list-title">資產走勢</div></div>
-    <div class="card" id="chart-lev"><div class="list-title">槓桿走勢</div></div>
+    <div class="card" id="chart-assets"><div class="list-title" role="heading" aria-level="2">資產走勢</div></div>
+    <div class="card" id="chart-lev"><div class="list-title" role="heading" aria-level="2">槓桿走勢</div></div>
     <div class="card">
-      <div class="list-title">買賣收益（已實現）</div>
+      <div class="list-title" role="heading" aria-level="2">買賣收益（已實現）</div>
       <div class="grid4">
         <div class="mini"><div class="label">淨損益</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
         <div class="mini"><div class="label">當沖</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
@@ -39,7 +39,7 @@ export function renderHistory(el) {
     ${tradeButton()}
     <div class="card list">
       <div class="row-between">
-        <span class="list-title">歷史交易紀錄</span>
+        <span class="list-title" role="heading" aria-level="2">歷史交易紀錄</span>
         <span class="sub muted">${(() => {
           const f = state.histFilter || 'all';
           const n = trades.filter((t) => f === 'all' || tradeCategory(t) === f).length;
@@ -105,7 +105,7 @@ export function renderHistory(el) {
     </div>
     <div class="card">
       <div class="row-between">
-        <span class="list-title">每日快照</span>
+        <span class="list-title" role="heading" aria-level="2">每日快照</span>
         <button type="button" class="small" id="snap-btn2">📌 記錄今日</button>
       </div>
       ${snaps.length

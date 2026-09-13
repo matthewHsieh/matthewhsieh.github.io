@@ -105,7 +105,7 @@ function renderLoadFailure(err) {
   const off = typeof navigator !== 'undefined' && navigator.onLine === false;
   el.innerHTML = `
     <div class="card">
-      <div class="list-title">${off ? '目前離線' : '連不上伺服器'}</div>
+      <div class="list-title" role="heading" aria-level="2">${off ? '目前離線' : '連不上伺服器'}</div>
       <p class="sub">${off
         ? '沒有網路，讀不到你的部位與行情。'
         : '連得上網路，但伺服器沒有回應。'}

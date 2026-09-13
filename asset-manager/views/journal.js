@@ -25,7 +25,7 @@ export function renderJournal(el) {
   el.innerHTML = `
     <div class="card">
       <div class="row-between">
-        <span class="list-title">${esc(today)}</span>
+        <span class="list-title" role="heading" aria-level="2">${esc(today)}</span>
         <span class="${plClass(num(todayRow?.realized))}">${signed(num(todayRow?.realized))}</span>
       </div>
       <div class="row-between sub muted">
@@ -43,7 +43,7 @@ export function renderJournal(el) {
 
     <div class="card">
       <div class="row-between">
-        <span class="list-title">我的規則</span>
+        <span class="list-title" role="heading" aria-level="2">我的規則</span>
         <button type="button" class="link" data-add-rule>＋ 新增</button>
       </div>
       ${state.rules.length
@@ -63,7 +63,7 @@ export function renderJournal(el) {
     </div>
 
     <div class="card">
-      <div class="list-title">過去的日子</div>
+      <div class="list-title" role="heading" aria-level="2">過去的日子</div>
       ${past.length
         ? past.map((d) => {
             const b = breaksOn(d.d);

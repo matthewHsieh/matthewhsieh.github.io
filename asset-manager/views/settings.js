@@ -10,13 +10,13 @@ export function renderSettings(el) {
   const st = state.settings;
   el.innerHTML = `
     <form id="settings-form" class="card">
-      <div class="list-title">目標與匯率</div>
+      <div class="list-title" role="heading" aria-level="2">目標與匯率</div>
       <label>目標金額（淨資產, TWD）<input name="target_amount" type="number" step="any" inputmode="numeric" value="${esc(num(st.target_amount))}"></label>
       <label>美金匯率（1 USD = ? TWD，每日自動更新）<input name="usd_twd" type="number" step="any" inputmode="decimal" value="${esc(num(st.usd_twd))}"></label>
       <button type="submit" class="primary block">儲存設定</button>
     </form>
     <form id="fee-form" class="card">
-      <div class="list-title">交易成本</div>
+      <div class="list-title" role="heading" aria-level="2">交易成本</div>
       <p class="sub muted">稅率是法定的、不能改。手續費因券商與折數而異，填你實際的。</p>
       <label>台股手續費率（標準 0.001425）
         <input name="fee_stock_rate" type="number" step="any" inputmode="decimal" value="${esc(feeCfg('fee_stock_rate'))}"></label>
@@ -41,7 +41,7 @@ export function renderSettings(el) {
         ${feeCfg('fee_us_rate') > 0 ? '' : '<br>⚠ 複委託費率還沒設定，美股交易的成本目前不計入。'}</p>
     </form>
     <div class="card">
-      <div class="list-title">法定稅率（不可改）</div>
+      <div class="list-title" role="heading" aria-level="2">法定稅率（不可改）</div>
       <div class="row-between line"><span>台股賣出</span><span>0.300%</span></div>
       <div class="row-between line"><span>台股當沖賣出</span><span>0.150%（政府減半）</span></div>
       <div class="row-between line"><span>權證賣出</span><span>0.100%</span></div>
@@ -51,7 +51,7 @@ export function renderSettings(el) {
         <b>只有台股現股當沖有減半優惠</b>；期貨、選擇權、權證都沒有，買賣各課一次全額。</p>
     </div>
     <div class="card">
-      <div class="list-title">行情更新</div>
+      <div class="list-title" role="heading" aria-level="2">行情更新</div>
       <p class="muted sub">${priceStamp()}</p>
       <div class="table-wrap"><table>
         <thead><tr><th>市場</th><th>資料日期</th><th>檔數</th></tr></thead>
@@ -71,7 +71,7 @@ export function renderSettings(el) {
         （報價 60 秒內、營收與分析師預估 10 分鐘內）。</p>
     </div>
     <div class="card">
-      <div class="list-title">帳號</div>
+      <div class="list-title" role="heading" aria-level="2">帳號</div>
       <p class="muted">${esc(state.user.email || '')}</p>
       <button type="button" class="block" id="logout-btn">登出</button>
       <div class="danger-zone">
@@ -85,7 +85,7 @@ export function renderSettings(el) {
     </div>
     ${disclaimerCardHtml()}
     <div class="card">
-      <div class="list-title">數字怎麼算</div>
+      <div class="list-title" role="heading" aria-level="2">數字怎麼算</div>
       <dl class="defs">
         <dt>總資產</dt><dd>台股市值 ＋ 複委託市值（換算 TWD）＋ 期貨帳戶權益數 ＋ 現金/存款</dd>
         <dt>淨資產</dt><dd>總資產 － 負債</dd>
