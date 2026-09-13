@@ -133,12 +133,21 @@ export async function refresh(msg) {
 // 手動抓最新報價（平常不用按，每天會自動更新）
 // 資料庫給前端呼叫的時間上限是 8 秒，七個來源一次跑完會超過，
 // 所以一次只抓一項；某一項失敗也不影響其他項。
+// **權證只剩一個階段。** 原本拆成認購／認售是因為要分兩次抓 5.2 MB 的
+// 全市場行情檔；現在前端這條路改抓 MIS、只抓有人持有的那幾檔，
+// 一次問完就好，不用分兩趟（見 supabase/warrant_live.sql）。
 const REFRESH_STAGES = [
   ['tw', '台股'], ['fut', '指數期貨'], ['opt', '選擇權'],
-  ['war', '權證認購'], ['warp', '權證認售'], ['fx', '匯率'], ['us', '美股'],
+  ['war', '權證'], ['fx', '匯率'], ['us', '美股'],
   ['val', '估值'], ['rev', '月營收'], ['fin', '季報'], ['est', '分析師預估'],
   ['risk', '報酬/波動'], ['usx', '美股產業'], ['sync', '套用到持倉'],
 ];
+
+// 資料庫的語句上限是 8 秒（authenticated 角色設的）。來源太慢時 PostgREST
+// 回的是 57014 / "canceling statement due to statement timeout"。
+// **這跟「壞掉」不是同一件事**：排程那條路沒有 8 秒上限，晚一點會自己補上。
+const isTimeout = (e) =>
+  e?.code === '57014' || /statement timeout|canceling statement/i.test(String(e?.message || ''));
 
 export async function runStagedRefresh(onStage) {
   const done = [];
@@ -150,7 +159,7 @@ export async function runStagedRefresh(onStage) {
       done.push({ kind, label, ok: true, rows: data?.rows ?? 0, cached: !!data?.cached });
     } catch (e) {
       console.warn('refresh ' + kind, e);
-      done.push({ kind, label, ok: false, msg: e?.message || String(e) });
+      done.push({ kind, label, ok: false, msg: e?.message || String(e), slow: isTimeout(e) });
     }
   }
   return done;
@@ -159,7 +168,13 @@ export async function runStagedRefresh(onStage) {
 export function refreshSummary(done) {
   const bad = done.filter((d) => !d.ok);
   if (!bad.length) return null;
-  return bad.map((d) => d.label).join('、') + ' 更新失敗';
+  const slow = bad.filter((d) => d.slow), broke = bad.filter((d) => !d.slow);
+  const parts = [];
+  // 講清楚哪一種。使用者看到「更新失敗」會想重按，但如果原因是來源太慢，
+  // 重按只會再失敗一次；真正會把它補起來的是排程。
+  if (slow.length) parts.push(slow.map((d) => d.label).join('、') + ' 來源太慢，排程會自動補');
+  if (broke.length) parts.push(broke.map((d) => d.label).join('、') + ' 更新失敗');
+  return parts.join('；');
 }
 
 // 全部都是伺服器回的快取 = 剛剛才有人抓過，資料庫裡就是最新的。

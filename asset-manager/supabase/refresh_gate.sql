@@ -81,8 +81,14 @@ begin
     when 'tw'  then n := public.refresh_tw_prices();
     when 'fut' then n := public.refresh_futures_prices();
     when 'opt' then n := public.refresh_option_prices();
-    when 'war'  then n := public.refresh_warrant_prices('0999');   -- 認購
-    when 'warp' then n := public.refresh_warrant_prices('0999P');  -- 認售
+    -- **權證不走全檔。** 證交所的認購權證行情檔有 5.2 MB，回應時間在
+    -- 1.3 秒到 8.8 秒之間跳，而這條路只有 8 秒（authenticated 的
+    -- statement_timeout，在最外層語句就latched，函式內部改不動）。
+    -- 證交所慢的時候就會失敗——使用者回報的「權證有時候會抓失敗」就是這個。
+    -- 改走 MIS 只抓有人持有的那幾檔，實測 3.5 KB／91 毫秒。全檔留給排程。
+    -- 'warp' 保留是為了相容還沒更新的前端，兩者做同一件事。
+    when 'war'  then n := public.refresh_warrant_held();
+    when 'warp' then n := public.refresh_warrant_held();
     when 'fx'  then n := coalesce((public.refresh_fx() is not null)::int, 0);
     when 'us'  then n := public.refresh_us_prices();
     when 'val' then n := public.refresh_valuation();
@@ -90,12 +96,18 @@ begin
     when 'rev' then n := public.refresh_revenue();
     when 'fin' then n := public.refresh_financials();
     when 'est' then n := public.refresh_estimates(12);
-    when 'risk' then n := public.refresh_risk_stats(120);
+    -- **這一支原本是 120 檔，實測要 19.45 秒，從前端呼叫是 100% 必定失敗**
+    -- （不是偶爾，是每一次）。使用者每按一次 ↻ 就固定看到「報酬/波動 更新失敗」。
+    -- refresh_risk_stats 是照 updated_at 排序的滾動補抓，每次呼叫推進一批就好，
+    -- 批量大小不影響正確性，只影響進度。排程那條（update_risk）照舊 600 檔。
+    -- 每檔約 162 毫秒，12 檔約 2 秒，就算 Yahoo 慢三倍也還在 8 秒內。
+    when 'risk' then n := public.refresh_risk_stats(12);
     when 'usrisk' then n := public.refresh_us_risk(120);
     when 'prof' then n := public.refresh_company_profiles(8);
     when 'usest' then n := public.refresh_us_est(30);
     when 'usprof' then n := public.refresh_us_profiles(30);
-    when 'usx' then n := public.refresh_us_stats(8);
+    -- 同理：8 檔實測 3.28 秒，已經用掉四成預算。減到 5 檔留出餘裕。
+    when 'usx' then n := public.refresh_us_stats(5);
     when 'sync' then n := public.sync_positions(auth.uid());
     else raise exception 'unknown market %', p_kind;
   end case;
