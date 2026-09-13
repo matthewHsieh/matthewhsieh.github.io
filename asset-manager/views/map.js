@@ -524,22 +524,54 @@ export function renderThemeMap(host, mk) {
   // **點空白處就關掉。** 原本一定要按到那顆「關閉」，
   // 在手機上那是個很小的目標，在桌機上也不合直覺——
   // 浮出視窗的通用行為就是點外面關掉、Esc 關掉。
+  // ------------------------------------------------------------
+  // 點外面關掉
+  //
+  //   **絕對不能綁在 pointerdown。** 手指滑動的第一個事件就是 pointerdown，
+  //   所以「我想往下捲看看別的」會被當成「點到外面」，選取當場被清掉。
+  //   使用者回報的「我要滑到下面但是一點又會關閉當前選擇」就是這個——
+  //   在手機上等於選了東西就不能捲，只能二選一。
+  //
+  //   實測一次背景滑動送出的事件：
+  //     pointerdown → touchstart → touchmove → **pointercancel** → touchmove… → touchend
+  //   一次輕點：
+  //     pointerdown → touchstart → pointerup → touchend
+  //   瀏覽器接手捲動時會送 pointercancel，那就是「這不是點擊」的明確訊號。
+  //
+  //   所以：pointerdown 只記起點，pointerup 時位移小於門檻才算點擊，
+  //   收到 pointercancel 直接放棄。門檻用 10px，跟一般拖曳判定的慣例一致。
+  // ------------------------------------------------------------
   if (state.mapPick && !state.mapOutside) {
-    state.mapOutside = (e) => {
-      if (!state.mapPick) return;
-      if (e.target.closest && (e.target.closest('.mpop') || e.target.closest('[data-node]')
-          || e.target.closest('#info-dialog'))) return;
+    const clear = () => {
       state.mapPick = null;
       const h = $('[data-themebody]');
       if (h && $('.mapwrap', h)) renderThemeMap(h, state.themeMarket === 'us' ? 'us' : 'tw');
     };
-    state.mapEsc = (e) => { if (e.key === 'Escape' && state.mapPick) state.mapOutside({ target: document.body }); };
-    // 用 capture 會在按鈕自己的 onclick 之前跑，那樣點節點會先被關掉，所以不加
-    addEventListener('pointerdown', state.mapOutside);
+    // 點在這些東西上不算「外面」
+    const inside = (el) => !!(el && el.closest && (el.closest('.mpop') || el.closest('[data-node]')
+      || el.closest('#info-dialog') || el.closest('.mhead') || el.closest('.topbar')));
+
+    let cand = null;
+    const onDown = (e) => { cand = { x: e.clientX, y: e.clientY, t: e.target }; };
+    const onCancel = () => { cand = null; };
+    const onUp = (e) => {
+      const c = cand; cand = null;
+      if (!c || !state.mapPick) return;
+      if (Math.hypot(e.clientX - c.x, e.clientY - c.y) > 10) return;   // 位移太大＝在滑不是在點
+      if (inside(c.t) || inside(e.target)) return;
+      clear();
+    };
+    state.mapOutside = { onDown, onUp, onCancel, clear };
+    state.mapEsc = (e) => { if (e.key === 'Escape' && state.mapPick) clear(); };
+    addEventListener('pointerdown', onDown);
+    addEventListener('pointerup', onUp);
+    addEventListener('pointercancel', onCancel);
     addEventListener('keydown', state.mapEsc);
   }
   if (!state.mapPick && state.mapOutside) {
-    removeEventListener('pointerdown', state.mapOutside);
+    removeEventListener('pointerdown', state.mapOutside.onDown);
+    removeEventListener('pointerup', state.mapOutside.onUp);
+    removeEventListener('pointercancel', state.mapOutside.onCancel);
     removeEventListener('keydown', state.mapEsc);
     state.mapOutside = null; state.mapEsc = null;
   }
