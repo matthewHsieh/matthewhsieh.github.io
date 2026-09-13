@@ -46,6 +46,8 @@ export const state = {
   screenOpen: false,                  // 選股條件面板要不要展開
   mapPick: null, mapGroup: '',        // 產業地圖：選中的族群、大類篩選
   mapBound: false, mapResizeT: null,  // 桌機版重畫連線用
+  mapW: 0,                            // 上次重繪時的視窗寬度（只有寬度變了才需要重畫連線）
+  mapScrolledFor: null,               // 已經為哪一個選取自動捲過了，避免每次重繪都把畫面拉回去
   mapLit: null,                       // 選中時整條路徑上的族群
   mapOutside: null, mapEsc: null,     // 點外面／Esc 關閉浮出框
   guest: false,    // 沒登入也可以看族群與產業地圖，但看不到任何個人資料

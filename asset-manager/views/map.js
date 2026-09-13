@@ -327,6 +327,10 @@ export function renderThemeMap(host, mk) {
     return;
   }
   const sel = state.mapPick && metas.some((m) => m.theme === state.mapPick) ? state.mapPick : null;
+  // 沒有選取就把「捲過了」的記號清掉。**所有取消的路徑都會經過這裡**——
+  // 只在 clear() 裡清的話，「再點同一個節點取消」那條路會漏掉，
+  // 下次再選它就不會自動捲了。
+  if (!sel) state.mapScrolledFor = null;
   const desk = isDesk();
   const grp = state.mapGroup || '';
   const held = mk === 'tw' ? heldSymbols() : new Set(state.us.map((s) => norm(s.symbol)));
@@ -553,6 +557,7 @@ export function renderThemeMap(host, mk) {
   if (state.mapPick && !state.mapOutside) {
     const clear = () => {
       state.mapPick = null;
+      state.mapScrolledFor = null;   // 下次再選同一個節點時要重新捲一次
       const h = $('[data-themebody]');
       if (h && $('.mapwrap', h)) renderThemeMap(h, state.themeMarket === 'us' ? 'us' : 'tw');
     };
@@ -601,9 +606,18 @@ export function renderThemeMap(host, mk) {
     });
     // 視窗寬度變了，線的位置就不對了
     clearTimeout(state.mapResizeT);
+    state.mapW = innerWidth;
     if (!state.mapBound) {
       state.mapBound = true;
+      // **只有寬度變了才重繪。**
+      //   手機一往下捲，瀏覽器的網址列就收合，視窗高度跟著變，於是送出 resize。
+      //   原本不分青紅皂白重繪，而重繪的最後一段會把選中的節點捲回畫面中間——
+      //   結果就是「往下滑還是會自動被往上拉」。
+      //   實測：捲到 2224 之後把高度從 844 改成 790，位置被拉回 1640。
+      //   重繪的理由本來就只有「版面寬度變了、連線座標要重算」，
+      //   高度變化不影響任何 x 座標，也不需要重畫。
       addEventListener('resize', () => {
+        if (innerWidth === state.mapW) return;
         clearTimeout(state.mapResizeT);
         state.mapResizeT = setTimeout(() => {
           const h = $('[data-themebody]');
@@ -618,7 +632,11 @@ export function renderThemeMap(host, mk) {
   // 而視窗下面 38% 被面板蓋著，結果那一格會停在面板邊緣、被切掉一半。
   // 實測：節點頂端 y=382、面板頂端 y=453，中間只差 71px，
   // 所以那一格的成長率數字整排被切掉。
-  if (sel && !desk) {
+  //   **而且只在「選取真的換了」的時候捲一次。**
+  //   renderThemeMap 會因為很多原因重跑（篩選、換市場、resize…），
+  //   每次都捲一遍的話，使用者自己捲到哪裡都會被拉回來。
+  if (sel && !desk && state.mapScrolledFor !== sel) {
+    state.mapScrolledFor = sel;
     const n = $$('.mnode', host).find((x) => x.dataset.node === sel);
     if (n) {
       requestAnimationFrame(() => {
