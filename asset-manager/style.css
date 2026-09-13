@@ -1019,6 +1019,14 @@ textarea.journal-input {
 .mapwrap.vert .mnode .mname { font-size: 11px; }
 /* 手機沒有 hover，按下去要有回饋 */
 .mapwrap.vert .mnode:active { transform: scale(.94); }
+/* **選取時底部要留白。** 不然最下面那一排節點被面板蓋住而且捲不出來——
+   實測選 IDC 資料中心時頁面已經在 2491/2491 捲到底，那一格永遠看不到。
+   這就是地圖 SDK 說的 padding／content inset，Compose 的 BottomSheetScaffold
+   也是把 peek height 當成內容的 bottom padding 傳下去。
+   只在有選取時才加，沒選的時候不該有一塊空白。 */
+.mapwrap.vert.has-sel { padding-bottom: 44vh; }
+/* scrollIntoView 之類的操作也要避開面板，這是 CSS 版的「地圖留白」 */
+.mapwrap.vert.has-sel { scroll-padding-bottom: 44vh; }
 /* **直式的線要更淡。** 桌機有 1240px 把線攤開，直式只有 390px，
    四十幾條線全擠在同樣的寬度裡，用桌機的 .5 會變成一團毛線。
    靜止時當成一層淡淡的紋理就好——真正要看的是點下去之後那一條路徑。 */
@@ -1101,12 +1109,25 @@ textarea.journal-input {
 .mpop.sheet .list-title { font-size: 15px; }
 .mpop.sheet .mgroup { margin-top: 8px; }
 .mpop.sheet .chip.plain { font-size: 12px; padding: 3px 8px; }
-.mpop-acts { display: flex; gap: 6px; flex: none; }
-/* 收起：只留標題那一條，圖整棵看得到，而選取與亮線都還在。
-   高度用 max-height 過場，收起與展開都看得出來是同一塊東西縮放，
-   不是憑空消失又憑空出現。 */
+/* 把手。尺寸照 Material 的 drag handle token：視覺 32×4，
+   但外面墊到 44px 高當觸控目標（他們用 48dp，這裡面板本來就矮一點）。
+   它同時是「這塊可以收合」的暗示——一顆寫著「收起」的字鈕沒有這個作用。 */
+.mpop-grip {
+  display: block; width: 100%; border: none; background: none;
+  padding: 14px 0 10px; cursor: pointer;
+}
+.mpop-grip::before {
+  content: ''; display: block; width: 32px; height: 4px; margin: 0 auto;
+  border-radius: 999px; background: var(--border-strong);
+}
+.mpop-grip:active::before { background: var(--muted); }
+
+/* 收起：只留把手與標題那一條，圖整棵看得到，而選取與亮線都還在。
+   58px 跟 Material 的 peek height（56dp）幾乎一樣。 */
 .mpop.sheet { transition: max-height var(--dur) ease; }
-.mpop.sheet.folded { max-height: 58px; overflow: hidden; padding-bottom: 8px; }
+.mpop.sheet.folded { max-height: 92px; overflow: hidden; }
+/* 面板內部捲到底之後不要把捲動傳給下面的地圖 */
+.mpop.sheet { overscroll-behavior: contain; }
 
 @media (min-width: 900px) {
   /* 桌機：絕對定位貼在被點的格子旁邊。定位算好之前先不要顯示，

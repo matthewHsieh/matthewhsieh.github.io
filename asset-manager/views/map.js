@@ -408,16 +408,16 @@ export function renderThemeMap(host, mk) {
     // 點下一格又推一次，位置一直跳——使用者的說法是「不穩定」。
     // 改成浮在地圖上、貼著被點的那一格（桌機）或釘在底部（手機），
     // 就像天賦樹的 tooltip：出現與消失都不會動到樹本身。
-    return `<div class="mpop${desk ? ' anchored' : ' sheet'}${pinned ? ' pinned' : ''}">
+    // 非強制回應的面板：**不要 aria-modal、不要 inert 背景**。
+    // ARIA 規格說 aria-modal 只能用在真的擋住其他內容的對話框上，
+    // 標錯會讓輔助科技使用者讀不到旁邊的圖。這裡背景是可以繼續操作的，
+    // 所以用有標籤的 region。
+    return `<div class="mpop${desk ? ' anchored' : ' sheet'}${pinned ? ' pinned' : ''}"
+      role="region" aria-label="${esc(sel)} 的說明">
+      ${desk || !pinned ? '' : '<button type="button" class="mpop-grip" data-pop-fold aria-label="收合或展開說明"></button>'}
       <div class="row-between mpop-bar">
         <span class="list-title" role="heading" aria-level="2">${esc(sel)}</span>
-        ${pinned ? `<span class="mpop-acts">${desk ? ''
-          // **手機要有「收起來但不取消選取」。** 桌機的說明浮在旁邊、
-          // 樹整棵看得到；手機的面板佔 38vh，一定會蓋到剛亮起來的節點。
-          // 原本只有「關閉」，而關閉會把選取一起清掉，等於想看圖就得先失去重點——
-          // 這就是「用法跟電腦版不一樣」的地方。收起之後選取還在，圖是亮的。
-          : '<button type="button" class="small" data-pop-fold>收起</button>'}
-          <button type="button" class="small" data-node-clear>關閉</button></span>`
+        ${pinned ? '<button type="button" class="small" data-node-clear>關閉</button>'
           : '<span class="sub muted">點一下鎖定</span>'}
       </div>
       <p class="sub muted">${esc(meta?.parent || '')}・${esc(meta?.stage || '')}　${
@@ -453,7 +453,7 @@ export function renderThemeMap(host, mk) {
           grp === p ? ' on' : ''}" data-group="${esc(p)}">${esc(p)}</button>`).join('')}
       </div>
     </div>
-    <div class="mapwrap${desk ? ' desk' : ' vert'}">
+    <div class="mapwrap${desk ? ' desk' : ' vert'}${sel && !desk ? ' has-sel' : ''}">
       <svg class="medges" aria-hidden="true"></svg>
       ${desk ? detail : ''}
       ${desk
@@ -514,11 +514,15 @@ export function renderThemeMap(host, mk) {
   }
   $$('[data-node-clear]', host).forEach((b) => (b.onclick = () => { state.mapPick = null; renderThemeMap(host, mk); }));
   // 收起只是把面板縮成一條，選取與圖上的亮線都留著。再點標題就展開。
+  // 把手：點一下在「展開／收起」之間切換。
+  // Material 的 drag handle 與 Apple 的 grabber 都明講可以點擊切換段位，
+  // 所以這裡用把手而不是一顆寫著「收起」的字鈕——它同時是「可以拖」的暗示。
+  // 收起時選取與圖上的亮線都留著，這正是桌機「樹本身不動」的等價物。
   $$('[data-pop-fold]', host).forEach((b) => (b.onclick = (e) => {
     e.stopPropagation();
     const pop = b.closest('.mpop');
     const folded = pop.classList.toggle('folded');
-    b.textContent = folded ? '展開' : '收起';
+    b.setAttribute('aria-expanded', folded ? 'false' : 'true');
   }));
 
   // **點空白處就關掉。** 原本一定要按到那顆「關閉」，
@@ -527,19 +531,24 @@ export function renderThemeMap(host, mk) {
   // ------------------------------------------------------------
   // 點外面關掉
   //
-  //   **絕對不能綁在 pointerdown。** 手指滑動的第一個事件就是 pointerdown，
-  //   所以「我想往下捲看看別的」會被當成「點到外面」，選取當場被清掉。
-  //   使用者回報的「我要滑到下面但是一點又會關閉當前選擇」就是這個——
-  //   在手機上等於選了東西就不能捲，只能二選一。
+  //   **用 click，不要用 pointerdown，也不要自己拼 pointerdown+pointerup。**
   //
-  //   實測一次背景滑動送出的事件：
-  //     pointerdown → touchstart → touchmove → **pointercancel** → touchmove… → touchend
-  //   一次輕點：
-  //     pointerdown → touchstart → pointerup → touchend
-  //   瀏覽器接手捲動時會送 pointercancel，那就是「這不是點擊」的明確訊號。
+  //   原本綁 pointerdown：手指滑動的第一個事件就是它，所以「我想往下捲」
+  //   會被當成「點到外面」，選取當場被清掉——在手機上等於選了東西就不能捲。
+  //   而且 WCAG 2.5.2 Pointer Cancellation（A 級）明文寫著
+  //   「不得用 down 事件執行任何功能」，那是無障礙的失分項而不只是難用。
   //
-  //   所以：pointerdown 只記起點，pointerup 時位移小於門檻才算點擊，
-  //   收到 pointercancel 直接放棄。門檻用 10px，跟一般拖曳判定的慣例一致。
+  //   查過規格與各家函式庫之後改用 click：
+  //   · HTML 的 popover light dismiss 原本就是 pointerdown+pointerup 配對，
+  //     但規格編輯者已經放棄那個作法，理由逐字是「讓觸控捲動不再觸發關閉」，
+  //     Chrome 正在換成 click（whatwg/html#11536）。
+  //   · Open UI 正式決議：捲動不該關閉浮出層（open-ui#240）。
+  //   · Bootstrap、Material Web、MUI 預設都是 click / touchend 這類尾端事件。
+  //   關鍵保證是：**觸控拖曳變成捲動時，瀏覽器不會送出 click。**
+  //   所以捲動對這個處理器來說等於什麼事都沒發生，不用再自己算位移門檻。
+  //
+  //   用 capture 讓中間的 stopPropagation() 蓋不掉它；延到下一個 task 才註冊，
+  //   否則「打開它的那一下 click」會冒泡上來把自己關掉。
   // ------------------------------------------------------------
   if (state.mapPick && !state.mapOutside) {
     const clear = () => {
@@ -551,27 +560,23 @@ export function renderThemeMap(host, mk) {
     const inside = (el) => !!(el && el.closest && (el.closest('.mpop') || el.closest('[data-node]')
       || el.closest('#info-dialog') || el.closest('.mhead') || el.closest('.topbar')));
 
-    let cand = null;
-    const onDown = (e) => { cand = { x: e.clientX, y: e.clientY, t: e.target }; };
-    const onCancel = () => { cand = null; };
-    const onUp = (e) => {
-      const c = cand; cand = null;
-      if (!c || !state.mapPick) return;
-      if (Math.hypot(e.clientX - c.x, e.clientY - c.y) > 10) return;   // 位移太大＝在滑不是在點
-      if (inside(c.t) || inside(e.target)) return;
+    const onClick = (e) => {
+      if (!state.mapPick || inside(e.target)) return;
       clear();
     };
-    state.mapOutside = { onDown, onUp, onCancel, clear };
-    state.mapEsc = (e) => { if (e.key === 'Escape' && state.mapPick) clear(); };
-    addEventListener('pointerdown', onDown);
-    addEventListener('pointerup', onUp);
-    addEventListener('pointercancel', onCancel);
+    const timer = setTimeout(() => addEventListener('click', onClick, true), 0);
+    state.mapOutside = { onClick, timer };
+    // Esc 關掉之後要擋住往上傳，否則外層也會跟著處理同一次 Esc
+    state.mapEsc = (e) => {
+      if (e.key !== 'Escape' || !state.mapPick) return;
+      clear();
+      e.stopPropagation();
+    };
     addEventListener('keydown', state.mapEsc);
   }
   if (!state.mapPick && state.mapOutside) {
-    removeEventListener('pointerdown', state.mapOutside.onDown);
-    removeEventListener('pointerup', state.mapOutside.onUp);
-    removeEventListener('pointercancel', state.mapOutside.onCancel);
+    clearTimeout(state.mapOutside.timer);
+    removeEventListener('click', state.mapOutside.onClick, true);
     removeEventListener('keydown', state.mapEsc);
     state.mapOutside = null; state.mapEsc = null;
   }
