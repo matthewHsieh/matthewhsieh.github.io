@@ -409,9 +409,15 @@ export function renderThemeMap(host, mk) {
     // 改成浮在地圖上、貼著被點的那一格（桌機）或釘在底部（手機），
     // 就像天賦樹的 tooltip：出現與消失都不會動到樹本身。
     return `<div class="mpop${desk ? ' anchored' : ' sheet'}${pinned ? ' pinned' : ''}">
-      <div class="row-between">
+      <div class="row-between mpop-bar">
         <span class="list-title" role="heading" aria-level="2">${esc(sel)}</span>
-        ${pinned ? '<button type="button" class="small" data-node-clear>關閉</button>'
+        ${pinned ? `<span class="mpop-acts">${desk ? ''
+          // **手機要有「收起來但不取消選取」。** 桌機的說明浮在旁邊、
+          // 樹整棵看得到；手機的面板佔 38vh，一定會蓋到剛亮起來的節點。
+          // 原本只有「關閉」，而關閉會把選取一起清掉，等於想看圖就得先失去重點——
+          // 這就是「用法跟電腦版不一樣」的地方。收起之後選取還在，圖是亮的。
+          : '<button type="button" class="small" data-pop-fold>收起</button>'}
+          <button type="button" class="small" data-node-clear>關閉</button></span>`
           : '<span class="sub muted">點一下鎖定</span>'}
       </div>
       <p class="sub muted">${esc(meta?.parent || '')}・${esc(meta?.stage || '')}　${
@@ -507,6 +513,13 @@ export function renderThemeMap(host, mk) {
     });
   }
   $$('[data-node-clear]', host).forEach((b) => (b.onclick = () => { state.mapPick = null; renderThemeMap(host, mk); }));
+  // 收起只是把面板縮成一條，選取與圖上的亮線都留著。再點標題就展開。
+  $$('[data-pop-fold]', host).forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    const pop = b.closest('.mpop');
+    const folded = pop.classList.toggle('folded');
+    b.textContent = folded ? '展開' : '收起';
+  }));
 
   // **點空白處就關掉。** 原本一定要按到那顆「關閉」，
   // 在手機上那是個很小的目標，在桌機上也不合直覺——
@@ -563,10 +576,24 @@ export function renderThemeMap(host, mk) {
     }
   }
 
-  // 手機：把選中的格子捲到畫面中間。底部面板佔 38vh，中間剛好在它上面，
-  // 所以點完之後看得到那一格與它亮起來的鄰居。
+  // 手機：把選中的格子捲到**面板上方那塊看得到的區域**的中間。
+  // **不能用 scrollIntoView({block:'center'})**——它對齊的是整個視窗中央，
+  // 而視窗下面 38% 被面板蓋著，結果那一格會停在面板邊緣、被切掉一半。
+  // 實測：節點頂端 y=382、面板頂端 y=453，中間只差 71px，
+  // 所以那一格的成長率數字整排被切掉。
   if (sel && !desk) {
     const n = $$('.mnode', host).find((x) => x.dataset.node === sel);
-    if (n) n.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (n) {
+      requestAnimationFrame(() => {
+        const pop = $('.mpop.sheet');
+        const top = $('.topbar')?.getBoundingClientRect().bottom || 0;
+        const bottom = pop ? pop.getBoundingClientRect().top : innerHeight;
+        const r = n.getBoundingClientRect();
+        // 目標：節點中心落在 (topbar 底, 面板頂) 這段的正中間
+        const want = (top + bottom) / 2;
+        const dy = (r.top + r.height / 2) - want;
+        if (Math.abs(dy) > 4) scrollBy({ top: dy, behavior: 'smooth' });
+      });
+    }
   }
 }
