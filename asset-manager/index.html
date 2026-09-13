@@ -102,6 +102,16 @@
   </div>
 </dialog>
 
+<!-- 更新進度。抓報價要跑 14 個來源、大約 6 秒，
+     原本只有一連串會互相蓋掉的 toast，看不出還剩幾項，也沒辦法先去做別的事。 -->
+<div id="sync-bar" hidden>
+  <div class="sync-fill"></div>
+  <div class="sync-body">
+    <span class="sync-text" role="status"></span>
+    <button type="button" class="sync-close" id="sync-dismiss" aria-label="收起（更新會繼續）">×</button>
+  </div>
+</div>
+
 <div id="toast" role="status" hidden></div>
 
 <script type="module" src="./app.js"></script>

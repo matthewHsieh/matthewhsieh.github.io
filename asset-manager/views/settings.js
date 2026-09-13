@@ -1,5 +1,5 @@
 import { $, esc, fail, fmt, num, sb, state, toast } from '../core.js';
-import { MARKET_NAME, allCached, loadAll, newestAsOf, refreshSummary, runStagedRefresh, statusOf } from '../data.js';
+import { MARKET_NAME, newestAsOf, refreshPrices, statusOf } from '../data.js';
 import { disclaimerCardHtml } from '../legal.js';
 import { render } from '../render.js';
 import { TW_ENTRIES } from '../symbols.js';
@@ -130,21 +130,17 @@ export function renderSettings(el) {
     render();
     toast('費率已儲存');
   };
+  // 跟右上角 ↻ 走同一條路，進度也顯示在同一條進度條上，
+  // 不要一個用按鈕文字、一個用 toast 各講各的
   $('#force-price', el).onclick = async () => {
     const b = $('#force-price', el);
-    b.disabled = true;
+    b.disabled = true; b.textContent = '更新中…';
     try {
-      const done = await runStagedRefresh((label) => { b.textContent = `更新中：${label}…`; });
-      await loadAll(); render();
-      const bad = refreshSummary(done);
-      toast(
-        bad ? bad + '，其餘已更新'
-          : allCached(done) ? '已是最新（剛剛更新過，直接用快取）'
-            : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`,
-        bad ? 5000 : 2500);
-    } catch (e) {
-      fail(e);
-      b.disabled = false; b.textContent = '立即重新抓取報價';
+      await refreshPrices({ force: true });
+    } finally {
+      // render() 可能已經把整頁重畫過，這個按鈕可能不在了
+      const again = $('#force-price');
+      if (again) { again.disabled = false; again.textContent = '立即重新抓取報價'; }
     }
   };
   $('#logout-btn', el).onclick = async () => {

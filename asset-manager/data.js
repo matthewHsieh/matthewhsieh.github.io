@@ -143,7 +143,7 @@ const REFRESH_STAGES = [
 export async function runStagedRefresh(onStage) {
   const done = [];
   for (const [kind, label] of REFRESH_STAGES) {
-    if (onStage) onStage(label);
+    if (onStage) onStage(label, done.length, REFRESH_STAGES.length);
     try {
       const { data, error } = await sb.rpc('refresh_market', { p_kind: kind });
       if (error) throw error;
@@ -166,6 +166,68 @@ export function refreshSummary(done) {
 // 要講出來，不然使用者看到一秒就跑完會以為沒動作。
 export const allCached = (done) => done.length > 0 && done.every((d) => d.ok && d.cached);
 
+// ------------------------------------------------------------
+// 更新進度條
+//
+//   抓報價要跑 14 個來源、大約 6 秒。原本是每一項換一個 toast，
+//   互相蓋掉，使用者既看不出「還剩幾項」，也不知道可不可以先去做別的事。
+//   改成底部一條進度條，寫清楚第幾項／共幾項與正在抓什麼，
+//   而且**可以收起來**——收起之後更新照樣跑完，只是不再佔著畫面。
+//   （Monarch 的 "Syncing 3 of 29…" 就是這個形狀。）
+// ------------------------------------------------------------
+let syncHideTimer;
+// **收起之後就不能再自己跳回來。** 每一個階段都會呼叫 syncShow()，
+// 少了這個旗標，使用者按下收起、下一項一抓好它就又冒出來，
+// 等於那顆鈕沒有作用（實測 7 秒後就自己回來了）。
+let syncDismissed = false;
+
+function syncBar() {
+  return { bar: $('#sync-bar'), fill: $('#sync-bar .sync-fill'), text: $('#sync-bar .sync-text') };
+}
+
+function syncStart() {
+  syncDismissed = false;
+}
+
+function syncShow(label, i, total) {
+  if (syncDismissed) return;
+  const { bar, fill, text } = syncBar();
+  if (!bar) return;
+  clearTimeout(syncHideTimer);
+  bar.classList.remove('failed');
+  bar.hidden = false;
+  fill.style.width = `${Math.round((i / total) * 100)}%`;
+  text.textContent = `更新中 ${i + 1}/${total}・${label}`;
+}
+
+function syncFinish(msg, bad) {
+  const { bar, fill, text } = syncBar();
+  // 被收起來的就不要自己跳回來，使用者已經表示不想看了
+  if (!bar || syncDismissed || bar.hidden) return;
+  fill.style.width = '100%';
+  bar.classList.toggle('failed', !!bad);
+  text.textContent = msg;
+  clearTimeout(syncHideTimer);
+  syncHideTimer = setTimeout(syncHide, bad ? 6000 : 2500);
+}
+
+function syncHide(byUser) {
+  const { bar, fill } = syncBar();
+  if (!bar) return;
+  if (byUser) syncDismissed = true;
+  clearTimeout(syncHideTimer);
+  bar.hidden = true;
+  bar.classList.remove('failed');
+  fill.style.width = '0';
+}
+
+// 收起只是收起，不取消更新。**一定要在這裡綁一次**，
+// 因為 #sync-bar 是 index.html 裡的固定元素，不會被 render() 重畫。
+export function bindSyncBar() {
+  const b = $('#sync-dismiss');
+  if (b) b.onclick = () => syncHide(true);
+}
+
 // 前端的冷卻。伺服器那邊 refresh_market() 已經有一份全站共用的冷卻，
 // 這裡再擋一層純粹是為了**立刻給回應**——
 // 連點的時候與其跑 14 輪 RPC 再收到 14 個「cached」，
@@ -173,28 +235,33 @@ export const allCached = (done) => done.length > 0 && done.every((d) => d.ok && 
 const MANUAL_COOLDOWN_MS = 60_000;
 let lastManualRefresh = 0;
 
-export async function refreshPrices() {
+// force：設定頁那顆「立即重新抓取報價」用的。那是使用者專程走進設定頁按的，
+// 擋他等六十秒只會讓他以為壞了。**來源仍然受保護**——伺服器端的全站冷卻還在，
+// 真的太頻繁的話 refresh_market() 會直接回快取。
+export async function refreshPrices({ force = false } = {}) {
   const waited = Date.now() - lastManualRefresh;
-  if (waited < MANUAL_COOLDOWN_MS) {
+  if (!force && waited < MANUAL_COOLDOWN_MS) {
     return toast(`剛剛才更新過，${Math.ceil((MANUAL_COOLDOWN_MS - waited) / 1000)} 秒後可以再按`);
   }
   lastManualRefresh = Date.now();
 
   const btn = $('#refresh-btn');
   btn.classList.add('spin');
+  syncStart();
   try {
-    const done = await runStagedRefresh((label) => toast('更新中：' + label, 8000));
+    const done = await runStagedRefresh(syncShow);
     await loadAll();
     render();
     const bad = refreshSummary(done);
-    toast(
+    syncFinish(
       bad ? bad + '，其餘已更新'
         : allCached(done) ? '已是最新（剛剛更新過，直接用快取）'
           : `報價已更新（${statusOf('tw')?.as_of ?? ''}）`,
-      bad ? 5000 : 2500);
+      bad);
   } catch (e) {
     // 整批失敗就把冷卻放掉，不要讓使用者被鎖著不能重試
     lastManualRefresh = 0;
+    syncHide();
     fail(e);
   } finally {
     btn.classList.remove('spin');

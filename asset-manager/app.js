@@ -22,7 +22,7 @@
 // 要動它們的話，改成事件或 registry 就能解開，目前不值得。
 // ============================================================
 import { $, $$, fail, sb, state, toast } from './core.js';
-import { refresh, refreshPrices } from './data.js';
+import { bindSyncBar, refresh, refreshPrices } from './data.js';
 import { DISCLAIMER_ONE_LINE } from './legal.js';
 import { GUEST_TABS, switchTab } from './render.js';
 import { loadTwStocks } from './symbols.js';
@@ -65,7 +65,9 @@ function bindNav() {
     // switchTab 會先把導覽狀態畫出來再做重的那一段，見 render.js
     b.onclick = () => { switchTab(b.dataset.tab); window.scrollTo({ top: 0 }); };
   });
-  $('#refresh-btn').onclick = refreshPrices;
+  // 不要直接把函式當 handler：click 事件物件會變成第一個參數，
+  // 而 refreshPrices 現在收的是 { force } 選項物件
+  $('#refresh-btn').onclick = () => refreshPrices();
   $('#login-btn').onclick = () => {
     state.guest = false;
     $('#app-view').hidden = true;
@@ -213,6 +215,7 @@ async function init() {
   bindAuth();
   bindNav();
   bindFakeButtonKeys();
+  bindSyncBar();
   $('#guest-btn').onclick = () => enterGuest().catch(fail);
   // 免責聲明的文字只存在 legal.js 一份，這裡注入而不是寫死在 HTML，
   // 免得改了一個地方另一個地方還是舊的。

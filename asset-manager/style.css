@@ -442,6 +442,45 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
   padding: 10px 16px; border-radius: 99px; font-size: 14px; max-width: 90vw;
 }
 
+/* ---------- 更新進度條 ----------
+   照 Monarch 的作法：顯示「第幾項／共幾項」與正在抓什麼，而且**可以收起來**，
+   收起後更新照樣在背景跑完。原本是一連串會互相蓋掉的 toast，
+   使用者既看不出進度，也被迫站在原地等。
+   位置在底部導覽的正上方，不遮住導覽。 */
+#sync-bar {
+  position: fixed; left: 0; right: 0; z-index: 6;
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom));
+  padding-inline: max(0px, calc((100% - var(--rail)) / 2));
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-top: 1px solid var(--border);
+}
+.sync-fill {
+  height: 3px; width: 0; background: var(--primary);
+  transition: width var(--dur) ease;
+}
+.sync-body {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 8px var(--sp-4) 8px var(--sp-4);
+}
+.sync-text {
+  flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.sync-close {
+  border: none; background: none; padding: 0; line-height: 1;
+  font-size: 20px; color: var(--muted); flex: none;
+  min-width: 36px; min-height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+}
+.sync-close:active { background: var(--card-2); }
+/* **完成不能用綠色。** 綠在這個 app 是「跌」，
+   拿來當「成功」會讓人以為報價跌了。完成就維持 primary，
+   文字已經說了完成；只有失敗才換成狀態色的琥珀。 */
+#sync-bar.failed .sync-fill { background: var(--warn); }
+
 /* ---------- 代號建議清單 ---------- */
 .suggest {
   display: flex; flex-direction: column;
