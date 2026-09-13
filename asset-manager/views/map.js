@@ -189,6 +189,10 @@ function edgeState(mk, sel, l) {
   return 'e off';
 }
 
+// 直式版面在左右各留一條通道給連線走。要跟 style.css 裡
+// .mapwrap.vert .mclus-nodes 的 padding 對得上，不然通道裡會站著節點。
+const CH_PAD = 26;
+
 function drawEdges(wrap, mk, sel) {
   const svg = $('.medges', wrap);
   if (!svg) return;
@@ -226,22 +230,33 @@ function drawEdges(wrap, mk, sel) {
     // **判斷依據是實際座標，不是欄位編號。** 中游排成兩個子欄，
     // CCL（左子欄）→ PCB（右子欄）其實是左到右，照同欄處理會繞一大圈。
     if (vert) {
-      if (a.b + 10 <= b.t) {
-        // 來源在目標上方：直接往下接，控制點放在垂直中點
+      // **直式最大的陷阱：來源與目標同一欄時 x1 === x2，貝茲會退化成一條
+      // 筆直的垂直線，從中間所有圓盤與分群標籤的背後穿過去。** 那些東西有
+      // 不透明底色，線就被切成一段一段，看起來像虛線而不是一條連線。
+      // 橫式不會有這個問題，因為線是橫著走在欄與欄之間的空白通道裡。
+      //
+      // 所以直式也要有通道：跨距一拉開就改走版面兩側的留白，
+      // 從節點的側面進出，中段在邊緣往下走。CH_PAD 是留給它的寬度
+      // （CSS 那邊 .mclus-nodes 有對應的 padding，不然通道裡會有節點）。
+      const dy = b.t - a.b;
+      const near = dy >= 0 && dy < 150;
+      if (near && Math.abs(a.cx - b.cx) > 6) {
+        // 近、而且不是正上下對齊：直接接，短短一段弧最好看
         x1 = a.cx; y1 = a.b; x2 = b.cx; y2 = b.t;
         const mid = (y1 + y2) / 2;
         d = `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
       } else {
-        // 同一段內部（中游→中游有 10 條）：從側邊繞出去再繞回來。
-        // 往左或往右看誰比較靠邊，免得繞出畫面——手機只有 390px，
-        // 繞錯邊線就消失了。
+        // 其餘（跨距長的、同段內部的、正上下對齊的）一律走側邊通道。
+        // 選離兩端都比較近的那一側，免得橫跨整個畫面。
         const leftSide = (a.cx + b.cx) / 2 < box.width / 2;
-        // 夾在畫布內。手機只有 390px，繞出去就被裁掉，線會整段不見。
-        const x = Math.max(3, Math.min(box.width - 3,
-          leftSide ? Math.min(a.l, b.l) - 18 : Math.max(a.r, b.r) + 18));
+        const ch = leftSide ? CH_PAD * 0.45 : box.width - CH_PAD * 0.45;
         x1 = leftSide ? a.l : a.r; y1 = a.cy;
         x2 = leftSide ? b.l : b.r; y2 = b.cy;
-        d = `M ${x1} ${y1} C ${x} ${y1}, ${x} ${y2}, ${x2} ${y2}`;
+        // 控制點往通道拉，而且沿 y 撐開，中段才會貼著邊緣直直往下走，
+        // 不會在兩端附近就彎回內容區。
+        const k = Math.min(Math.abs(y2 - y1) * 0.35, 160);
+        d = `M ${x1} ${y1} C ${ch} ${y1 + (y2 > y1 ? k : -k)}, `
+          + `${ch} ${y2 - (y2 > y1 ? k : -k)}, ${x2} ${y2}`;
       }
     } else if (a.r + 10 <= b.l) {
       x1 = a.r; y1 = a.cy; x2 = b.l; y2 = b.cy;

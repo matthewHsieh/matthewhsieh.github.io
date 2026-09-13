@@ -1008,7 +1008,11 @@ textarea.journal-input {
 }
 .mapwrap.vert .mclus { margin-top: 14px; }
 .mapwrap.vert .mclus-label { margin-bottom: 8px; }
-.mapwrap.vert .mclus-nodes { gap: 14px 8px; }
+/* 左右各留 26px 給連線當通道（drawEdges 的 CH_PAD 要跟這個對得上）。
+   沒有這段留白，長距離的線只能從圓盤與標籤背後穿過去，
+   被不透明底色切成一段一段，看起來像虛線而不是一條連線。 */
+.mapwrap.vert .mclus-nodes { gap: 14px 8px; padding: 0 26px; }
+.mapwrap.vert .mband-head, .mapwrap.vert .mclus-label { margin-left: 26px; }
 .mapwrap.vert .mnode { width: 76px; }
 .mapwrap.vert .mdisc { width: 46px; height: 46px; }
 .mapwrap.vert .mglyph { font-size: 17px; }
@@ -1021,11 +1025,8 @@ textarea.journal-input {
 .mapwrap.vert .medges .e { opacity: .2; stroke-width: 1.4; }
 .mapwrap.vert .medges .e.off { opacity: .05; }
 .mapwrap.vert .medges .e.up, .mapwrap.vert .medges .e.down { stroke-width: 3; opacity: 1; }
-/* 分群標籤會被線穿過去，墊一層底色把那一段線蓋掉 */
-.mapwrap.vert .mclus-label {
-  background: var(--bg); display: inline-block;
-  padding: 1px 6px 1px 2px; border-radius: 4px; position: relative; z-index: 1;
-}
+/* 標籤不再需要墊底色——線已經改走兩側通道，不會從字上面過。
+   墊底色反而會把經過的線切斷，那正是「線看起來斷斷續續」的原因之一。 */
 
 /* 平板與小視窗（≥560px 但還沒到三欄）：節點放大到跟桌機一樣。
    76px 是為了 390px 一行排得下四個；寬度有了就不必再壓縮。 */
