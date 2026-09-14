@@ -702,9 +702,14 @@ dialog input[readonly] { opacity: .7; }
 /* 只有一格的 mini 不要被 grid 壓成三分之一寬 */
 .mini.solo { margin: 10px 0 4px; }
 
-/* 交易風格三選一。跟買進/賣出那組同一個外觀，因為它們是同一層決定。 */
-.style-seg { margin-top: 8px; }
-.style-note { margin: 6px 0 0; line-height: 1.6; min-height: 1.6em; }
+.style-note { margin: 6px 0 0; line-height: 1.6; }
+
+/* 自訂起迄。兩個日期框加一個箭頭，跟預設鈕排在一起。 */
+.range-row { display: flex; align-items: center; gap: 8px; margin: 8px 0 10px; }
+.range-row input { margin: 0; min-width: 0; }
+/* **不要對分段鈕的字下 nowrap。** 390px 放六個選項時，nowrap 會讓
+   內容撐破容器、把整個頁面推出 8px 的橫向捲動（實測 scrollWidth 390 → 398）。
+   解法是把標籤縮短（「近 90 天」→「90天」），讓它本來就不需要折行。 */
 
 /* ---------- 買賣收益 ---------- */
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 4px; }

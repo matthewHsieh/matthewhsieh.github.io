@@ -3,7 +3,7 @@ import { $, $$, esc, fmt, fmtCompact, fmtMax, fmtX, isNum, norm, num, pct, plCla
 import { deleteSnapshot, saveSnapshot } from '../data.js';
 import { cpLabel, fmtQty, stockFutLabel, strikeText } from '../instruments.js';
 import { TW_STOCKS } from '../symbols.js';
-import { CAT_LABEL, CAT_ORDER, GRP_LABEL, GRP_ORDER, MARKET_LABEL, TRADE_KINDS, deleteTrade, groupOf, realizedSummary, tradeCategory, tradeKindOf, tradeNet } from '../trades.js';
+import { CAT_LABEL, CAT_ORDER, GRP_LABEL, GRP_ORDER, MARKET_LABEL, RANGE_LABEL, RANGE_ORDER, TRADE_KINDS, deleteTrade, groupOf, inRange, rangePreset, realizedSummary, tradeCategory, tradeKindOf, tradeNet } from '../trades.js';
 import { bindListActions, tradeButton } from '../widgets.js';
 
 // ------------------------------------------------------------
@@ -12,8 +12,37 @@ import { bindListActions, tradeButton } from '../widgets.js';
 //   而波段裡混著抱兩個月的部位。列是做法、欄是市場，兩邊都給合計。
 //   **沒有資料的分類與市場不會出現**，不然一開始就是一片 0。
 // ------------------------------------------------------------
+// 區間選擇。預設幾個常用的，再加自訂起迄；改了輸入框就等於自訂。
+function rangeBar() {
+  const cur = state.histRange || 'all';
+  return `<div class="seg nav-seg hist-seg">${RANGE_ORDER.map((k) => `<label>
+      <input type="radio" name="histr" value="${k}" ${cur === k ? 'checked' : ''}>
+      <span>${RANGE_LABEL[k]}</span></label>`).join('')}
+    <label><input type="radio" name="histr" value="custom" ${cur === 'custom' ? 'checked' : ''}>
+      <span>自訂</span></label>
+  </div>
+  <div class="range-row">
+    <input type="date" name="rfrom" value="${esc(state.histFrom || '')}" aria-label="起日">
+    <span class="muted">→</span>
+    <input type="date" name="rto" value="${esc(state.histTo || '')}" aria-label="迄日">
+  </div>`;
+}
+
+const rangeText = () => {
+  const f = state.histFrom, t = state.histTo;
+  if (!f && !t) return '（全部）';
+  if (f && t) return `（${f} ～ ${t}）`;
+  return f ? `（${f} 起）` : `（${t} 止）`;
+};
+
 function crossTable(rs) {
-  if (!rs.cats.length) return '<p class="sub muted">還沒有交易紀錄。</p>';
+  // **「篩出來是空的」跟「從來沒有資料」要分開講。**
+  // 前者該提示怎麼放寬條件，後者才是「還沒開始記」。
+  if (!rs.cats.length) {
+    return state.trades.length
+      ? '<p class="sub muted">這個期間沒有交易。換一個區間或按「全部」。</p>'
+      : '<p class="sub muted">還沒有交易紀錄。用上面的「＋ 記一筆交易」開始記。</p>';
+  }
   const cell = (v, n) => `<td class="${plClass(v)}">${signed(v)}${
     n ? `<span class="xs muted"> ${fmt(n)} 筆</span>` : ''}</td>`;
   const showGrpTotal = rs.grps.length > 1;
@@ -38,11 +67,14 @@ function crossTable(rs) {
 export function renderHistory(el) {
   const snaps = state.snapshots;
   const trades = state.trades.slice(0, 200);
-  const rs = realizedSummary();
-  // 兩個篩選是「且」的關係：可以只看「期貨的當沖」。
+  const range = { from: state.histFrom || null, to: state.histTo || null };
+  const rs = realizedSummary(range);
+  // 三個篩選是「且」的關係：可以只看「十月的、期貨的、當沖」。
   const keep = (t) => {
     const f = state.histFilter || 'all', g = state.histGroup || 'all';
-    return (f === 'all' || tradeCategory(t) === f) && (g === 'all' || groupOf(t) === g);
+    return inRange(t, range)
+      && (f === 'all' || tradeCategory(t, rs.held) === f)
+      && (g === 'all' || groupOf(t) === g);
   };
   const asc = [...snaps].reverse(); // 折線圖由舊到新
 
@@ -51,7 +83,8 @@ export function renderHistory(el) {
     <div class="card" id="chart-lev"><div class="list-title" role="heading" aria-level="2">槓桿走勢</div></div>
     <div class="card">
       <div class="list-title" role="heading" aria-level="2">買賣收益（已實現）</div>
-      <div class="mini solo"><div class="label">淨損益（全部）</div>
+      ${rangeBar()}
+      <div class="mini solo"><div class="label">淨損益${rangeText()}</div>
         <div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
       ${crossTable(rs)}
       <p class="sub muted" style="margin-top:8px">轉倉單獨一列，因為它的已實現損益只是把
@@ -79,21 +112,25 @@ export function renderHistory(el) {
       </div>
       <div class="seg nav-seg hist-seg">${[['all', '全部'], ...CAT_ORDER.map((c) => [c, CAT_LABEL[c]])]
         .map(([v, l]) => {
-          const n = trades.filter((t) => v === 'all' || tradeCategory(t) === v).length;
+          const n = trades.filter((t) => inRange(t, range) && (v === 'all' || tradeCategory(t, rs.held) === v)).length;
           if (!n && v !== 'all') return '';   // 沒有的分類不要占位置
           return `<label><input type="radio" name="histf" value="${v}" ${
             (state.histFilter || 'all') === v ? 'checked' : ''}><span>${l} ${fmt(n)}</span></label>`;
         }).join('')}</div>
       <div class="seg nav-seg hist-seg">${[['all', '全部市場'], ...GRP_ORDER.map((g) => [g, GRP_LABEL[g]])]
         .map(([v, l]) => {
-          const n = trades.filter((t) => v === 'all' || groupOf(t) === v).length;
+          const n = trades.filter((t) => inRange(t, range) && (v === 'all' || groupOf(t) === v)).length;
           if (!n && v !== 'all') return '';
           return `<label><input type="radio" name="histg" value="${v}" ${
             (state.histGroup || 'all') === v ? 'checked' : ''}><span>${l} ${fmt(n)}</span></label>`;
         }).join('')}</div>
       ${(() => {
         const shown = trades.filter(keep);
-        if (!shown.length) return '<p class="muted">這個條件沒有紀錄。</p>';
+        if (!shown.length) {
+          return state.trades.length
+            ? '<p class="muted">這個條件沒有紀錄。放寬期間、分類或市場再看看。</p>'
+            : '<p class="muted">還沒有交易紀錄。</p>';
+        }
         // 依日期分組，每天給小計。原本全部混在一起，
         // 台玻轉倉的 -130,020 跟當天當沖 +34,500 疊在一起完全看不出發生什麼事。
         const days = [];
@@ -110,7 +147,7 @@ export function renderHistory(el) {
             </div>
             ${g.list.map((t) => {
               const { net, cost, matched } = tradeNet(t, rs);
-              const cat = tradeCategory(t);
+              const cat = tradeCategory(t, rs.held);
               return `<button type="button" class="item" data-del-trade="${t.id}">
                 <span class="item-main">
                   <span class="item-title"><span class="trade-side ${t.side}">${t.side === 'buy' ? '買' : '賣'}</span>${
@@ -215,6 +252,21 @@ export function renderHistory(el) {
   }));
   $$('input[name=histg]', el).forEach((r) => (r.onchange = () => {
     state.histGroup = r.value;
+    renderHistory(el);
+  }));
+  $$('input[name=histr]', el).forEach((r) => (r.onchange = () => {
+    state.histRange = r.value;
+    if (r.value !== 'custom') {
+      const p = rangePreset(r.value);
+      state.histFrom = p.from; state.histTo = p.to;
+    }
+    renderHistory(el);
+  }));
+  // 手動改日期就等於自訂，預設鈕的選取跟著移過去
+  $$('input[name=rfrom], input[name=rto]', el).forEach((i) => (i.onchange = () => {
+    state.histFrom = $('input[name=rfrom]', el).value || null;
+    state.histTo = $('input[name=rto]', el).value || null;
+    state.histRange = 'custom';
     renderHistory(el);
   }));
   bindListActions(el);

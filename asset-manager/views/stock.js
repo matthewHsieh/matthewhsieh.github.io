@@ -3,7 +3,7 @@ import { $, $$, esc, fmt, fmtMax, isNum, norm, num, plClass, rocPrevYm, rocYm, s
 import { stockFutLabel } from '../instruments.js';
 import { beatsIdx, idxRatio, usBeats, usIdxRatio, usdB } from '../portfolio.js';
 import { TW_STOCKS, resolveTwSymbol } from '../symbols.js';
-import { CAT_LABEL, realizedSummary, tradeCategory, tradeNet } from '../trades.js';
+import { CAT_LABEL, CAT_ORDER, realizedSummary, tradeCategory, tradeNet } from '../trades.js';
 import { CONF_LABEL, mdBold, rangeHtml, riskHtml } from '../widgets.js';
 
 // ------------------------------------------------------------
@@ -24,14 +24,16 @@ function symbolRecord(mk, sym) {
   const rs = realizedSummary();
   const key = mk === 'us' ? norm(sym) : resolveTwSymbol(sym);
   let net = 0, cost = 0, n = 0, last = null;
-  const byCat = { day: 0, swing: 0, roll: 0 };
+  // **每一個分類都要先給 0。** 少一個的話 byCat[cat] += x 會變成 NaN，
+  // 而 NaN 一路加下去會讓整張卡片的數字全部變成「–」。
+  const byCat = Object.fromEntries(CAT_ORDER.map((c) => [c, 0]));
   for (const t of state.trades) {
     if (t.market === 'option') continue;
     const s = t.market === 'us' ? norm(t.symbol) : resolveTwSymbol(t.symbol);
     if (s !== key) continue;
     const r = tradeNet(t, rs);
     net += r.net; cost += r.cost; n += 1;
-    byCat[tradeCategory(t)] += r.net;
+    byCat[tradeCategory(t, rs.held)] += r.net;
     if (!last || t.trade_date > last) last = t.trade_date;
   }
   return { net, cost, n, last, byCat };
@@ -145,7 +147,7 @@ function stockCardHtml(mk, sym) {
       ? `${kv('已實現（扣成本後）', `<b class="${plClass(rec.net)}">${signed(rec.net)}</b>`)}
          ${kv('交易筆數', `${fmt(rec.n)} 筆　最後一筆 ${esc(rec.last || '')}`)}
          ${kv('手續費與稅', fmt(rec.cost))}
-         ${['day', 'swing', 'roll'].filter((c) => rec.byCat[c]).map((c) =>
+         ${CAT_ORDER.filter((c) => rec.byCat[c]).map((c) =>
             kv('　' + CAT_LABEL[c], `<span class="${plClass(rec.byCat[c])}">${signed(rec.byCat[c])}</span>`)).join('')}`
       : '<p class="sub muted">還沒有在這一檔交易過。</p>')}
 

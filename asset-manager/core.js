@@ -55,6 +55,8 @@ export const state = {
   themeView: 'list',   // 族群頁：清單還是產業鏈
   histFilter: 'all',   // 紀錄頁：全部 / 當沖 / 隔日衝 / 波段 / 轉倉
   histGroup: 'all',    // 紀錄頁：全部市場 / 現貨 / 期貨 / 選擇權 / 權證（與上面是「且」）
+  histRange: 'all',    // 紀錄頁的期間：all / ytd / mtd / prev / d90 / custom
+  histFrom: null, histTo: null,   // 自訂起迄（ISO 日期，null = 不限）
   rules: [],       // 自己定的紀律
   journalDays: [], // 每日心得＋戰績
   openTheme: null,

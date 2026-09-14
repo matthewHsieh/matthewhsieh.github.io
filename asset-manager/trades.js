@@ -1,4 +1,4 @@
-import { btrimEq, fail, fmtMax, isNum, norm, num, round2, sameSymbol, sb, state, sum, toast } from './core.js';
+import { btrimEq, fail, fmtMax, isNum, norm, num, round2, sameSymbol, sb, state, sum, toast, todayISO } from './core.js';
 import { refresh } from './data.js';
 import { OPT_SIZE, WAR_UNITS, fmtQty, futDisplayName } from './instruments.js';
 import { checkRules, dayNet } from './rules.js';
@@ -151,14 +151,78 @@ function matchDayTrades(trades, extra) {
 // 只是把原本就存在的未實現損益入帳，不是今天做出來的績效。
 // 實例：2026-09-10 台玻轉倉一筆就 -130,020，跟當天當沖 +34,500 混在一起看，
 // 會誤以為當沖在虧錢，其實剛好相反。
-//   **隔日衝是獨立的標籤，不是 is_day_trade 的一種。**
-//   那個旗標同時決定證交稅率（當沖減半）與損益算法（FIFO 自成一組），
-//   隔日衝兩者都不適用——它的稅是全額，損益要用平均成本結算。
-//   所以 style 只負責分類，錢的事仍然全部看 is_day_trade。
-export const tradeCategory = (t) =>
+// ------------------------------------------------------------
+// 隔日衝：**推導出來的，不用手動標**
+//
+//   買賣差一個交易日就是隔日衝，這件事資料裡本來就有，不該叫人再勾一次。
+//   作法是對「非當沖」的交易做一次跨日 FIFO 配對，算出每一筆平倉
+//   是從幾天前的開倉配來的。
+//
+//   **只用來分類，絕不用來算錢。** 既有的損益是當初用平均成本結算後
+//   存下來的，那是使用者的紀錄；改用 FIFO 重算會讓 89 筆數字全部變動。
+//
+//   算的是交易日不是日曆日：週五買、週一賣是 1 天不是 3 天。
+//   國定假日沒有表可查，所以連假跨過去會多算一兩天——
+//   那種情況會被歸進波段而不是隔日衝，寧可少標不要多標。
+//
+//   一筆平倉配到好幾天的開倉時取**最久的那一腿**：
+//   只有當全部平掉的部位都是前一個交易日建的，才算隔日衝。
+// ------------------------------------------------------------
+
+// 不含日期的部位鍵。tradeKey 帶了日期（當沖同日配對用），跨日配對要另一把。
+const posKey = (t) => tradeKey(t).split('|').slice(1).join('|');
+
+// 兩個日期之間隔幾個交易日（只跳過週末）
+function bizDays(fromISO, toISO) {
+  const d = new Date(fromISO + 'T00:00:00'), end = new Date(toISO + 'T00:00:00');
+  if (!(d < end)) return 0;
+  let n = 0;
+  while (d < end) {
+    d.setDate(d.getDate() + 1);
+    const w = d.getDay();
+    if (w !== 0 && w !== 6) n += 1;
+  }
+  return n;
+}
+
+export function holdingDays(trades) {
+  const byKey = new Map();
+  for (const t of trades) {
+    if (t.is_day_trade) continue;                          // 當沖自成一組
+    if (String(t.note || '').startsWith('轉倉')) continue;  // 轉倉不是做出來的
+    const k = posKey(t);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(t);
+  }
+  const held = new Map();
+  for (const [, list] of byKey) {
+    list.sort((a, b) => {
+      if (a.trade_date !== b.trade_date) return a.trade_date < b.trade_date ? -1 : 1;
+      const x = String(a.created_at ?? ''), y = String(b.created_at ?? '');
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    const queue = [];
+    for (const t of list) {
+      let left = num(t.quantity), maxDays = null;
+      while (left > 1e-9 && queue.length && queue[0].side !== t.side) {
+        const head = queue[0];
+        const take = Math.min(left, head.qty);
+        const d = bizDays(head.date, t.trade_date);
+        maxDays = maxDays === null ? d : Math.max(maxDays, d);
+        head.qty -= take; left -= take;
+        if (head.qty <= 1e-9) queue.shift();
+      }
+      if (maxDays !== null && t.id) held.set(t.id, maxDays);
+      if (left > 1e-9) queue.push({ side: t.side, qty: left, date: t.trade_date });
+    }
+  }
+  return held;
+}
+
+export const tradeCategory = (t, held) =>
   String(t.note || '').startsWith('轉倉') ? 'roll'
     : t.is_day_trade ? 'day'
-      : t.style === 'overnight' ? 'overnight'
+      : held && held.get(t.id) === 1 ? 'overnight'
         : 'swing';
 
 export const CAT_LABEL = { day: '當沖', overnight: '隔日衝', swing: '波段', roll: '轉倉' };
@@ -188,8 +252,40 @@ export function tradeNet(t, rs) {
   return { net: (r ?? 0) - c, cost: c, matched: m };
 }
 
-export function realizedSummary() {
+// ------------------------------------------------------------
+// 區間
+//   預設值用「交易日」而不是「今天」算，因為週末與連假打開來
+//   「本月」會是空的，那不是使用者要的意思。
+//   全部 / 今年 / 本月 / 上月 / 近 90 天，再加自訂起迄。
+// ------------------------------------------------------------
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+export function rangePreset(key) {
+  const now = new Date(todayISO() + 'T00:00:00');
+  const y = now.getFullYear(), m = now.getMonth();
+  if (key === 'ytd') return { from: `${y}-01-01`, to: null };
+  if (key === 'mtd') return { from: iso(new Date(y, m, 1)), to: null };
+  if (key === 'prev') return { from: iso(new Date(y, m - 1, 1)), to: iso(new Date(y, m, 0)) };
+  if (key === 'd90') return { from: iso(new Date(now.getTime() - 89 * 86400000)), to: null };
+  return { from: null, to: null };
+}
+
+// 標籤刻意短。390px 一行放六個選項，「近 90 天」會被折成兩行，
+// 折了就看起來像兩個東西；改用 nowrap 又會把頁面撐出 8px 的橫向捲動。
+export const RANGE_LABEL = { all: '全部', ytd: '今年', mtd: '本月', prev: '上月', d90: '90天' };
+
+export const RANGE_ORDER = ['all', 'ytd', 'mtd', 'prev', 'd90'];
+
+export const inRange = (t, r) =>
+  (!r || !r.from || t.trade_date >= r.from) && (!r || !r.to || t.trade_date <= r.to);
+
+// range = { from, to }，兩邊都可以是 null（不限）
+export function realizedSummary(range) {
+  // **配對一定要看全部交易**，不能只看區間內的。
+  // 當沖是同一天的一買一賣，區間不會把一組拆開，
+  // 但若先過濾再配對，區間邊界上的部位會找不到對手而算不出損益。
   const { perTrade, openLeft } = matchDayTrades(state.trades);
+  const held = holdingDays(state.trades);
   const byDate = new Map();
   const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
   const twd = (v, ccy) => v * (ccy === 'USD' ? num(state.settings.usd_twd) : 1);
@@ -206,7 +302,8 @@ export function realizedSummary() {
   };
 
   for (const t of state.trades) {
-    const cat = tradeCategory(t), grp = groupOf(t);
+    if (!inRange(t, range)) continue;
+    const cat = tradeCategory(t, held), grp = groupOf(t);
     // 損益：當沖看 FIFO 配對結果，其餘看當初存下來的值
     let v = null;
     if (t.is_day_trade) {
@@ -248,7 +345,7 @@ export function realizedSummary() {
            // 舊的四個欄位保留，畫面上還有地方在用
            day: rowOf('day').net, overnight: rowOf('overnight').net,
            swing: rowOf('swing').net, roll: rowOf('roll').net,
-           cats, grps, at, rowOf, colOf, cells,
+           cats, grps, at, rowOf, colOf, cells, held, range: range || null,
            dayKeys: dayTradeKeys(state.trades), perTrade, openLeft };
 }
 
@@ -513,9 +610,6 @@ export async function saveTrade(v) {
       opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
       war_code: v.market === 'warrant' ? v.symbol : null,
       is_day_trade: !!v.is_day_trade,
-      // **欄位是明列的，漏了就會被靜靜丟掉。** style 是隔日衝的唯一依據，
-      // 少了它表單上選了隔日衝、存進去卻變成波段，而且完全不會報錯。
-      style: v.style ?? null,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,
