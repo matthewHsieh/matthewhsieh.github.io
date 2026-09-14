@@ -1,11 +1,23 @@
 import { alertBadge, alertOf } from '../alerts.js';
 import { $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
-import { fmtQty, futDisplayName, ivChange, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
+import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
 import { bindListActions, itemRow, section, tradeButton, valuationCard } from '../widgets.js';
+
+// 月份標籤。**快到期的要變色**——「10月倉」跟「9月倉」在灰色小標籤裡
+// 差一個字，掃過去根本分不出來，而那一個字的差別是「還有 37 天」跟「剩 2 天」。
+const monthBadge = (ym) => {
+  const label = futMonthLabel(ym);
+  if (!label) return '';
+  const d = futDaysLeft(ym);
+  const cls = d === null ? '' : d < 0 ? ' alert-punish' : d <= 7 ? ' warn-badge' : '';
+  const tip = d === null ? '' : d < 0 ? `已過最後交易日 ${futSettleISO(ym)}`
+    : `最後交易日 ${futSettleISO(ym)}，剩 ${d} 天`;
+  return `<span class="badge${cls}" title="${tip}">${label}</span>`;
+};
 
 export function renderHoldings(el) {
   const c = compute();
@@ -25,7 +37,8 @@ export function renderHoldings(el) {
     const isStock = f.kind === 'stock';
     const pl = futPl(f);
     return itemRow('future', f.id,
-      `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}<span class="badge">${f.side === 'short' ? '空' : '多'}</span>${
+      `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}${monthBadge(f.month)}<span class="badge">${
+        f.side === 'short' ? '空' : '多'}</span>${
         isStock ? alertBadge(alertOf(f.symbol)) : ''}${
         autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
       `${fmtMax(f.lots, 2)} 口 × ${fmtMax(futPx(f), 2)}${
@@ -37,6 +50,29 @@ export function renderHoldings(el) {
         : `<span class="${plClass(pl)}">${signed(pl)}</span>`,
       isStock && f.symbol ? `tw:${norm(f.symbol)}` : '');
   });
+  // 快到期的要單獨講一次。**混在列表裡看不到**——五口部位長得幾乎一樣，
+  // 而「還有兩天就最後交易日」跟「還有 37 天」是完全不同的處境。
+  const settleNote = (() => {
+    const rows = state.futures.filter((f) => /^\d{6}$/.test(String(f.month || '')));
+    const soon = rows.map((f) => ({ f, d: futDaysLeft(f.month) }))
+      .filter((x) => x.d !== null && x.d <= 7)
+      .sort((a, b) => a.d - b.d);
+    const noMonth = state.futures.length - rows.length;
+    const parts = [];
+    if (soon.length) {
+      parts.push(`<p class="hint warn-hint">⚠ ${soon.map(({ f, d }) => `${
+        esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))} ${futMonthLabel(f.month)}${
+        d < 0 ? `<b>已過最後交易日</b>（${futSettleISO(f.month)}）`
+          : d === 0 ? '<b>今天就是最後交易日</b>'
+            : `<b>剩 ${d} 天</b>到最後交易日（${futSettleISO(f.month)}）`}`).join('；')
+        }。要留倉就先轉倉，不轉會被結算。</p>`);
+    }
+    if (noMonth) {
+      parts.push(`<p class="hint">有 ${noMonth} 筆還沒填交割月份，點進去補上就會顯示剩幾天。</p>`);
+    }
+    return parts.join('');
+  })();
+
   const usRows = state.us.map((s) => {
     const v = num(s.shares) * num(s.price_usd);
     const pl = isNum(s.cost_usd) ? v - num(s.shares) * num(s.cost_usd) : null;
@@ -102,6 +138,7 @@ export function renderHoldings(el) {
         ? '<span class="muted">填了平均成本才會顯示損益</span>'
         : `<span class="${plClass(c.futProfit)}">${signed(c.futProfit)}</span>`}` +
       (state.futures.length ? '<br><button type="button" class="small" data-roll>⇄ 轉倉</button>' : '')) +
+    settleNote +
     section('權證', 'warrant', warRows,
       `市值 ${fmt(c.warMarket)}　delta 曝險 ${fmt(c.warExp)}　最大損失 ${fmt(c.warMaxLoss)}${
         c.warProfit === null ? '' : `　<span class="${plClass(c.warProfit)}">${signed(c.warProfit)}</span>`}${

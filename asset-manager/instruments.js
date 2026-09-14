@@ -88,6 +88,77 @@ export const STOCK_FUT_SIZES = [
 
 export const stockFutLabel = (size) => (num(size) === 100 ? '小' : '大');
 
+// ------------------------------------------------------------
+// 期貨的交割月份
+//
+//   **最後交易日 = 交割月份的第三個星期三**，最後結算日與它同一天
+//   （臺灣期交所股票期貨與臺股期貨契約規格皆同）。
+//   遇國定假日順延到次一營業日——**台灣的假日表這裡沒有**，
+//   所以算出來的日期在極少數情況下會早一天，畫面上要講清楚是「約」。
+//
+//   掛牌月份：交易當月起連續 2 個月，再加上 3、6、9、12 月中
+//   3 個接續季月，共 5 個。下拉選單就照這個給。
+// ------------------------------------------------------------
+export const ymOf = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+export const ymAdd = (ym, n) => {
+  const y = Number(String(ym).slice(0, 4)), m = Number(String(ym).slice(4, 6));
+  const d = new Date(y, m - 1 + n, 1);
+  return ymOf(d);
+};
+
+// 該月第三個星期三
+export function futSettleDate(ym) {
+  const y = Number(String(ym).slice(0, 4)), m = Number(String(ym).slice(4, 6));
+  if (!y || !m) return null;
+  const first = new Date(y, m - 1, 1);
+  // 0=日 1=一 2=二 3=三…，往後推到第一個星期三，再加兩週
+  const firstWed = 1 + ((3 - first.getDay() + 7) % 7);
+  return new Date(y, m - 1, firstWed + 14);
+}
+
+export const futSettleISO = (ym) => {
+  const d = futSettleDate(ym);
+  return d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : null;
+};
+
+// 剩幾天（含今天算 0）。負數代表已經過了最後交易日。
+export function futDaysLeft(ym) {
+  const d = futSettleDate(ym);
+  if (!d) return null;
+  const t = new Date(todayISO() + 'T00:00:00');
+  return Math.round((d - t) / 86400000);
+}
+
+// 「10月倉」。跨年的話要把年份講出來，不然 1 月倉分不出是明年還是去年。
+export function futMonthLabel(ym) {
+  const v = String(ym || '');
+  if (!/^\d{6}$/.test(v)) return '';
+  const y = Number(v.slice(0, 4)), m = Number(v.slice(4, 6));
+  return y === new Date().getFullYear() ? `${m}月倉` : `${y}/${m}月倉`;
+}
+
+// 目前的近月：今天過了第三個星期三就換下一個月
+export function frontMonth() {
+  const now = new Date(todayISO() + 'T00:00:00');
+  const cur = ymOf(now);
+  const d = futSettleDate(cur);
+  return d && now > d ? ymAdd(cur, 1) : cur;
+}
+
+// 掛牌中的 5 個月份：連續兩個月 ＋ 之後 3 個季月
+export function futMonths() {
+  const a = frontMonth();
+  const out = [a, ymAdd(a, 1)];
+  let probe = a;
+  while (out.length < 5) {
+    probe = ymAdd(probe, 1);
+    const m = Number(probe.slice(4, 6));
+    if (m % 3 === 0 && !out.includes(probe)) out.push(probe);
+  }
+  return out;
+}
+
 export function futDisplayName(kind, symbol, size) {
   if (kind === 'stock') {
     const nm = TW_STOCKS[norm(symbol)] || '';

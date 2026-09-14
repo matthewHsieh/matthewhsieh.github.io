@@ -481,6 +481,13 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
    文字已經說了完成；只有失敗才換成狀態色的琥珀。 */
 #sync-bar.failed .sync-fill { background: var(--warn); }
 
+/* 轉倉的「從 → 到」。把月份放在同一行，一眼看得出是哪一次轉倉，
+   不用再自己在備註打「9 月轉 10 月」。 */
+.mon-row { display: flex; align-items: end; gap: 10px; margin: 10px 0; }
+.mon-from { flex: none; font-weight: 700; font-size: var(--fs-md); padding-bottom: 12px; }
+.mon-arrow { flex: none; color: var(--muted); padding-bottom: 12px; }
+.mon-to { flex: 1; min-width: 0; margin: 0; }
+
 /* ---------- 代號建議清單 ---------- */
 .suggest {
   display: flex; flex-direction: column;

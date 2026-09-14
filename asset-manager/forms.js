@@ -1,7 +1,7 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, plClass, sb, signed, state, toast, todayISO } from './core.js';
 import { applyCachedPrices, refresh } from './data.js';
 import { openDialog, openForm } from './dialog.js';
-import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDisplayName, optDeltaExp, optMaxRisk, optPl, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue } from './instruments.js';
+import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optMaxRisk, optPl, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
 import { futPl } from './live.js';
 import { FWD_YEARS, valOf } from './portfolio.js';
 import { breaksOn, checkRules } from './rules.js';
@@ -94,6 +94,7 @@ function openFuturesForm(existing) {
       <label><input type="radio" name="side" value="long" ${v.side !== 'short' ? 'checked' : ''}><span>多單</span></label>
       <label><input type="radio" name="side" value="short" ${v.side === 'short' ? 'checked' : ''}><span>空單</span></label>
     </div>
+    <label>交割月份${monthSelect(v.month)}</label>
     <label>口數<input name="lots" type="number" step="any" inputmode="decimal" required min="0" value="${esc(num(v.lots))}"></label>
     <label>目前價格（每日自動更新）<input name="price" type="number" step="any" inputmode="decimal" required value="${esc(num(v.price))}"></label>
     <label>平均成本（選填，填了就會算損益）<input name="cost" type="number" step="any" inputmode="decimal" value="${isNum(v.cost) ? esc(num(v.cost)) : ''}"></label>
@@ -107,6 +108,7 @@ function openFuturesForm(existing) {
     return {
       kind, symbol, size,
       contract: futDisplayName(kind, symbol, size),
+      month: String(fd.get('month') || '') || null,
       side: fd.get('side') || 'long',
       lots: num(fd.get('lots')),
       price: num(fd.get('price')),
@@ -686,6 +688,24 @@ export async function editEps(symbol, name) {
 }
 
 // ------------------------------------------------------------
+// 交割月份下拉。掛牌中的五個月份由 futMonths() 算出來
+// （當月起連續兩個月 ＋ 三個接續季月，臺灣期交所的規格）。
+// 舊部位可能還沒填，所以保留一個空選項，而且如果存的月份已經不在掛牌清單裡
+// （例如已經過期的），也要把它列出來，否則一打開表單就被默默改掉。
+function monthSelect(cur, name = 'month') {
+  const cv = String(cur || '');
+  const months = futMonths();
+  if (cv && !months.includes(cv)) months.unshift(cv);
+  return `<select name="${name}">
+    <option value="">（未設定）</option>
+    ${months.map((m) => {
+      const d = futDaysLeft(m);
+      const tail = d === null ? '' : d < 0 ? '・已到期' : d <= 7 ? `・剩 ${d} 天` : `・${futSettleISO(m)}`;
+      return `<option value="${m}" ${cv === m ? 'selected' : ''}>${futMonthLabel(m)}${tail}</option>`;
+    }).join('')}
+  </select>`;
+}
+
 // 期貨轉倉
 //   轉倉的本質：**部位沒有變，但成本基礎重設，而且近月的損益要實現。**
 //   多單轉倉 = 賣掉近月 + 買進遠月，口數一樣；空單反過來。
@@ -724,11 +744,16 @@ export async function rollFutures(preId) {
   };
   const html = `
     <label>要轉倉的部位<select name="pid">${list.map(opt).join('')}</select></label>
+    <div class="mon-row">
+      <span class="mon-from" data-from>—</span>
+      <span class="mon-arrow">→</span>
+      <label class="mon-to">轉到${monthSelect('', 'to')}</label>
+    </div>
     <label>口數（可以只轉一部分）<input name="lots" type="number" step="any" inputmode="decimal" required min="0"></label>
     <label>近月成交價（平倉這一邊）<input name="near" type="number" step="any" inputmode="decimal" required></label>
     <label>遠月成交價（建倉這一邊）<input name="far" type="number" step="any" inputmode="decimal" required></label>
     <label>日期<input name="trade_date" type="date" value="${todayISO()}" required></label>
-    <label>備註<input name="note" type="text" placeholder="例如 9 月轉 10 月" autocomplete="off"></label>
+    <label>備註（選填）<input name="note" type="text" autocomplete="off"></label>
     <div class="preview" data-preview hidden></div>`;
 
   const res = await openDialog({
@@ -761,10 +786,26 @@ export async function rollFutures(preId) {
             `<br><span class="muted">部位不變，仍是 ${f.side === 'short' ? '空' : '多'} ${
               fmtMax(f.lots, 2)} 口。實現損益早就存在，轉倉只是讓它入帳；真正的成本只有上面那一行。</span>`;
       };
-      form.pid.onchange = () => { syncLots(); draw(); };
+      // 選了部位就把它現在的月份顯示出來，並把「轉到」預設成下一個月。
+      // **備註欄原本要自己打「9 月轉 10 月」**，打字容易錯又不會影響任何計算；
+      // 現在月份是真的欄位，轉完會寫回部位。
+      const syncMonth = () => {
+        const f = list.find((x) => String(x.id) === String(form.pid.value));
+        const from = $('[data-from]', form);
+        const cur = String(f?.month || '');
+        from.textContent = cur ? futMonthLabel(cur) : '未設定月份';
+        from.classList.toggle('muted', !cur);
+        // **要挑「下一個掛牌的月份」，不是「下個月」。**
+        // 掛牌的是連續兩個月加三個季月，所以十月倉的下一個是十二月倉，
+        // 十一月根本沒掛牌。原本用 ymAdd(cur,1) 找不到就退回清單第二個，
+        // 結果十月倉的「轉到」預設也是十月倉，等於轉了個寂寞。
+        const next = futMonths().find((m) => m > cur);
+        form.to.value = next || '';
+      };
+      form.pid.onchange = () => { syncLots(); syncMonth(); draw(); };
       $$('input', form).forEach((i) => (i.oninput = draw));
-      syncLots();
-      if (preId) { form.pid.value = String(preId); syncLots(); }
+      syncLots(); syncMonth();
+      if (preId) { form.pid.value = String(preId); syncLots(); syncMonth(); }
       draw();
     },
     collect: (fd) => {
@@ -772,15 +813,24 @@ export async function rollFutures(preId) {
       const lots = num(fd.get('lots'));
       if (!f || !(lots > 0)) return undefined;
       if (lots > num(f.lots) + 1e-9) { toast('口數超過持有量', 3000); return undefined; }
+      const to = String(fd.get('to') || '');
+      if (to && f.month && to === f.month) {
+        toast('轉到的月份跟現在同一個月，那不是轉倉', 3500);
+        return undefined;
+      }
       return { f, lots, near: num(fd.get('near')), far: num(fd.get('far')),
+               to: to || null,
                trade_date: fd.get('trade_date') || todayISO(),
                note: String(fd.get('note') || '').trim() || null };
     },
   });
   if (!res || res.action !== 'save') return;
 
-  const { f, lots, near, far, trade_date, note } = res.values;
+  const { f, lots, near, far, to, trade_date, note } = res.values;
   const isLong = f.side !== 'short';
+  // 備註自動帶上「9 月倉 → 10 月倉」，交易紀錄裡看得出來這是哪一次轉倉
+  const monTag = f.month && to ? `${futMonthLabel(f.month)} → ${futMonthLabel(to)}` : '';
+  const noteText = [monTag, note].filter(Boolean).join('・');
   const base = {
     kindKey: f.kind === 'stock' ? 'fut_stock' : 'fut_index',
     market: 'futures', fut_kind: f.kind, fut_size: num(f.size),
@@ -791,10 +841,21 @@ export async function rollFutures(preId) {
     // **順序不能反。**先平倉才會用舊均價算出實現損益，
     // 先建倉的話均價會先被拉走，實現損益就錯了。
     await saveTrade({ ...base, side: isLong ? 'sell' : 'buy', price: near,
-                      note: note ? `轉倉平倉・${note}` : '轉倉平倉' });
+                      note: noteText ? `轉倉平倉・${noteText}` : '轉倉平倉' });
     await saveTrade({ ...base, side: isLong ? 'buy' : 'sell', price: far,
-                      note: note ? `轉倉建倉・${note}` : '轉倉建倉' });
-    toast('轉倉完成，已記錄兩筆', 3000);
+                      note: noteText ? `轉倉建倉・${noteText}` : '轉倉建倉' });
+
+    // **部位的月份要跟著換，不然轉完了畫面上還是舊月份。**
+    // 只在「整筆都轉掉」時才改：只轉一部分的話那一筆部位同時存在兩個月份，
+    // 這個資料結構表達不了，硬改會讓剩下沒轉的那幾口月份也變錯。
+    if (to && lots >= num(f.lots) - 1e-9) {
+      const { error } = await sb.from('futures').update({ month: to }).eq('id', f.id);
+      if (error) console.warn('更新交割月份失敗', error);
+    }
+    await refresh();
+    toast(to && lots < num(f.lots) - 1e-9
+      ? '轉倉完成，已記錄兩筆。只轉了一部分，月份請自己到部位裡確認'
+      : `轉倉完成，已記錄兩筆${monTag ? `（${monTag}）` : ''}`, 4000);
   } catch (e) {
     fail(e);
   }
