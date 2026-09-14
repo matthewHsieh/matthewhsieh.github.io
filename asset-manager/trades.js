@@ -112,6 +112,7 @@ function matchDayTrades(trades, extra) {
 
   const perTrade = new Map();   // trade.id -> 這一筆平掉的那一組
   const openLeft = new Map();   // key -> 還沒沖銷掉的數量
+  const openDay = [];           // 標成當沖卻沒沖掉的組，要在畫面上講出來
   for (const [k, list] of byKey) {
     // 用純字串比較，不要用 localeCompare：它會把符號排在數字前面
     list.sort((a, b) => {
@@ -143,8 +144,23 @@ function matchDayTrades(trades, extra) {
       if (left > 1e-9) queue.push({ side: t.side, qty: left, price: num(t.price) });
     }
     openLeft.set(k, sum(queue, (x) => x.qty));
+    // **沒沖掉的要留下足夠的資訊講清楚是哪一筆。**
+    // 只有一個數量的話，畫面上只能說「有東西沒沖掉」，那等於沒說。
+    if (queue.length) {
+      const first = list[0];
+      openDay.push({
+        date: first.trade_date,
+        market: first.market,
+        label: first.market === 'option'
+          ? `TXO ${first.opt_expiry} ${num(first.opt_strike)} ${first.opt_cp === 'put' ? '賣權' : '買權'}`
+          : `${norm(first.symbol)}${first.name ? ' ' + first.name : ''}${
+              first.market === 'futures' ? `（${first.fut_kind === 'stock' ? '個股期' : '指數期'}）` : ''}`,
+        side: queue[0].side,
+        qty: sum(queue, (x) => x.qty),
+      });
+    }
   }
-  return { perTrade, openLeft };
+  return { perTrade, openLeft, openDay };
 }
 
 // 一筆交易屬於哪一類。轉倉要獨立出來，因為它的「已實現損益」
@@ -284,7 +300,7 @@ export function realizedSummary(range) {
   // **配對一定要看全部交易**，不能只看區間內的。
   // 當沖是同一天的一買一賣，區間不會把一組拆開，
   // 但若先過濾再配對，區間邊界上的部位會找不到對手而算不出損益。
-  const { perTrade, openLeft } = matchDayTrades(state.trades);
+  const { perTrade, openLeft, openDay } = matchDayTrades(state.trades);
   const held = holdingDays(state.trades);
   const byDate = new Map();
   const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
@@ -346,7 +362,8 @@ export function realizedSummary(range) {
            day: rowOf('day').net, overnight: rowOf('overnight').net,
            swing: rowOf('swing').net, roll: rowOf('roll').net,
            cats, grps, at, rowOf, colOf, cells, held, range: range || null,
-           dayKeys: dayTradeKeys(state.trades), perTrade, openLeft };
+           dayKeys: dayTradeKeys(state.trades), perTrade, openLeft,
+           openDay: (openDay || []).filter((o) => inRange({ trade_date: o.date }, range)) };
 }
 
 // ============================================================

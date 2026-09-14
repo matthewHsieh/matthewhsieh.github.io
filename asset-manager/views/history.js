@@ -12,6 +12,29 @@ import { bindListActions, tradeButton } from '../widgets.js';
 //   而波段裡混著抱兩個月的部位。列是做法、欄是市場，兩邊都給合計。
 //   **沒有資料的分類與市場不會出現**，不然一開始就是一片 0。
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// 標成當沖卻沒沖掉的組
+//
+//   **這是「靜靜算錯一半」的那種問題，一定要講出來。**
+//   當沖的損益是同一天一買一賣配對算出來的。如果那一天只記了一邊，
+//   配不到的那幾口就完全沒有損益——畫面上不會報錯，數字只是悄悄變小，
+//   而使用者看到的是一個「怪怪的」總額，找不出為什麼。
+//
+//   實例：2026-09-09 的選擇權，月選賣了 104 口只買回 20 口、
+//   週選買了 140 口只賣掉 76 口，收盤後淨留 84 口空、64 口多。
+//   那一天的當沖損益因此只算得出配對到的那一部分。
+// ------------------------------------------------------------
+function openDayNote(rs) {
+  const list = rs.openDay || [];
+  if (!list.length) return '';
+  const q = (o) => (o.market === 'tw' && o.qty % 1000 === 0 ? `${fmt(o.qty / 1000)} 張` : `${fmtMax(o.qty, 2)} ${o.market === 'tw' ? '股' : '口'}`);
+  return `<p class="hint warn-hint">⚠ 有 ${fmt(list.length)} 組標成當沖但當天沒有沖掉，
+    <b>這些沒配對到的部分完全沒有計入上面的損益</b>：<br>${
+      list.map((o) => `${esc(o.date)}　${esc(o.label)}　還剩 <b>${q(o)}</b> ${
+        o.side === 'buy' ? '多單' : '空單'}`).join('<br>')}<br>
+    要嘛是那一邊的成交還沒記進來，要嘛那筆其實不是當沖（取消勾選就會用平均成本結算）。</p>`;
+}
+
 // 區間選擇。預設幾個常用的，再加自訂起迄；改了輸入框就等於自訂。
 function rangeBar() {
   const cur = state.histRange || 'all';
@@ -84,6 +107,7 @@ export function renderHistory(el) {
     <div class="card">
       <div class="list-title" role="heading" aria-level="2">買賣收益（已實現）</div>
       ${rangeBar()}
+      ${openDayNote(rs)}
       <div class="mini solo"><div class="label">淨損益${rangeText()}</div>
         <div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
       ${crossTable(rs)}
