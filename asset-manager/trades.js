@@ -151,11 +151,34 @@ function matchDayTrades(trades, extra) {
 // 只是把原本就存在的未實現損益入帳，不是今天做出來的績效。
 // 實例：2026-09-10 台玻轉倉一筆就 -130,020，跟當天當沖 +34,500 混在一起看，
 // 會誤以為當沖在虧錢，其實剛好相反。
+//   **隔日衝是獨立的標籤，不是 is_day_trade 的一種。**
+//   那個旗標同時決定證交稅率（當沖減半）與損益算法（FIFO 自成一組），
+//   隔日衝兩者都不適用——它的稅是全額，損益要用平均成本結算。
+//   所以 style 只負責分類，錢的事仍然全部看 is_day_trade。
 export const tradeCategory = (t) =>
   String(t.note || '').startsWith('轉倉') ? 'roll'
-    : t.is_day_trade ? 'day' : 'swing';
+    : t.is_day_trade ? 'day'
+      : t.style === 'overnight' ? 'overnight'
+        : 'swing';
 
-export const CAT_LABEL = { day: '當沖', swing: '波段', roll: '轉倉' };
+export const CAT_LABEL = { day: '當沖', overnight: '隔日衝', swing: '波段', roll: '轉倉' };
+
+// 統計要分開看的順序。轉倉永遠排最後，它不是「做出來的績效」。
+export const CAT_ORDER = ['day', 'overnight', 'swing', 'roll'];
+
+// ------------------------------------------------------------
+// 市場分組
+//   台股與複委託都是現貨（買到的是股票本身），放同一組。
+//   期貨、選擇權、權證各自獨立——它們的槓桿、稅率、結算方式都不一樣，
+//   混在一起看「衍生品損益」沒有可行動的意義。
+// ------------------------------------------------------------
+export const MKT_GROUP = { tw: 'cash', us: 'cash', futures: 'fut', option: 'opt', warrant: 'war' };
+
+export const GRP_LABEL = { cash: '現貨', fut: '期貨', opt: '選擇權', war: '權證' };
+
+export const GRP_ORDER = ['cash', 'fut', 'opt', 'war'];
+
+export const groupOf = (t) => MKT_GROUP[t.market] || 'cash';
 
 // 一筆交易的淨損益（已扣手續費與交易稅）
 export function tradeNet(t, rs) {
@@ -170,9 +193,20 @@ export function realizedSummary() {
   const byDate = new Map();
   const add = (d, v) => byDate.set(d, (byDate.get(d) || 0) + v);
   const twd = (v, ccy) => v * (ccy === 'USD' ? num(state.settings.usd_twd) : 1);
-  let gross = 0, dayNet = 0, swingNet = 0, rollNet = 0, closes = 0, cost = 0;
+  let gross = 0, closes = 0, cost = 0;
+
+  // 交叉統計：分類 × 市場分組。每一格記淨損益、成本、平倉筆數、交易筆數。
+  // 用 Map 而不是預先展開所有組合，這樣沒有資料的格子不會憑空冒出來。
+  const cell = new Map();
+  const key = (cat, grp) => `${cat}|${grp}`;
+  const bump = (cat, grp, f) => {
+    const k = key(cat, grp);
+    if (!cell.has(k)) cell.set(k, { cat, grp, net: 0, gross: 0, cost: 0, closes: 0, trades: 0 });
+    f(cell.get(k));
+  };
 
   for (const t of state.trades) {
+    const cat = tradeCategory(t), grp = groupOf(t);
     // 損益：當沖看 FIFO 配對結果，其餘看當初存下來的值
     let v = null;
     if (t.is_day_trade) {
@@ -183,22 +217,38 @@ export function realizedSummary() {
     }
     if (v !== null) {
       closes += 1; gross += v;
-      const cat = tradeCategory(t);
-      if (cat === 'day') dayNet += v; else if (cat === 'roll') rollNet += v; else swingNet += v;
+      bump(cat, grp, (x) => { x.net += v; x.gross += v; x.closes += 1; });
       add(t.trade_date, v);
     }
     // 成本：每一筆都算，買進也有手續費
     const c = costTwd(t, !!t.is_day_trade);
     cost += c;
     add(t.trade_date, -c);
-    const cc = tradeCategory(t);
-    if (cc === 'day') dayNet -= c; else if (cc === 'roll') rollNet -= c; else swingNet -= c;
+    bump(cat, grp, (x) => { x.net -= c; x.cost += c; x.trades += 1; });
   }
+
+  // 只留真的有資料的分類與分組，表格才不會出現一整排 0
+  const cells = [...cell.values()];
+  const cats = CAT_ORDER.filter((c) => cells.some((x) => x.cat === c));
+  const grps = GRP_ORDER.filter((g) => cells.some((x) => x.grp === g));
+  const at = (cat, grp) => cell.get(key(cat, grp)) || null;
+  const rowOf = (cat) => cells.filter((x) => x.cat === cat)
+    .reduce((a, x) => ({ net: a.net + x.net, cost: a.cost + x.cost,
+                         closes: a.closes + x.closes, trades: a.trades + x.trades }),
+            { net: 0, cost: 0, closes: 0, trades: 0 });
+  const colOf = (grp) => cells.filter((x) => x.grp === grp)
+    .reduce((a, x) => ({ net: a.net + x.net, cost: a.cost + x.cost,
+                         closes: a.closes + x.closes, trades: a.trades + x.trades }),
+            { net: 0, cost: 0, closes: 0, trades: 0 });
 
   const dates = [...byDate.keys()].sort();
   let cum = 0;
   const series = dates.map((d) => { cum += byDate.get(d); return { date: d, daily: byDate.get(d), cum }; });
-  return { gross, cost, total: gross - cost, day: dayNet, swing: swingNet, roll: rollNet, closes, series,
+  return { gross, cost, total: gross - cost, closes, series,
+           // 舊的四個欄位保留，畫面上還有地方在用
+           day: rowOf('day').net, overnight: rowOf('overnight').net,
+           swing: rowOf('swing').net, roll: rowOf('roll').net,
+           cats, grps, at, rowOf, colOf, cells,
            dayKeys: dayTradeKeys(state.trades), perTrade, openLeft };
 }
 
@@ -463,6 +513,9 @@ export async function saveTrade(v) {
       opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
       war_code: v.market === 'warrant' ? v.symbol : null,
       is_day_trade: !!v.is_day_trade,
+      // **欄位是明列的，漏了就會被靜靜丟掉。** style 是隔日衝的唯一依據，
+      // 少了它表單上選了隔日衝、存進去卻變成波段，而且完全不會報錯。
+      style: v.style ?? null,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,
       quantity: v.quantity, price: v.price, note: v.note,
       prev_shares: proj.prevShares, prev_cost: proj.prevCost,

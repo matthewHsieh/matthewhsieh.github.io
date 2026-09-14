@@ -427,13 +427,16 @@ function readTradeForm(fd) {
   let quantity = num(fd.get('quantity'));
   if (tk === 'tw' && fd.get('unit') === 'lot') quantity *= 1000;
 
-  const isDayTrade = fd.get('is_day_trade') === 'on';
+  // **隔日衝不是當沖。** is_day_trade 決定證交稅減半與 FIFO 自成一組，
+  // 隔日衝兩者都不適用，所以它只寫 style，is_day_trade 維持 false。
+  const style = String(fd.get('style') || 'swing');
+  const isDayTrade = style === 'day';
   if (tk === 'option') {
     const expiry = String(fd.get('opt_expiry') || '').trim();
     const strike = num(fd.get('opt_strike'));
     const cp = fd.get('opt_cp') === 'put' ? 'put' : 'call';
     return {
-      kindKey: tk, market: 'option', fut_kind: null, fut_size: null, is_day_trade: isDayTrade,
+      kindKey: tk, market: 'option', fut_kind: null, fut_size: null, is_day_trade: isDayTrade, style,
       opt_expiry: expiry, opt_strike: strike, opt_cp: cp,
       side: fd.get('side') || 'buy',
       trade_date: fd.get('trade_date') || todayISO(),
@@ -452,7 +455,7 @@ function readTradeForm(fd) {
   return {
     kindKey: tk,
     market: meta.market,
-    is_day_trade: isDayTrade,
+    is_day_trade: isDayTrade, style,
     fut_kind: meta.fut_kind ?? null,
     fut_size: tk === 'fut_stock' ? num(fd.get('fut_size')) || 2000
             : tk === 'fut_index' ? (indexProduct(symbol)?.size ?? 200) : null,
@@ -473,8 +476,12 @@ function openTradeForm(defaults = {}) {
       <label><input type="radio" name="side" value="buy" checked><span>買進</span></label>
       <label><input type="radio" name="side" value="sell"><span>賣出</span></label>
     </div>
-    <label class="check"><input type="checkbox" name="is_day_trade" ${defaults.is_day_trade ? 'checked' : ''}>
-      <span>當沖（買賣自成一組，不動長期部位）</span></label>
+    <div class="seg style-seg">
+      <label><input type="radio" name="style" value="day" ${defaults.is_day_trade ? 'checked' : ''}><span>當沖</span></label>
+      <label><input type="radio" name="style" value="overnight" ${defaults.style === 'overnight' ? 'checked' : ''}><span>隔日衝</span></label>
+      <label><input type="radio" name="style" value="swing" ${!defaults.is_day_trade && defaults.style !== 'overnight' ? 'checked' : ''}><span>波段</span></label>
+    </div>
+    <p class="sub muted style-note" data-style-note></p>
     <label>日期<input name="trade_date" type="date" value="${todayISO()}" required></label>
     <label data-row="symbol"><span data-l="symbol">代號</span><input name="symbol" type="text" autocomplete="off" autocapitalize="characters" value="${esc(defaults.symbol || '')}"></label>
     <div class="resolved muted" data-resolved></div>
@@ -505,6 +512,21 @@ function openTradeForm(defaults = {}) {
       const resolved = $('[data-resolved]', form);
       const preview = $('[data-preview]', form);
       const rowFutSize = $('[data-row=futsize]', form);
+
+      // 三種風格的差別不只是標籤，**稅率跟損益算法都不一樣**，
+      // 所以選哪一個要當場講清楚，不要讓人以為只是分類方便。
+      const STYLE_NOTE = {
+        day: '買賣自成一組，不動長期部位。台股現股當沖證交稅減半（0.15%）。',
+        overnight: '照波段的方式結算（用平均成本），**證交稅是全額 0.30%**，只是另外標起來方便統計。',
+        swing: '用平均成本結算，會動到長期部位。',
+      };
+      const styleNote = $('[data-style-note]', form);
+      const drawStyle = () => {
+        const v = (new FormData(form)).get('style') || 'swing';
+        styleNote.innerHTML = (STYLE_NOTE[v] || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+      };
+      $$('input[name=style]', form).forEach((r) => r.addEventListener('change', () => { drawStyle(); }));
+      drawStyle();
 
       const updatePreviewRaw = () => {
         const v = readTradeForm(new FormData(form));

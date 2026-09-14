@@ -684,6 +684,28 @@ dialog input[readonly] { opacity: .7; }
 /* 資料日期落後的提醒 */
 .hint.warn-hint { color: var(--crit); }
 
+/* ---------- 分類 × 市場 交叉表 ----------
+   數字右對齊、等寬數字，列與欄的合計加粗。
+   不用斑馬紋——細線加留白就夠了，斑馬紋在小螢幕上只會更吵。 */
+.xtab { width: 100%; font-variant-numeric: tabular-nums; }
+.xtab th, .xtab td { padding: 7px 6px; white-space: nowrap; }
+.xtab thead th { font-size: var(--fs-sm); color: var(--muted); font-weight: 600; text-align: right; }
+.xtab thead th:first-child { text-align: left; }
+.xtab tbody th { text-align: left; font-weight: 600; font-size: var(--fs-sm); }
+.xtab td { text-align: right; }
+.xtab tbody tr + tr th, .xtab tbody tr + tr td { border-top: 1px solid var(--border); }
+.xtab tfoot th, .xtab tfoot td {
+  border-top: 2px solid var(--border-strong); font-weight: 700;
+}
+.xtab tfoot th { text-align: left; }
+.xtab .xs { font-size: var(--fs-xs); }
+/* 只有一格的 mini 不要被 grid 壓成三分之一寬 */
+.mini.solo { margin: 10px 0 4px; }
+
+/* 交易風格三選一。跟買進/賣出那組同一個外觀，因為它們是同一層決定。 */
+.style-seg { margin-top: 8px; }
+.style-note { margin: 6px 0 0; line-height: 1.6; min-height: 1.6em; }
+
 /* ---------- 買賣收益 ---------- */
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 4px; }
 .mini {

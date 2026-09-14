@@ -3,13 +3,47 @@ import { $, $$, esc, fmt, fmtCompact, fmtMax, fmtX, isNum, norm, num, pct, plCla
 import { deleteSnapshot, saveSnapshot } from '../data.js';
 import { cpLabel, fmtQty, stockFutLabel, strikeText } from '../instruments.js';
 import { TW_STOCKS } from '../symbols.js';
-import { MARKET_LABEL, TRADE_KINDS, deleteTrade, realizedSummary, tradeCategory, tradeKindOf, tradeNet } from '../trades.js';
+import { CAT_LABEL, CAT_ORDER, GRP_LABEL, GRP_ORDER, MARKET_LABEL, TRADE_KINDS, deleteTrade, groupOf, realizedSummary, tradeCategory, tradeKindOf, tradeNet } from '../trades.js';
 import { bindListActions, tradeButton } from '../widgets.js';
+
+// ------------------------------------------------------------
+// 分類 × 市場 的交叉表
+//   一個數字回答不了「我當沖到底賺不賺」——當沖的期貨與現貨是兩回事，
+//   而波段裡混著抱兩個月的部位。列是做法、欄是市場，兩邊都給合計。
+//   **沒有資料的分類與市場不會出現**，不然一開始就是一片 0。
+// ------------------------------------------------------------
+function crossTable(rs) {
+  if (!rs.cats.length) return '<p class="sub muted">還沒有交易紀錄。</p>';
+  const cell = (v, n) => `<td class="${plClass(v)}">${signed(v)}${
+    n ? `<span class="xs muted"> ${fmt(n)} 筆</span>` : ''}</td>`;
+  const showGrpTotal = rs.grps.length > 1;
+  return `<div class="table-wrap"><table class="xtab">
+    <thead><tr><th></th>${rs.grps.map((g) => `<th>${GRP_LABEL[g]}</th>`).join('')}${
+      showGrpTotal ? '<th>合計</th>' : ''}</tr></thead>
+    <tbody>
+      ${rs.cats.map((c) => {
+        const row = rs.rowOf(c);
+        return `<tr><th>${CAT_LABEL[c]}</th>${rs.grps.map((g) => {
+          const x = rs.at(c, g);
+          return x ? cell(x.net, x.trades) : '<td class="muted">–</td>';
+        }).join('')}${showGrpTotal ? cell(row.net, row.trades) : ''}</tr>`;
+      }).join('')}
+    </tbody>
+    ${rs.grps.length > 1 || rs.cats.length > 1 ? `<tfoot><tr><th>合計</th>${
+      rs.grps.map((g) => cell(rs.colOf(g).net, rs.colOf(g).trades)).join('')}${
+      showGrpTotal ? cell(rs.total, null) : ''}</tr></tfoot>` : ''}
+  </table></div>`;
+}
 
 export function renderHistory(el) {
   const snaps = state.snapshots;
   const trades = state.trades.slice(0, 200);
   const rs = realizedSummary();
+  // 兩個篩選是「且」的關係：可以只看「期貨的當沖」。
+  const keep = (t) => {
+    const f = state.histFilter || 'all', g = state.histGroup || 'all';
+    return (f === 'all' || tradeCategory(t) === f) && (g === 'all' || groupOf(t) === g);
+  };
   const asc = [...snaps].reverse(); // 折線圖由舊到新
 
   el.innerHTML = `
@@ -17,14 +51,13 @@ export function renderHistory(el) {
     <div class="card" id="chart-lev"><div class="list-title" role="heading" aria-level="2">槓桿走勢</div></div>
     <div class="card">
       <div class="list-title" role="heading" aria-level="2">買賣收益（已實現）</div>
-      <div class="grid4">
-        <div class="mini"><div class="label">淨損益</div><div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
-        <div class="mini"><div class="label">當沖</div><div class="value ${plClass(rs.day)}">${signed(rs.day)}</div></div>
-        <div class="mini"><div class="label">波段</div><div class="value ${plClass(rs.swing)}">${signed(rs.swing)}</div></div>
-        <div class="mini"><div class="label">轉倉</div><div class="value ${plClass(rs.roll)}">${signed(rs.roll)}</div></div>
-      </div>
-      <p class="sub muted" style="margin-top:6px">轉倉單獨一格，因為它的已實現損益只是把
-        <b>原本就存在的未實現損益入帳</b>，不是那天做出來的績效。混在波段裡會看錯。</p>
+      <div class="mini solo"><div class="label">淨損益（全部）</div>
+        <div class="value ${plClass(rs.total)}">${signed(rs.total)}</div></div>
+      ${crossTable(rs)}
+      <p class="sub muted" style="margin-top:8px">轉倉單獨一列，因為它的已實現損益只是把
+        <b>原本就存在的未實現損益入帳</b>，不是那天做出來的績效。混在波段裡會看錯。<br>
+        <b>隔日衝的稅是全額</b>（0.30%），不是當沖的減半價——它只是另外標起來方便統計，
+        損益一樣用平均成本結算。</p>
       <div class="row-between line"><span>已實現損益（未扣成本）</span><span class="${plClass(rs.gross)}">${signed(rs.gross)}</span></div>
       <div class="row-between line"><span>手續費 ＋ 交易稅</span><span class="loss">${signed(-rs.cost)}</span></div>
       <div class="row-between line"><span><b>淨損益</b></span><span class="${plClass(rs.total)}"><b>${signed(rs.total)}</b></span></div>
@@ -41,21 +74,26 @@ export function renderHistory(el) {
       <div class="row-between">
         <span class="list-title" role="heading" aria-level="2">歷史交易紀錄</span>
         <span class="sub muted">${(() => {
-          const f = state.histFilter || 'all';
-          const n = trades.filter((t) => f === 'all' || tradeCategory(t) === f).length;
-          return `${fmt(n)} 筆`;
+          return `${fmt(trades.filter(keep).length)} 筆`;
         })()}</span>
       </div>
-      <div class="seg nav-seg hist-seg">${[['all', '全部'], ['day', '當沖'], ['swing', '波段'], ['roll', '轉倉']]
+      <div class="seg nav-seg hist-seg">${[['all', '全部'], ...CAT_ORDER.map((c) => [c, CAT_LABEL[c]])]
         .map(([v, l]) => {
           const n = trades.filter((t) => v === 'all' || tradeCategory(t) === v).length;
+          if (!n && v !== 'all') return '';   // 沒有的分類不要占位置
           return `<label><input type="radio" name="histf" value="${v}" ${
             (state.histFilter || 'all') === v ? 'checked' : ''}><span>${l} ${fmt(n)}</span></label>`;
         }).join('')}</div>
+      <div class="seg nav-seg hist-seg">${[['all', '全部市場'], ...GRP_ORDER.map((g) => [g, GRP_LABEL[g]])]
+        .map(([v, l]) => {
+          const n = trades.filter((t) => v === 'all' || groupOf(t) === v).length;
+          if (!n && v !== 'all') return '';
+          return `<label><input type="radio" name="histg" value="${v}" ${
+            (state.histGroup || 'all') === v ? 'checked' : ''}><span>${l} ${fmt(n)}</span></label>`;
+        }).join('')}</div>
       ${(() => {
-        const f = state.histFilter || 'all';
-        const shown = trades.filter((t) => f === 'all' || tradeCategory(t) === f);
-        if (!shown.length) return '<p class="muted">這個分類沒有紀錄。</p>';
+        const shown = trades.filter(keep);
+        if (!shown.length) return '<p class="muted">這個條件沒有紀錄。</p>';
         // 依日期分組，每天給小計。原本全部混在一起，
         // 台玻轉倉的 -130,020 跟當天當沖 +34,500 疊在一起完全看不出發生什麼事。
         const days = [];
@@ -173,6 +211,10 @@ export function renderHistory(el) {
   $$('[data-del-trade]', el).forEach((b) => (b.onclick = () => deleteTrade(b.dataset.delTrade)));
   $$('input[name=histf]', el).forEach((r) => (r.onchange = () => {
     state.histFilter = r.value;
+    renderHistory(el);
+  }));
+  $$('input[name=histg]', el).forEach((r) => (r.onchange = () => {
+    state.histGroup = r.value;
     renderHistory(el);
   }));
   bindListActions(el);
