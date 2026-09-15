@@ -850,11 +850,26 @@ export async function rollFutures(preId) {
     // **部位的月份要跟著換，不然轉完了畫面上還是舊月份。**
     // 只在「整筆都轉掉」時才改：只轉一部分的話那一筆部位同時存在兩個月份，
     // 這個資料結構表達不了，硬改會讓剩下沒轉的那幾口月份也變錯。
-    if (to && lots >= num(f.lots) - 1e-9) {
-      const { error } = await sb.from('futures').update({ month: to }).eq('id', f.id);
-      if (error) console.warn('更新交割月份失敗', error);
-    }
+    //
+    // **不能用 f.id 去更新。** 平倉那一筆讓部位歸零時，writePosition 會把
+    // 整列刪掉；建倉那一筆再新增一列，**id 是全新的**。拿舊 id 去 update
+    // 會更新到 0 列，而且 Supabase 不會回報錯誤——結果就是轉倉看起來成功、
+    // 月份卻永遠停在舊的那個月，完全沒有跡象。
+    // 所以要先 refresh 拿到新的部位列，再用「商品」而不是 id 去找。
     await refresh();
+    if (to && lots >= num(f.lots) - 1e-9) {
+      const kind = f.kind || 'index';
+      const pos = state.futures.find((x) => (x.kind || 'index') === kind
+        && norm(x.symbol) === norm(f.symbol)
+        && (kind === 'index' || num(x.size) === num(f.size)));
+      if (pos) {
+        const { error } = await sb.from('futures').update({ month: to }).eq('id', pos.id);
+        if (error) console.warn('更新交割月份失敗', error);
+        else await refresh();
+      } else {
+        console.warn('轉倉後找不到新的部位列，月份沒更新');
+      }
+    }
     toast(to && lots < num(f.lots) - 1e-9
       ? '轉倉完成，已記錄兩筆。只轉了一部分，月份請自己到部位裡確認'
       : `轉倉完成，已記錄兩筆${monTag ? `（${monTag}）` : ''}`, 4000);
