@@ -73,16 +73,19 @@ function callSpentBefore(dateISO, before) {
 }
 
 // 判斷價內程度要用的指數。
-//   **優先用交易上記下來的那一個。** 遠期價只有收盤值而且要隔一天才進得來，
-//   他又通常是收盤後才回來補紀錄，所以自動抓到的永遠是昨天的數字；
-//   台股一天本來就走 1% 上下，跟門檻同一個量級，門檻附近等於擲硬幣。
+//   **優先用交易上記下來的那一個。** 自動抓的那個有兩層問題，而且都往同一邊錯：
+//     1. 期交所的每日行情要隔一天才進得來，所以拿到的通常是昨天的；
+//     2. **它只有日盤。** 期交所的結算價是日盤收盤價，夜盤（15:00–05:00）
+//        的行情完全不在裡面。2026-09-16 日盤收 45,849，夜盤一開盤就 46,250，
+//        差 400 點——而「價內 1%」的門檻是 460 點，同一個量級。
+//   他常常是夜盤下單、收盤後才回來補紀錄，所以自動值在門檻附近等於擲硬幣。
 function fwdFor(t) {
   if (isNum(t.opt_fwd) && num(t.opt_fwd) > 0) return { value: num(t.opt_fwd), as_of: null };
   return optForwardInfo(t.opt_expiry);
 }
 
-const staleNote = (f, t) =>
-  (f && f.as_of && String(f.as_of) < String(t.trade_date) ? `${f.as_of} 收盤的` : '');
+// 用的是自動值就要講出它是哪一天、哪一盤，不然誤判看起來就只是「系統壞了」
+const autoNote = (f) => (f && f.as_of ? `${f.as_of} 日盤結算的` : '');
 
 // 這口買 call 符合哪一種豁免
 function callExempt(t) {
@@ -94,7 +97,7 @@ function callExempt(t) {
     return { how: 'deep', note: `深度價內（履約 ${fmt(k)}、指數 ${fmt(fwd)}，價內 ${fmt(num(fwd) - k)} 點）` };
   }
   if (settle && settle === t.trade_date) return { how: 'settle', note: `${settle} 今天結算` };
-  return { how: null, fwd, stale: staleNote(f, t), strike: k, settle };
+  return { how: null, fwd, auto: autoNote(f), strike: k, settle };
 }
 
 // 買 call 的判定。回傳 null 代表這筆沒問題。
@@ -104,7 +107,7 @@ function buyCallBreak(t, rule, before) {
     // 價內是負的就要講成「價外」。寫成「只價內 -1,070 點」沒有人看得懂。
     const into = num(ex.fwd) - ex.strike;
     const gap = isNum(ex.fwd) && ex.strike > 0
-      ? `履約 ${fmt(ex.strike)}、${ex.stale}指數 ${fmt(ex.fwd)}，${
+      ? `履約 ${fmt(ex.strike)}、${ex.auto}指數 ${fmt(ex.fwd)}，${
         into >= 0 ? `只價內 ${fmt(into)} 點` : `還價外 ${fmt(-into)} 點`}`
       : '抓不到指數，一律當成不符合';
     return {
@@ -113,7 +116,7 @@ function buyCallBreak(t, rule, before) {
       reason: '既不是深度價內，也不是今天結算',
       why: `只有兩種買 call 解 ban：深度價內（比指數低 ${fmt(OPT_ITM_DEEP * 100)}% 以上）`
         + `，或今天就結算的合約。這口 ${gap}${ex.settle ? `、最後交易日 ${ex.settle}` : ''}。`
-        + `${ex.stale ? '　指數是收盤價，盤中真的比較高的話，在表單上把「當時的指數」填進去再存一次。' : ''}`,
+        + `${ex.auto ? '　期交所的結算價只有日盤，夜盤的行情它看不到；夜盤下的單請在表單上把「當時的指數」填進去。' : ''}`,
     };
   }
 

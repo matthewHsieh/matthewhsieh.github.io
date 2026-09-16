@@ -515,8 +515,8 @@ function openTradeForm(defaults = {}) {
       <label>買權 / 賣權<select name="opt_cp">
         <option value="call">買權 Call</option><option value="put">賣權 Put</option>
       </select></label>
-      <label>當時的指數（選填，判斷價內用）
-        <input name="opt_fwd" type="number" step="any" inputmode="decimal" placeholder="不填就用最近一次收盤的遠期價"></label>
+      <label>當時的指數（判斷價內用，<b>夜盤下的單一定要填</b>）
+        <input name="opt_fwd" type="number" step="any" inputmode="decimal" placeholder="不填就用最近一次日盤結算的遠期價"></label>
     </div>
     <label data-row="futsize">個股期貨規格<select name="fut_size">${STOCK_FUT_SIZES
       .map((s) => `<option value="${s.size}" ${num(defaults.fut_size) === s.size ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
@@ -625,8 +625,8 @@ function openTradeForm(defaults = {}) {
           // 使用者才知道「不填的話會拿哪一天的數字去判斷價內」
           const f = optForwardInfo(form.opt_expiry.value);
           form.opt_fwd.placeholder = f
-            ? `不填就用 ${fmt(f.value)}（${f.as_of} 收盤）`
-            : '不填就用最近一次收盤的遠期價';
+            ? `不填就用 ${fmt(f.value)}（${f.as_of} 日盤結算）`
+            : '不填就用最近一次日盤結算的遠期價';
           updatePreview();
           return;
         }
