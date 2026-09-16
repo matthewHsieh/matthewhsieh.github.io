@@ -1,10 +1,10 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, plClass, sb, signed, state, toast, todayISO } from './core.js';
 import { applyCachedPrices, refresh } from './data.js';
 import { openDialog, openForm } from './dialog.js';
-import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optMaxRisk, optPl, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
+import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optExpired, optExpiryLabel, optForwardInfo, optMaxRisk, optPl, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
 import { futPl } from './live.js';
 import { FWD_YEARS, valOf } from './portfolio.js';
-import { breaksOn, checkRules } from './rules.js';
+import { breaksOn, checkRules, optCallNote } from './rules.js';
 import { LOOKUPS, TW_STOCKS, attachLookup, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js';
 import { TRADE_KINDS, projectTrade, saveTrade, tradeCost } from './trades.js';
 
@@ -166,12 +166,29 @@ function openFuturesForm(existing) {
   });
 }
 
+// 到期別下拉。**已經過最後交易日的合約一定要拿掉。**
+//   state.optExpiries 其實是「market_prices 裡所有 FWD| 列」，到期的合約不會被刪，
+//   只是報價停在最後交易日。2026-09-16 打開選單，裡面還排著 9/11 就結算的
+//   202609F2——選下去記錄起來一切正常，但那口合約早就不存在了，
+//   而且它的遠期價停在 41200，後面判斷價內價外會整整差 10%。
+//   **正在編輯的那一筆要例外**：它本來就選著舊的到期別，
+//   把選項抽掉會讓 select 自己跳到別的月份，等於默默改掉使用者的資料。
+function expiryOptions(sel) {
+  const cur = String(sel || '');
+  const keep = state.optExpiries.filter((e) => !optExpired(e.expiry) || e.expiry === cur);
+  if (cur && !keep.some((e) => e.expiry === cur)) keep.unshift({ expiry: cur, forward: null });
+  if (!keep.length) return '<option value="">尚未載入到期別，按右上角 ↻</option>';
+  return keep.map((e) => {
+    const tail = optExpiryLabel(e.expiry);
+    return `<option value="${esc(e.expiry)}" ${e.expiry === cur ? 'selected' : ''}>${esc(e.expiry)}${
+      tail ? `　${esc(tail)}` : ''}${isNum(e.forward) ? `　遠期 ${fmt(e.forward)}` : ''}</option>`;
+  }).join('');
+}
+
 function openOptionsForm(existing) {
-  const v = existing || { expiry: state.optExpiries[0]?.expiry ?? '', strike: '', cp: 'call', side: 'long', lots: 1, cost: '' };
-  const expOpts = state.optExpiries.length
-    ? state.optExpiries.map((e) =>
-        `<option value="${esc(e.expiry)}" ${String(v.expiry) === e.expiry ? 'selected' : ''}>${esc(e.expiry)}（遠期 ${fmt(e.forward)}）</option>`).join('')
-    : `<option value="${esc(v.expiry)}">${esc(v.expiry || '尚未載入到期別')}</option>`;
+  const live = state.optExpiries.filter((e) => !optExpired(e.expiry));
+  const v = existing || { expiry: live[0]?.expiry ?? '', strike: '', cp: 'call', side: 'long', lots: 1, cost: '' };
+  const expOpts = expiryOptions(v.expiry);
 
   const html = `
     <label>到期<select name="expiry">${expOpts}</select></label>
@@ -435,6 +452,7 @@ function readTradeForm(fd) {
     return {
       kindKey: tk, market: 'option', fut_kind: null, fut_size: null, is_day_trade: isDayTrade,
       opt_expiry: expiry, opt_strike: strike, opt_cp: cp,
+      opt_fwd: fd.get('opt_fwd') === '' || fd.get('opt_fwd') === null ? null : num(fd.get('opt_fwd')),
       side: fd.get('side') || 'buy',
       trade_date: fd.get('trade_date') || todayISO(),
       symbol: 'TXO',
@@ -481,13 +499,13 @@ function openTradeForm(defaults = {}) {
     <div class="resolved muted" data-resolved></div>
     <input type="hidden" name="name">
     <div data-row="opt" hidden>
-      <label>到期<select name="opt_expiry">${state.optExpiries.length
-        ? state.optExpiries.map((e) => `<option value="${esc(e.expiry)}">${esc(e.expiry)}（遠期 ${fmt(e.forward)}）</option>`).join('')
-        : '<option value="">尚未載入到期別，按右上角 ↻</option>'}</select></label>
+      <label>到期<select name="opt_expiry">${expiryOptions('')}</select></label>
       <label>履約價<input name="opt_strike" type="number" step="any" inputmode="decimal" placeholder="47000"></label>
       <label>買權 / 賣權<select name="opt_cp">
         <option value="call">買權 Call</option><option value="put">賣權 Put</option>
       </select></label>
+      <label>當時的指數（選填，判斷價內用）
+        <input name="opt_fwd" type="number" step="any" inputmode="decimal" placeholder="不填就用最近一次收盤的遠期價"></label>
     </div>
     <label data-row="futsize">個股期貨規格<select name="fut_size">${STOCK_FUT_SIZES
       .map((s) => `<option value="${s.size}" ${num(defaults.fut_size) === s.size ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
@@ -562,8 +580,14 @@ function openTradeForm(defaults = {}) {
         updatePreviewRaw();
         const v = readTradeForm(new FormData(form));
         const rb = checkRules(v);
-        if (!rb.length) return;
+        // 沒違規的買 call 也要講一句話，否則畫面全白，看不出規則有沒有在跑
+        const pass = rb.length ? null : optCallNote(v);
+        if (!rb.length && !pass) return;
         preview.hidden = false;
+        if (pass) {
+          preview.insertAdjacentHTML('afterbegin',
+            `<div class="break-item pass-item"><b>買 call 解 ban：</b>${esc(pass)}</div>`);
+        }
         preview.insertAdjacentHTML('afterbegin', rb.map((x) =>
           `<div class="break-item"><b>違反自己的規則：</b>${esc(x.text)}<br><span class="muted">${esc(x.why)}</span></div>`
         ).join(''));
@@ -586,6 +610,12 @@ function openTradeForm(defaults = {}) {
           form.unit.innerHTML = '<option value="share">口</option>';
           form.unit.disabled = true;
           form.name.value = '';
+          // 把自動抓到的指數與它的日期寫進 placeholder，
+          // 使用者才知道「不填的話會拿哪一天的數字去判斷價內」
+          const f = optForwardInfo(form.opt_expiry.value);
+          form.opt_fwd.placeholder = f
+            ? `不填就用 ${fmt(f.value)}（${f.as_of} 收盤）`
+            : '不填就用最近一次收盤的遠期價';
           updatePreview();
           return;
         }
@@ -939,7 +969,7 @@ export async function editRule(existing) {
         ['day_max_amount', '個股當沖單檔金額上限'],
         ['scale_in', '一律分批（提醒）'],
       ] },
-      { key: 'amount', label: '金額上限（只有「單檔金額上限」用得到）', type: 'number' },
+      { key: 'amount', label: '金額上限（當沖：單檔上限；選擇權：解 ban 的買 call 每日權利金額度）', type: 'number' },
     ],
     values: v,
     allowDelete: !!existing,

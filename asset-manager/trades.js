@@ -625,6 +625,8 @@ export async function saveTrade(v) {
       user_id: state.user.id,
       market: v.market, fut_kind: v.fut_kind ?? null, fut_size: v.fut_size ?? null,
       opt_expiry: v.opt_expiry ?? null, opt_strike: v.opt_strike ?? null, opt_cp: v.opt_cp ?? null,
+      // **insert 是明写的欄位清單，漏了就會静静地掉掉**（style 那次就是）
+      opt_fwd: v.opt_fwd ?? null,
       war_code: v.market === 'warrant' ? v.symbol : null,
       is_day_trade: !!v.is_day_trade,
       side: v.side, trade_date: v.trade_date, symbol: v.symbol, name: v.name,

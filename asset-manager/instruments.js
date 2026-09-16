@@ -117,10 +117,11 @@ export function futSettleDate(ym) {
   return new Date(y, m - 1, firstWed + 14);
 }
 
-export const futSettleISO = (ym) => {
-  const d = futSettleDate(ym);
-  return d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : null;
-};
+const dateISO = (d) => (d
+  ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  : null);
+
+export const futSettleISO = (ym) => dateISO(futSettleDate(ym));
 
 // 剩幾天（含今天算 0）。負數代表已經過了最後交易日。
 export function futDaysLeft(ym) {
@@ -158,6 +159,79 @@ export function futMonths() {
   }
   return out;
 }
+
+// ------------------------------------------------------------
+// 選擇權的到期別
+//
+//   代碼直接沿用期交所「契約月份(週別)」欄位，三種寫法：
+//     202609      月選 —— 該月的第三個星期三
+//     202609W2    週三到期 —— 該月的第 2 個星期三
+//     202609F3    週五到期 —— 該月的第 3 個星期五
+//
+//   **沒有 W3。** 第三個星期三是月選自己，週三型的週選就跳過那一週，
+//   所以 2026 年 9 月只掛得出 W1 W2 W4 W5。
+//   算得出最後交易日才知道哪一張「今天就結算」，
+//   也才擋得掉下拉選單裡早就到期的合約。
+// ------------------------------------------------------------
+function nthDow(y, m, dow, n) {
+  if (!y || !m || !n) return null;
+  const first = new Date(y, m - 1, 1);
+  const day1 = 1 + ((dow - first.getDay() + 7) % 7);
+  const d = new Date(y, m - 1, day1 + (n - 1) * 7);
+  // 第 5 個星期五不見得存在，跨出去就不是這個月了
+  return d.getMonth() === m - 1 ? d : null;
+}
+
+export function optSettleISO(expiry) {
+  const m = String(expiry || '').trim().toUpperCase().match(/^(\d{4})(\d{2})(?:([WF])(\d))?$/);
+  if (!m) return null;
+  if (!m[3]) return futSettleISO(m[1] + m[2]);   // 月選跟期貨同一天結算
+  return dateISO(nthDow(Number(m[1]), Number(m[2]), m[3] === 'F' ? 5 : 3, Number(m[4])));
+}
+
+// 剩幾個日曆天（今天到期回 0，負數代表已經過了最後交易日）
+export function optDaysLeft(expiry, onISO) {
+  const s = optSettleISO(expiry);
+  if (!s) return null;
+  return Math.round((Date.parse(s + 'T00:00:00') - Date.parse((onISO || todayISO()) + 'T00:00:00')) / 86400000);
+}
+
+export const optExpired = (expiry, onISO) => {
+  const d = optDaysLeft(expiry, onISO);
+  return d === null ? false : d < 0;
+};
+
+// 「9/18 到期」。算不出來就不要瞎掰，回空字串。
+export function optExpiryLabel(expiry, onISO) {
+  const s = optSettleISO(expiry);
+  if (!s) return '';
+  const left = optDaysLeft(expiry, onISO);
+  const md = `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
+  if (left < 0) return `${md} 已到期`;
+  return left === 0 ? `${md} 今天結算` : `${md} 到期`;
+}
+
+// 遠期指數（判斷價內價外的基準）
+//
+//   **不能直接拿該到期別自己的 forward 就用。** optExpiries 裡混著已經
+//   到期的合約，它的報價停在最後交易日那天——FWD|202609F2 停在 9/11 的
+//   41200，拿來跟 45500 的履約價比，會算出「價外 10%」，
+//   而正確答案是價內 1%。判斷剛好會反過來。
+//
+//   所以先看最新那一批報價，取中位數當「現在的指數」；
+//   只有這個到期別自己也在最新那一批裡，才用它自己的遠期價。
+export function optForwardInfo(expiry) {
+  const list = (state.optExpiries || []).filter((e) => isNum(e.forward) && num(e.forward) > 0);
+  if (!list.length) return null;
+  const newest = list.reduce((a, e) => (String(e.as_of) > a ? String(e.as_of) : a), '');
+  const fresh = list.filter((e) => String(e.as_of) === newest);
+  const mine = fresh.find((e) => String(e.expiry) === String(expiry));
+  if (mine) return { value: num(mine.forward), as_of: newest };
+  const xs = fresh.map((e) => num(e.forward)).sort((a, b) => a - b);
+  return xs.length ? { value: xs[Math.floor(xs.length / 2)], as_of: newest } : null;
+}
+
+export const optForward = (expiry) => optForwardInfo(expiry)?.value ?? null;
 
 export function futDisplayName(kind, symbol, size) {
   if (kind === 'stock') {

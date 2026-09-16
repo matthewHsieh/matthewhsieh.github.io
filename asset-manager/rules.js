@@ -1,5 +1,5 @@
 import { fmt, fmtMax, isNum, num, state } from './core.js';
-import { OPT_SIZE, cpLabel } from './instruments.js';
+import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO } from './instruments.js';
 import { TW_STOCKS, resolveTwSymbol, tradeKey } from './symbols.js';
 
 // ------------------------------------------------------------
@@ -24,6 +24,132 @@ export function dayNet(dateISO, market, extra) {
   return net;
 }
 
+// ------------------------------------------------------------
+// 買 call 的兩個例外
+//
+//   原本這條是一刀切的「只准 buy put 與 sell call」。但被它擋掉的買 call
+//   其實是兩種完全不同的東西：
+//     1. 結算日那張價外彩券——這個才是真正要戒的破口；
+//     2. 深度價內的 call——delta 接近 1，付出去的錢幾乎全是內含價值，
+//        功能上等於一口有最大損失上限的期貨多單，時間價值幾乎不吃。
+//   第 2 種跟他要戒的毛病無關，所以解開。第 1 種也解開，但**用錢包關住**。
+//
+//   兩種都吃同一個當日額度：OPT_CALL_BUDGET，加上當天已經實現的獲利。
+//   **賠錢的日子額度不會變大**——「先賺錢才能加碼」才是這條的重點，
+//   不然解 ban 就只是把破口改成有上限的破口。
+// ------------------------------------------------------------
+export const OPT_ITM_DEEP = 0.01;       // 履約價要比遠期指數低 1% 以上才算深度價內
+export const OPT_CALL_BUDGET = 40000;   // 預設當日額度，規則列的 amount 可以蓋掉
+
+const optPremium = (t) => num(t.quantity) * num(t.price) * OPT_SIZE;
+
+const isBuyCall = (t) => t.market === 'option' && t.side === 'buy' && t.opt_cp === 'call';
+const isSellPut = (t) => t.market === 'option' && t.side === 'sell' && t.opt_cp === 'put';
+
+// before 是 created_at 的界線：回頭檢討時只算排在它前面的，
+// 記錄新交易時傳 null（今天已經存檔的全部都算在它前面）。
+const earlier = (t, before) => !before || String(t.created_at) < String(before);
+
+// 當天在這筆之前已經實現的損益。
+//   **定義要跟心得頁上那個數字一樣**（journal_days 也是直接加 realized_pl），
+//   不然畫面說今天賺了兩萬、規則卻說沒賺，使用者無從判斷誰對。
+function realizedBefore(dateISO, before) {
+  let s = 0;
+  for (const t of state.trades) {
+    if (t.trade_date !== dateISO || !isNum(t.realized_pl) || !earlier(t, before)) continue;
+    s += num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1);
+  }
+  return s;
+}
+
+// 當天在這筆之前已經花掉的買 call 權利金（違規的那幾筆也算，額度是總量管制）
+function callSpentBefore(dateISO, before) {
+  let s = 0;
+  for (const t of state.trades) {
+    if (t.trade_date !== dateISO || !isBuyCall(t) || !earlier(t, before)) continue;
+    s += optPremium(t);
+  }
+  return s;
+}
+
+// 判斷價內程度要用的指數。
+//   **優先用交易上記下來的那一個。** 遠期價只有收盤值而且要隔一天才進得來，
+//   他又通常是收盤後才回來補紀錄，所以自動抓到的永遠是昨天的數字；
+//   台股一天本來就走 1% 上下，跟門檻同一個量級，門檻附近等於擲硬幣。
+function fwdFor(t) {
+  if (isNum(t.opt_fwd) && num(t.opt_fwd) > 0) return { value: num(t.opt_fwd), as_of: null };
+  return optForwardInfo(t.opt_expiry);
+}
+
+const staleNote = (f, t) =>
+  (f && f.as_of && String(f.as_of) < String(t.trade_date) ? `${f.as_of} 收盤的` : '');
+
+// 這口買 call 符合哪一種豁免
+function callExempt(t) {
+  const f = fwdFor(t);
+  const fwd = f ? f.value : null;
+  const k = num(t.opt_strike);
+  const settle = optSettleISO(t.opt_expiry);
+  if (isNum(fwd) && k > 0 && k <= num(fwd) * (1 - OPT_ITM_DEEP)) {
+    return { how: 'deep', note: `深度價內（履約 ${fmt(k)}、指數 ${fmt(fwd)}，價內 ${fmt(num(fwd) - k)} 點）` };
+  }
+  if (settle && settle === t.trade_date) return { how: 'settle', note: `${settle} 今天結算` };
+  return { how: null, fwd, stale: staleNote(f, t), strike: k, settle };
+}
+
+// 買 call 的判定。回傳 null 代表這筆沒問題。
+function buyCallBreak(t, rule, before) {
+  const ex = callExempt(t);
+  if (!ex.how) {
+    // 價內是負的就要講成「價外」。寫成「只價內 -1,070 點」沒有人看得懂。
+    const into = num(ex.fwd) - ex.strike;
+    const gap = isNum(ex.fwd) && ex.strike > 0
+      ? `履約 ${fmt(ex.strike)}、${ex.stale}指數 ${fmt(ex.fwd)}，${
+        into >= 0 ? `只價內 ${fmt(into)} 點` : `還價外 ${fmt(-into)} 點`}`
+      : '抓不到指數，一律當成不符合';
+    return {
+      kind: 'opt_only_hedge',
+      text: '買進買權違反「只做 buy put 與 sell call」',
+      reason: '既不是深度價內，也不是今天結算',
+      why: `只有兩種買 call 解 ban：深度價內（比指數低 ${fmt(OPT_ITM_DEEP * 100)}% 以上）`
+        + `，或今天就結算的合約。這口 ${gap}${ex.settle ? `、最後交易日 ${ex.settle}` : ''}。`
+        + `${ex.stale ? '　指數是收盤價，盤中真的比較高的話，在表單上把「當時的指數」填進去再存一次。' : ''}`,
+    };
+  }
+
+  const base = isNum(rule?.amount) ? num(rule.amount) : OPT_CALL_BUDGET;
+  const earned = Math.max(0, realizedBefore(t.trade_date, before));
+  const budget = base + earned;
+  const spent = callSpentBefore(t.trade_date, before) + optPremium(t);
+  if (spent > budget + 1e-6) {
+    return {
+      kind: 'opt_only_hedge',
+      text: `今天買 call 的權利金 ${fmt(spent)} 元，超過額度 ${fmt(budget)} 元`,
+      reason: `${ex.note}，但超出額度 ${fmt(spent - budget)} 元`,
+      why: `額度是 ${fmt(base)} 元${earned > 0
+        ? `，加上今天已經實現的 ${fmt(earned)} 元`
+        : '；今天還沒有已實現獲利，額度就不會變大'}。賺到的才能打進去，賠錢的日子不行。`,
+    };
+  }
+  return null;
+}
+
+// 給表單預覽用：解 ban 的那幾口也要看得到理由與剩餘額度，
+// 不然畫面上什麼都沒出現，會以為規則根本沒在跑。
+export function optCallNote(t) {
+  const rule = activeRule('opt_only_hedge');
+  if (!rule || !isBuyCall(t) || !(num(t.quantity) > 0) || !(num(t.price) > 0)) return null;
+  const ex = callExempt(t);
+  if (!ex.how) return null;
+  const base = isNum(rule.amount) ? num(rule.amount) : OPT_CALL_BUDGET;
+  const earned = Math.max(0, realizedBefore(t.trade_date, null));
+  const budget = base + earned;
+  const spent = callSpentBefore(t.trade_date, null) + optPremium(t);
+  if (spent > budget + 1e-6) return null;   // 超額的話由 checkRules 出面講
+  return `${ex.note}　權利金 ${fmt(spent)} ／ 額度 ${fmt(budget)} 元`
+    + `${earned > 0 ? `（含今天已實現的 ${fmt(earned)}）` : ''}`;
+}
+
 // 一筆交易（可以是還沒存檔的）違反了哪些規則
 export function checkRules(t) {
   const out = [];
@@ -31,13 +157,16 @@ export function checkRules(t) {
 
   const hedge = activeRule('opt_only_hedge');
   if (hedge && t.market === 'option') {
-    const banned = (t.side === 'buy' && t.opt_cp === 'call') || (t.side === 'sell' && t.opt_cp === 'put');
-    if (banned) {
+    if (isSellPut(t)) {
       out.push({
         kind: 'opt_only_hedge',
-        text: `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)}違反「只做 buy put 與 sell call」`,
-        why: '結算日手癢的 buy call 是這三個月最大的破口，這條沒有例外。',
+        text: '賣出賣權違反「只做 buy put 與 sell call」',
+        reason: '賣方賣權沒有解 ban',
+        why: '賣 put 是把所有下跌一次承接下來，跟避險的方向相反，這條沒有例外。',
       });
+    } else if (isBuyCall(t)) {
+      const v = buyCallBreak(t, hedge, null);
+      if (v) out.push(v);
     }
   }
 
@@ -47,7 +176,9 @@ export function checkRules(t) {
     if (amt > num(cap.amount)) {
       out.push({
         kind: 'day_max_amount',
-        text: `這筆 ${fmt(amt)} 元，超過單檔當沖上限 ${fmt(cap.amount)} 元（${(amt / num(cap.amount)).toFixed(1)} 倍）`,
+        // **不要寫倍數。** 1,240,000 / 1,200,000 四捨五入是「1.0 倍」，
+        // 看起來像剛好沒超過，可是它超過了。講超出多少錢不會有歧義。
+        text: `這筆 ${fmt(amt)} 元，超過單檔當沖上限 ${fmt(cap.amount)} 元（超出 ${fmt(amt - num(cap.amount))} 元）`,
         why: '上限是「完全做錯也還在」的金額，不是「這檔我很有把握」的金額。',
       });
     }
@@ -77,13 +208,23 @@ export function breaksOn(dateISO) {
   const one = activeRule('day_one_at_a_time');
 
   if (hedge && dateISO >= hedge.started_on) {
-    const bad = day.filter((t) => t.market === 'option'
-      && ((t.side === 'buy' && t.opt_cp === 'call') || (t.side === 'sell' && t.opt_cp === 'put')));
+    // 額度是「當天累計」，所以要照時間重播，不能各看各的。
+    const opts = day.filter((t) => t.market === 'option')
+      .sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
+    const bad = [];
+    for (const t of opts) {
+      if (isSellPut(t)) bad.push({ t, reason: '賣方賣權沒有解 ban' });
+      else if (isBuyCall(t)) {
+        const v = buyCallBreak(t, hedge, t.created_at);
+        if (v) bad.push({ t, reason: v.reason });
+      }
+    }
     if (bad.length) {
-      const prem = bad.reduce((a, t) => a + num(t.quantity) * num(t.price) * OPT_SIZE, 0);
+      const prem = bad.reduce((a, x) => a + optPremium(x.t), 0);
       out.push({ kind: 'opt_only_hedge',
         text: `選擇權違規 ${bad.length} 筆，權利金合計 ${fmt(prem)} 元`,
-        detail: bad.map((t) => `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)} ${fmt(t.quantity)} 口 @ ${fmtMax(t.price, 2)}`).join('、') });
+        detail: bad.map(({ t, reason }) => `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)} ${
+          fmt(t.quantity)} 口 @ ${fmtMax(t.price, 2)}（${reason}）`).join('、') });
     }
   }
   if (cap && isNum(cap.amount) && dateISO >= cap.started_on) {
