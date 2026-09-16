@@ -26,13 +26,113 @@ export const optPl = (o) =>
     ? (num(o.price) - num(o.cost)) * num(o.lots) * num(o.size ?? OPT_SIZE) * (o.side === 'short' ? -1 : 1)
     : null;
 
-// 最大風險：買方最多賠光權利金；賣方賣權賠到履約價歸零；賣方買權沒有上限
-export function optMaxRisk(o) {
-  const size = num(o.size ?? OPT_SIZE), lots = num(o.lots);
-  const basis = isNum(o.cost) ? num(o.cost) : num(o.price);
-  if (o.side !== 'short') return { value: lots * basis * size, unlimited: false };
-  if (o.cp === 'put') return { value: Math.max(0, num(o.strike) - basis) * lots * size, unlimited: false };
-  return { value: null, unlimited: true };
+// ------------------------------------------------------------
+// 到期損益：同一個到期別的幾腳要一起算
+//
+//   一腳一腳分開看，「賣出買權」永遠是無上限；但只要同時有一口履約價
+//   更高的買進買權，上面那一段就被接住了——那是買權多頭價差，最大虧損
+//   等於淨支出，一塊錢都不會多賠。把它報成「風險無上限」不只是講得太重，
+//   **而是把一個他真的會拿來決定要不要減碼的數字講反了**。
+//
+//   不必去認「這是什麼策略」再查表。歐式選擇權組合的到期損益是
+//   **分段線性的，轉折點只在履約價上**，所以極值只可能落在
+//   ｛0、每一個履約價、右邊無限遠｝。右端看斜率就好：
+//   買權的淨口數為正 → 獲利無上限，為負 → 虧損無上限，為 0 → 兩邊都封死。
+//   左端不必管無限遠，指數最低就是 0。
+//
+//   **只能同一個到期別一起算。** 不同到期的組合（時間價差）在近月結算時
+//   遠月還活著，不是一條到期損益線，硬算會得到看起來很安心的假數字。
+//
+//   還有兩件事這條線看不到，畫面上要講：保證金不等於最大虧損；
+//   而且拆掉其中一腳，封頂就沒了。
+// ------------------------------------------------------------
+const optSign = (o) => (o.side === 'short' ? -1 : 1);
+const optBasis = (o) => (isNum(o.cost) ? num(o.cost) : num(o.price));
+const optQty = (o) => optSign(o) * num(o.lots) * num(o.size ?? OPT_SIZE);
+const legValue = (o, s) => Math.max(0, o.cp === 'put' ? num(o.strike) - s : s - num(o.strike));
+
+// 指數收在 s 的話，這一組的到期損益（元）
+export const optPnlAt = (legs, s) =>
+  legs.reduce((a, o) => a + optQty(o) * (legValue(o, s) - optBasis(o)), 0);
+
+function breakEvens(legs, strikes, slopeUp) {
+  const pts = [0, ...strikes];
+  // 最後一段還有斜率的話，要再往右探一點才抓得到穿越點
+  if (Math.abs(slopeUp) > 1e-9) pts.push(strikes[strikes.length - 1] + 5000);
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const a = pts[i], b = pts[i + 1];
+    const fa = optPnlAt(legs, a), fb = optPnlAt(legs, b);
+    if (Math.abs(fa) < 1e-6) out.push(a);
+    else if ((fa < 0) !== (fb < 0)) out.push(a + (b - a) * (-fa / (fb - fa)));
+  }
+  return [...new Set(out.map((x) => Math.round(x)))].sort((a, b) => a - b);
+}
+
+// 只認得出來的才講名字。認不出來就老實說幾腳，**不要猜**。
+function strategyName(legs, strikes) {
+  if (legs.length === 1) {
+    const o = legs[0];
+    return `${o.side === 'short' ? '賣出' : '買進'}${cpLabel(o.cp)}`;
+  }
+  if (legs.length !== 2) return `${legs.length} 腳組合`;
+  const [a, b] = legs;
+  if (num(a.lots) !== num(b.lots)) return '2 腳組合（口數不同）';
+  if (a.side === b.side) {
+    if (a.cp === b.cp) return '2 腳組合（同方向同類型）';
+    const w = a.side === 'short' ? '賣出' : '買進';
+    return strikes.length === 1 ? `${w}跨式` : `${w}勒式`;
+  }
+  if (a.cp !== b.cp) return '2 腳組合（一買權一賣權）';
+  const long = a.side !== 'short' ? a : b;
+  const short = a.side !== 'short' ? b : a;
+  if (a.cp === 'call') return num(long.strike) < num(short.strike) ? '買權多頭價差' : '買權空頭價差';
+  return num(long.strike) > num(short.strike) ? '賣權空頭價差' : '賣權多頭價差';
+}
+
+export function optStrategy(legs) {
+  const list = (legs || []).filter((o) => num(o.lots) > 0 && num(o.strike) > 0);
+  if (!list.length) return null;
+  const strikes = [...new Set(list.map((o) => num(o.strike)))].sort((a, b) => a - b);
+  // 右端斜率：賣權在無限遠一定歸零，所以只看買權
+  const slopeUp = list.reduce((a, o) => a + (o.cp === 'put' ? 0 : optQty(o)), 0);
+
+  let best = -Infinity, worst = Infinity, bestAt = null, worstAt = null;
+  for (const s of [0, ...strikes]) {
+    const v = optPnlAt(list, s);
+    if (v > best) { best = v; bestAt = s; }
+    if (v < worst) { worst = v; worstAt = s; }
+  }
+
+  const upUnlimited = slopeUp > 1e-9;
+  const downUnlimited = slopeUp < -1e-9;
+  return {
+    legs: list.length,
+    strikes,
+    // null 代表沒有上限
+    maxGain: upUnlimited ? null : best,
+    maxLoss: downUnlimited ? null : worst,          // 負數
+    gainAt: upUnlimited ? null : bestAt,
+    lossAt: downUnlimited ? null : worstAt,
+    // 正數 = 淨支出（付出去的權利金），負數 = 淨收取
+    debit: list.reduce((a, o) => a + optQty(o) * optBasis(o), 0),
+    breakEvens: breakEvens(list, strikes, slopeUp),
+    name: strategyName(list, strikes),
+  };
+}
+
+// 按到期別分組，每組各算一條到期損益線
+export function optStrategies(legs) {
+  const by = new Map();
+  for (const o of legs || []) {
+    const k = String(o.expiry || '');
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(o);
+  }
+  return [...by.entries()]
+    .map(([expiry, list]) => ({ expiry, ...optStrategy(list) }))
+    .filter((x) => x.legs)
+    .sort((a, b) => a.expiry.localeCompare(b.expiry));
 }
 
 // 權證：1 張 = 1000 單位；每單位可換 ratio 股標的

@@ -77,10 +77,14 @@ export const num = (v) => (v === null || v === undefined || v === '' || Number.i
 
 export const isNum = (v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
 
-export const fmt = (v, d = 0) =>
-  isNum(v) ? Number(v).toLocaleString('zh-TW', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–';
+// **負零要歸零。** 賣方部位的市值是 口數 x 0 x 50 x -1，價格歸零時
+// JS 算出來是 -0，toLocaleString 會老實印成「-0」，畫面上看起來像壞掉。
+const z = (v) => (Object.is(Number(v), -0) ? 0 : Number(v));
 
-export const fmtMax = (v, d = 2) => (isNum(v) ? Number(v).toLocaleString('zh-TW', { maximumFractionDigits: d }) : '–');
+export const fmt = (v, d = 0) =>
+  isNum(v) ? z(v).toLocaleString('zh-TW', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–';
+
+export const fmtMax = (v, d = 2) => (isNum(v) ? z(v).toLocaleString('zh-TW', { maximumFractionDigits: d }) : '–');
 
 export const fmtX = (v) => (isNum(v) ? Number(v).toFixed(2) + 'x' : '–');
 

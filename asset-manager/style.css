@@ -796,6 +796,14 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 .break-item.pass-item {
   background: var(--card-2); border-color: var(--border-strong); color: var(--muted);
 }
+/* 到期損益那一行：它是整組的結論，要跟上面的合計分開，但別搶走注意力。
+   **每一段各自 inline-block**，這樣要斷也是斷在段與段之間，
+   不會斷成「最大虧損 -157,750（指數」＋「≤ 45,500）」那樣。
+   不能用 nowrap 整行——之前 .hist-seg 就是那樣讓整頁橫向溢出 8px。 */
+.payoff-line { margin-top: 6px; line-height: 1.7; }
+.payoff-line b { color: var(--text); }
+.payoff-line > span { display: inline-block; }
+
 .journal-day { border-top: 1px solid var(--border); padding: 10px 0; }
 .journal-day:first-child { border-top: none; }
 .journal-body { white-space: pre-wrap; font-size: 14px; line-height: 1.6; margin-top: 4px; }

@@ -95,10 +95,13 @@ export function renderOverview(el) {
       ${line('權利金市值（買方正、賣方負）', c.optMarket)}
       ${line('delta 曝險（絕對值加總）', c.optExposure)}
       ${line('淨方向部位（多為正）', c.optNetDelta)}
-      <div class="row-between line"><span>最大風險</span><span class="${c.optRiskUnlimited ? 'loss' : ''}">${
-        c.optRiskUnlimited ? '無上限（有賣出買權）' : fmt(c.optMaxLoss)}</span></div>
-      <p class="hint">delta 曝險是線性近似，大幅波動時實際曝險會比這個數字放大（gamma），賣方尤其明顯。
-        所以最大風險另外列出，不併進槓桿。${c.optNoDelta ? '<br>⚠ 有部位還沒算出 delta，按右上角 ↻ 或等下次自動更新。' : ''}</p>
+      <div class="row-between line"><span>到期最大虧損</span><span class="${c.optRiskUnlimited ? 'loss' : ''}">${
+        c.optRiskUnlimited ? '無上限（賣出買權沒有被接住）' : fmt(c.optMaxLoss)}</span></div>
+      ${c.optMaxGain === null ? '' : line('到期最大獲利', c.optMaxGain)}
+      <p class="hint">最大損益是<b>按到期別整組算的</b>，不是一腳一腳加起來——賣出買權只要有一口
+        履約價更高的買進買權接住，上方就封頂了，那是買權多頭價差。<br>
+        delta 曝險是線性近似，大幅波動時實際曝險會比這個數字放大（gamma），賣方尤其明顯。
+        所以最大損益另外列出，不併進槓桿。${c.optNoDelta ? '<br>⚠ 有部位還沒算出 delta，按右上角 ↻ 或等下次自動更新。' : ''}</p>
     </div>` : ''}
     ${tradeButton()}
     <button type="button" class="block" id="snap-btn">📌 記錄今日快照</button>

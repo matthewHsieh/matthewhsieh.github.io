@@ -1,5 +1,5 @@
 import { fmt, fmtMax, isNum, norm, num, state, sum } from './core.js';
-import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
+import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optPl, optStrategies, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
 import { futNotional, futPl, pxOf } from './live.js';
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -95,9 +95,14 @@ export function compute() {
   const optNetDelta = opts.reduce((a, o) => a + (optDeltaExp(o) ?? 0), 0);          // 淨方向部位
   const optWithPl = opts.filter((o) => isNum(o.cost));
   const optProfit = optWithPl.length ? sum(optWithPl, optPl) : null;
-  const optRisks = opts.map(optMaxRisk);
-  const optRiskUnlimited = optRisks.some((r) => r.unlimited);
-  const optMaxLoss = optRisks.reduce((a, r) => a + (r.value ?? 0), 0);
+  // **風險要按到期別整組算，不能一腳一腳加。** 手上有賣出買權不代表無上限，
+  // 上面有一口買進買權接住就封頂了（買權多頭價差）。
+  const optPlans = optStrategies(opts);
+  const optRiskUnlimited = optPlans.some((p) => p.maxLoss === null);
+  const optMaxLoss = optRiskUnlimited ? null
+    : optPlans.reduce((a, p) => a + Math.max(0, -p.maxLoss), 0);
+  const optMaxGain = optPlans.some((p) => p.maxGain === null) ? null
+    : optPlans.reduce((a, p) => a + p.maxGain, 0);
   const optNoDelta = opts.some((o) => !isNum(o.delta));
 
   // 權證
@@ -129,7 +134,7 @@ export function compute() {
   return {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
-    optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optRiskUnlimited, optNoDelta,
+    optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optMaxGain, optPlans, optRiskUnlimited, optNoDelta,
     warMarket, warExp, warProfit, warMaxLoss, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,

@@ -1,11 +1,38 @@
 import { alertBadge, alertOf } from '../alerts.js';
 import { $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
-import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optLabel, optMaxRisk, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
+import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
 import { bindListActions, itemRow, section, tradeButton, valuationCard } from '../widgets.js';
+
+// 到期損益。**這是整組的數字，不是一腳一腳加起來的。**
+//   買權多頭價差（買低履約 ＋ 賣高履約）最大虧損就是淨支出，
+//   上面那一口賣出買權看起來無上限，但它被下面那一口接住了。
+//   要看出這件事只要算到期損益：它是分段線性的，極值只在履約價上。
+// 極值落在哪。到期損益在最外側的履約價之外是平的（不平的話那一端就是
+// 「無上限」，根本不會走到這裡），所以寫「≥ 46,800」比寫一個點精確。
+const payoffAt = (v, strikes) => {
+  if (v === null) return '';
+  const lo = strikes[0], hi = strikes[strikes.length - 1];
+  if (v >= hi) return `（指數 ≥ ${fmt(hi)}）`;
+  if (v <= lo) return `（指數 ≤ ${fmt(lo)}）`;
+  return `（指數 ${fmt(v)}）`;
+};
+
+const payoffLines = (plans) => (plans || []).map((p) => {
+  const parts = [
+    p.maxGain === null ? '<span class="gain">最大獲利無上限</span>'
+      : `最大獲利 <span class="gain">${signed(p.maxGain)}</span>${payoffAt(p.gainAt, p.strikes)}`,
+    p.maxLoss === null ? '<span class="loss">最大虧損無上限</span>'
+      : `最大虧損 <span class="loss">${signed(p.maxLoss)}</span>${payoffAt(p.lossAt, p.strikes)}`,
+  ];
+  if (p.breakEvens.length) parts.push(`損益兩平 ${p.breakEvens.map((x) => fmt(x)).join(' / ')}`);
+  const head = `<b>${esc(p.expiry)}</b>　${esc(optExpiryLabel(p.expiry))}　${esc(p.name)}`;
+  return `<div class="sub muted payoff-line">${[head, ...parts]
+    .map((x) => `<span>${x}</span>`).join('　')}</div>`;
+}).join('');
 
 // 月份標籤。**快到期的要變色**——「10月倉」跟「9月倉」在灰色小標籤裡
 // 差一個字，掃過去根本分不出來，而那一個字的差別是「還有 37 天」跟「剩 2 天」。
@@ -109,13 +136,16 @@ export function renderHoldings(el) {
       w.underlying ? `tw:${norm(w.underlying)}` : '');
   });
 
+  // **「風險無上限」的標記要看整組，不能看單腳。** 同一個到期別裡有一口
+  // 履約價更高的買進買權，賣出買權的上方風險就被接住了。
+  const openEnded = new Set(c.optPlans.filter((p) => p.maxLoss === null).map((p) => p.expiry));
   const optRows = state.options.map((o) => {
     const de = optDeltaExp(o);
     const pl = optPl(o);
-    const risk = optMaxRisk(o);
     return itemRow('option', o.id,
       `${optLabel(o)}<span class="badge">${o.side === 'short' ? '賣方' : '買方'}</span>${
-        risk.unlimited ? '<span class="badge warn-badge">風險無上限</span>' : ''}`,
+        openEnded.has(String(o.expiry)) && o.side === 'short' && o.cp === 'call'
+          ? '<span class="badge warn-badge">風險無上限</span>' : ''}`,
       `${fmtMax(o.lots, 2)} 口 × ${fmtMax(o.price, 2)} 點 × 50${isNum(o.cost) ? `　成本 ${fmtMax(o.cost, 2)}` : ''}${
         isNum(o.delta) ? `　delta ${fmtMax(o.delta, 3)}` : '　<span class="muted">delta 計算中</span>'}`,
       `市值 ${fmt(optValue(o))}`,
@@ -145,9 +175,10 @@ export function renderHoldings(el) {
         c.warTheta ? `　<span class="loss">每日時間價值 ${fmt(c.warTheta)}</span>` : ''}`) +
     section('台指選擇權', 'option', optRows,
       `權利金市值 ${fmt(c.optMarket)}　delta 曝險 ${fmt(c.optExposure)}　${
-        c.optRiskUnlimited ? '<span class="loss">最大風險無上限</span>'
-        : `最大風險 ${fmt(c.optMaxLoss)}`}${
-        c.optProfit === null ? '' : `　<span class="${plClass(c.optProfit)}">${signed(c.optProfit)}</span>`}`) +
+        c.optRiskUnlimited ? '<span class="loss">最大虧損無上限</span>'
+        : `到期最大虧損 ${fmt(c.optMaxLoss)}`}${
+        c.optProfit === null ? '' : `　<span class="${plClass(c.optProfit)}">${signed(c.optProfit)}</span>`}`
+      + payoffLines(c.optPlans)) +
     section('期貨帳戶權益數', 'balance', equityRows, `合計 ${fmt(c.futEquity)}`, { kind: 'futures_equity', name: '期貨帳戶' }) +
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +

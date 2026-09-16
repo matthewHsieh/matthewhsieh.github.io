@@ -1,7 +1,7 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, plClass, sb, signed, state, toast, todayISO } from './core.js';
 import { applyCachedPrices, refresh } from './data.js';
 import { openDialog, openForm } from './dialog.js';
-import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optExpired, optExpiryLabel, optForwardInfo, optMaxRisk, optPl, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
+import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optExpired, optExpiryLabel, optForwardInfo, optPl, optStrategy, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
 import { futPl } from './live.js';
 import { FWD_YEARS, valOf } from './portfolio.js';
 import { breaksOn, checkRules, optCallNote } from './rules.js';
@@ -238,10 +238,21 @@ function openOptionsForm(existing) {
         } else {
           lines.push('權利金與 delta 存檔後會自動帶入');
         }
-        const risk = optMaxRisk({ ...val, price: cur ?? 0 });
-        lines.push(risk.unlimited ? '⚠ 賣出買權：最大風險無上限' : `最大風險 ${fmt(risk.value)} 元`);
+        // **最大損益要連同一個到期別的其他腳一起算。**
+        //   只看這一腳的話，賣出買權永遠是「無上限」，可是只要上面有一口
+        //   買進買權接住就封頂了。他現在正在建的往往就是第二腳，
+        //   那一刻正是最需要看到「組起來之後最壞是多少」的時候。
+        const others = state.options.filter((x) => x.id !== existing?.id && String(x.expiry) === val.expiry);
+        const plan = optStrategy([...others, { ...val, price: cur ?? 0 }]);
+        if (plan) {
+          const un = plan.maxLoss === null;
+          lines.push(`${others.length ? `${val.expiry} 整組（${others.length + 1} 腳）` : ''}${plan.name}`);
+          lines.push(un ? '⚠ 到期最大虧損無上限' : `到期最大虧損 ${fmt(-plan.maxLoss)} 元`
+            + `　最大獲利 ${plan.maxGain === null ? '無上限' : fmt(plan.maxGain) + ' 元'}`);
+          if (plan.breakEvens.length) lines.push(`損益兩平 ${plan.breakEvens.map((x) => fmt(x)).join(' / ')}`);
+          preview.classList.toggle('err', un);
+        }
         preview.innerHTML = lines.join('<br>');
-        preview.classList.toggle('err', risk.unlimited);
       };
       form.addEventListener('input', update);
       form.addEventListener('change', update);
