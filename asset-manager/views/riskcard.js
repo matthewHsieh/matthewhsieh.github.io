@@ -1,7 +1,7 @@
-import { $, $$, esc, fmt, fmtMax, isNum, norm, num, state } from '../core.js';
+import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, sb, state, toast } from '../core.js';
 import {
-  IM_RATE, exposureRows, loadSeries, marginRoom, moveOdds, portVol,
-  riskContrib, riskParity, scaleTo, statsOf, usableKeys,
+  IM_RATE, assumedMu, dropZ, exposureRows, loadSeries, marginRoom, maxSharpe, moveOdds,
+  portVol, riskContrib, riskParity, scaleTo, sharpeOf, statsOf, usableKeys,
 } from '../risk.js';
 import { compute } from '../portfolio.js';
 import { TW_STOCKS, attachLookup, resolveTwSymbol } from '../symbols.js';
@@ -17,7 +17,14 @@ import { TW_STOCKS, attachLookup, resolveTwSymbol } from '../symbols.js';
 // ============================================================
 
 const PICK_KEY = 'allocPicks';
-const TARGETS = [0.20, 0.30, 0.43, 0.54];
+
+// **目標用「指數的幾倍」，不要用固定的波動百分比。**
+//   30% 這個數字在指數波動 24% 的年份是 1.25 倍，在 32% 的年份只有 0.94 倍——
+//   同一個標籤在不同時期代表不同的風險。講「等同於現在的大盤開幾倍」
+//   才是一個穩定的、他腦子裡真的在用的單位。
+const TARGETS = [0.75, 1, 1.5, 2];
+const MODE_KEY = 'allocMode';
+const DEF_IDX_VOL = 0.27;   // 抓不到指數序列時的退路
 
 const picks = () => {
   try {
@@ -40,9 +47,24 @@ async function ensure(symbols) {
 
 const labelOf = (sym) => {
   const s = String(sym);
+  if (s === 'TAIEX') return '加權指數（台指期）';
   if (s.startsWith('IDX:')) return s.slice(4);
   return TW_STOCKS[s] ? `${s} ${TW_STOCKS[s]}` : s;
 };
+
+// 指數期貨每點價值：大台 200、小台 50、微台 10
+const IDX_SIZES = [['大台 TX', 200], ['小台 MTX', 50], ['微台 TMF', 10]];
+
+// 指數的「一口」要用台指期算，不是個股期貨。
+//   **顆粒度差很多**：微台一口約 46 萬，小台 229 萬。
+//   風險等價下指數常常配到很大的權重，用小台會調不準。
+function idxLots(exposure) {
+  const lvl = num((state.riskStats || []).find((x) => String(x.symbol) === 'TAIEX')?.last);
+  if (!(lvl > 0)) return '–';
+  const micro = exposure / (lvl * 10);
+  const mini = exposure / (lvl * 50);
+  return `${fmtMax(micro, 1)} 口<span class="sub muted">微台／小台 ${fmtMax(mini, 2)} 口</span>`;
+}
 
 // 個股期貨一口的名目（大型 2,000 股）。沒有現價就回 null，寧可不給數字。
 function lotValue(sym) {
@@ -53,6 +75,18 @@ function lotValue(sym) {
   const s = (state.stocks || []).find((x) => norm(x.symbol) === norm(sym));
   if (s && num(s.price) > 0) return num(s.price) * 2000;
   return null;
+}
+
+// 美股沒有個股期貨，給股數。**曝險要除以槓桿倍數**——
+// 2 倍 ETF 買 100 股承受的是 200 股的波動，照曝險直接除股價會買成兩倍。
+function usShares(sym, exposure) {
+  const u = (state.us || []).find((x) => norm(x.symbol) === norm(sym));
+  const rate = num(state.settings?.usd_twd) || 32;
+  const lev = u && isNum(u.leverage) ? Math.abs(num(u.leverage)) : 1;
+  const px = u && num(u.price_usd) > 0 ? num(u.price_usd)
+    : num((state.usStats || []).find((x) => String(x.symbol) === String(sym))?.price);
+  if (!(px > 0)) return '–';
+  return `${fmt(exposure / (px * rate * lev))} 股`;
 }
 
 const bar = (pct) => `<span class="rc-bar"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i></span>`;
@@ -104,13 +138,13 @@ function currentBlock(c) {
         mr.pct < 0.25 ? 'loss' : ''}">${mr.pct === null ? '–' : fmtMax(mr.pct * 100, 1) + '%'}</b>
         <span class="sub muted">${odds ? `一個月內走到約 ${fmt(odds.p * 100)}%` : ''}</span></div>` : ''}
     </div>
-    <table class="rc-tab"><thead><tr><th>標的</th><th>波動</th><th>曝險佔比</th><th>風險佔比</th></tr></thead><tbody>
+    <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th>波動</th><th>曝險佔比</th><th>風險佔比</th></tr></thead><tbody>
     ${list.map((x) => `<tr>
       <td>${esc(x.label)}</td>
       <td>${fmt(x.vol * 100)}%</td>
       <td>${fmt(totExp ? (x.exp / totExp) * 100 : 0)}%</td>
       <td>${fmt(x.rc * 100)}% ${bar(x.rc * 100)}</td></tr>`).join('')}
-    </tbody></table>
+    </tbody></table></div>
     <p class="sub muted">樣本 ${st.days} 個交易日${
       miss.length ? `　未納入：${miss.map(esc).join('、')}（資料太短或還沒抓到）` : ''}</p>
     ${idx.length ? `<p class="sub muted">指數期貨未納入個股相關係數計算：${
@@ -127,16 +161,37 @@ function allocBlock(c) {
   const pickable = usableKeys(cache(), loaded);
   const have = pickable.kept;
   const assets = num(c.totalAssets);
-  const target = num(state.allocTarget ?? 0.30);
+  const mult = num(state.allocTarget ?? 1);
+
+  // **指數波動要跟組合用同一段樣本。** 分開算的話，標籤上寫「指數 1 倍」
+  // 用的是指數自己 260 天的 26%，表格裡卻顯示 31%（150 天交集），
+  // 兩個數字打架，使用者不知道該信哪個。把 TAIEX 一起丟進去算就一致了。
+  const withIdx = have.includes('TAIEX') ? have : [...have, 'TAIEX'];
+  const stIdx = cache().get('TAIEX') && have.length ? statsOf(cache(), withIdx) : null;
+  const ivol = stIdx ? stIdx.vol[withIdx.indexOf('TAIEX')]
+    : (cache().get('TAIEX') ? statsOf(cache(), ['TAIEX'])?.vol[0] ?? DEF_IDX_VOL : DEF_IDX_VOL);
+  const target = mult * ivol;
 
   const head = `
     <div class="rc-add">
       <label>加入標的<input type="text" id="rc-sym" autocomplete="off"
-        autocapitalize="characters" placeholder="輸入代號或名稱"></label>
+        autocapitalize="characters" placeholder="台股代號／名稱、美股代號，或「台指」"></label>
       <button type="button" class="small" id="rc-add">＋ 加入</button>
+      <button type="button" class="small" id="rc-top">★ 推薦 20 檔</button>
+      <button type="button" class="small" id="rc-clear">清空</button>
+    </div>
+    <div class="seg rc-seg">
+      <label><input type="radio" name="rcmode" value="sharpe" ${
+        (localStorage.getItem(MODE_KEY) || 'sharpe') === 'sharpe' ? 'checked' : ''
+      }><span>最佳報酬/波動</span></label>
+      <label><input type="radio" name="rcmode" value="parity" ${
+        localStorage.getItem(MODE_KEY) === 'parity' ? 'checked' : ''
+      }><span>風險平價</span></label>
     </div>
     <div class="seg rc-seg">${TARGETS.map((t) => `<label><input type="radio" name="rctgt"
-      value="${t}" ${Math.abs(t - target) < 1e-9 ? 'checked' : ''}><span>組合波動 ${fmt(t * 100)}%</span></label>`).join('')}</div>`;
+      value="${t}" ${Math.abs(t - mult) < 1e-9 ? 'checked' : ''}><span>指數 ${
+      fmtMax(t, 2)} 倍</span></label>`).join('')}</div>
+    <p class="sub muted">指數年化波動 ${fmt(ivol * 100)}%　→　目標組合波動 ${fmt(target * 100)}%</p>`;
 
   if (!sel.length) {
     return head + `<p class="muted">還沒選標的。加幾檔進來，我算「同樣的風險該怎麼分」。</p>`;
@@ -148,23 +203,39 @@ function allocBlock(c) {
       <p class="muted">資料載入中，或這幾檔還沒有日報酬序列。</p>`;
   }
 
-  const w = scaleTo(riskParity(st), st, target);
+  const mode = localStorage.getItem(MODE_KEY) || 'sharpe';
+
+  // 比值缺漏的（例如上市太短還沒算出來）用橫斷面平均頂替，
+  // **不要當成 0**——當成 0 等於直接判它出局，那不是「沒資料」該有的待遇。
+  const rawRatios = have.map((s2) => cache().get(s2)?.ratio);
+  const known = rawRatios.filter((r) => isNum(r) && r !== 0);
+  const avgR = known.length ? known.reduce((a, b) => a + num(b), 0) / known.length : 1;
+  const ratios = rawRatios.map((r) => (isNum(r) && r !== 0 ? num(r) : avgR));
+  const guessed = have.filter((_, i) => !(isNum(rawRatios[i]) && rawRatios[i] !== 0));
+  const mu = assumedMu(st, ratios);
+  const raw = mode === 'parity' ? riskParity(st) : maxSharpe(st, mu);
+  const w = scaleTo(raw, st, target);
   const pv = portVol(w, st);
   const rc = riskContrib(w, st);
-  const twii = statsOf(cache(), ['TAIEX']);
-  const ivol = twii ? twii.vol[0] : null;
   const totExp = w.reduce((a, x) => a + x * assets, 0);
+  const shOpt = sharpeOf(raw, st, mu);
+  const shPar = sharpeOf(riskParity(st), st, mu);
 
-  const rows = have.map((s, i) => {
+  const order = have.map((s, i) => i).sort((a, b) => w[b] - w[a]);
+  const rows = order.map((i) => {
+    const s = have[i];
     const exp = w[i] * assets;
     const lv = lotValue(s);
     const held = (state.futures || []).find((f) => norm(f.symbol) === norm(s) && f.kind === 'stock');
-    return `<tr>
+    const dz = dropZ(cache(), s);
+    return `<tr class="${w[i] < 1e-4 ? 'rc-zero' : ''}">
       <td>${esc(labelOf(s))}</td>
+      <td>${fmtMax(ratios[i], 2)}${guessed.includes(s) ? '<span class="sub muted">估</span>' : ''}</td>
       <td>${fmt(st.vol[i] * 100)}%</td>
+      <td class="${dz && dz.z <= -1.5 ? 'gain' : ''}">${dz ? `${fmtMax(dz.z, 1)}σ` : '–'}</td>
       <td>${fmt(exp)}</td>
-      <td><b>${lv ? `${fmtMax(exp / lv, 2)} 口` : '–'}</b>${
-        lv ? `<span class="sub muted">小型 ${fmtMax((exp / lv) * 20, 1)} 口</span>` : ''}</td>
+      <td><b>${s === 'TAIEX' ? idxLots(exp) : lv ? `${fmtMax(exp / lv, 2)} 口` : usShares(s, exp)}</b>${
+        lv && s !== 'TAIEX' ? `<span class="sub muted">小型 ${fmtMax((exp / lv) * 20, 1)} 口</span>` : ''}</td>
       <td>${fmt((rc[i] / pv) * 100)}%</td>
       <td class="${held ? '' : 'muted'}">${held ? `${fmtMax(held.lots, 2)} 口` : '－'}</td>
     </tr>`;
@@ -172,28 +243,38 @@ function allocBlock(c) {
 
   // 相關係數：只有兩檔以上才有意義
   const cor = have.length > 1 ? `
-    <table class="rc-tab rc-corr"><thead><tr><th></th>${
+    <div class="rc-scroll"><table class="rc-tab rc-corr"><thead><tr><th></th>${
       have.map((s) => `<th>${esc(String(s))}</th>`).join('')}</tr></thead><tbody>
     ${have.map((a, i) => `<tr><th>${esc(String(a))}</th>${
       have.map((b, j) => `<td class="${st.corr[i][j] >= 0.7 && i !== j ? 'loss' : ''}">${
         fmtMax(st.corr[i][j], 2)}</td>`).join('')}</tr>`).join('')}
-    </tbody></table>` : '';
+    </tbody></table></div>` : '';
 
   return head + `
     <div class="rc-picks">${sel.map((s) => `<span class="rc-chip${
       cache().get(s) ? '' : ' rc-chip-off'}">${esc(labelOf(s))}<button type="button"
       data-rm="${esc(s)}">×</button></span>`).join('')}</div>
-    <table class="rc-tab"><thead><tr><th>標的</th><th>波動</th><th>建議曝險</th>
-      <th>大型個股期</th><th>風險佔比</th><th>目前</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th title="過去三年 報酬÷波動">比值</th>
+      <th>波動</th><th title="離 60 日高點幾個標準差">位階</th><th>建議曝險</th>
+      <th>大型個股期</th><th>風險佔比</th><th>目前</th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="rc-sum">合計曝險 <b>${fmt(totExp)}</b> 元　＝ 總資產的 ${
-      fmtMax(totExp / assets, 2)} 倍${ivol ? `　≈ 指數開 ${fmtMax(target / ivol, 2)} 倍` : ''}
+      fmtMax(totExp / assets, 2)} 倍　組合波動 ${fmt(target * 100)}%
+      ${order.filter((i) => w[i] < 1e-4).length
+        ? `<br><span class="sub muted">有 ${order.filter((i) => w[i] < 1e-4).length
+          } 檔配到 0——不是壞掉，是它的風險已經被其他檔涵蓋（看相關係數）</span>` : ''}
+      <br>組合報酬/波動 <b>${fmtMax(shOpt, 2)}</b>${
+        mode === 'sharpe' ? `（風險平價會是 ${fmtMax(shPar, 2)}）` : `（最佳化可到 ${fmtMax(shOpt > shPar ? shOpt : shPar, 2)}）`}
       <span class="sub muted">（樣本 ${st.days} 天${
         pickable.dropped.length ? `；${pickable.dropped.map(esc).join('、')} 資料太短，未納入` : ''}）</span></p>
     ${cor}
-    <p class="hint">用的是<b>風險平價</b>：每一檔貢獻一樣多的波動，波動大的就配少一點。
-      它<b>完全不看預期報酬</b>——只回答「同樣的風險怎麼分」，不回答「該不該買」。
-      選股是你的判斷，大小交給這張表。<br>
-      單檔要獨立抓的話用這條：<b>曝險 ＝ 總資產 × 風險預算 ÷ 年化波動</b>。</p>`;
+    <p class="hint"><b>最佳報酬/波動</b>把預期報酬放進去做最佳化；
+      <b>風險平價</b>完全不看報酬，只讓每一檔貢獻一樣多的波動。<br>
+      <b>預期報酬是「假設」不是「預測」</b>：用過去三年的比值往橫斷面平均收縮一半，
+      再乘回各自的波動。單檔上限 35%——沒有上限的最佳化幾乎一定會把錢全壓在一檔，
+      那是對估計誤差的過度反應。<br>
+      <b>位階</b>是「離 60 日高點幾個標準差」。跌 20% 在月波動 10% 的股票上是 −1.2σ，
+      但指數只跌 10%、月波動 4%，卻是 −1.4σ，其實更極端——**用百分比比不同標的會比錯**。<br>
+      單檔要獨立抓就用這條：<b>曝險 ＝ 總資產 × 風險預算 ÷ 年化波動</b>。</p>`;
 }
 
 export function renderRiskCard(el) {
@@ -212,8 +293,14 @@ export function renderRiskCard(el) {
   const add = () => {
     const raw = norm(input.value);
     if (!raw) return;
-    const sym = resolveTwSymbol(raw);
-    if (!/^[0-9]{4,6}[A-Z]?$/.test(sym)) return;
+    // 數字開頭走台股（可以用中文名反查），字母開頭直接當美股代號。
+    // **美股一定要收**——他的 SNXX 佔了一半的風險，而且跨市場的相關係數
+    //（SNXX 對台股只有 0.12）正是分散配置真正的來源。
+    // 台指用一個固定代號 TAIEX，中文與常見縮寫都認
+    const IDX_ALIAS = ['台指', '台指期', '加權', '加權指數', 'TAIEX', 'TX', 'MTX', 'TMF', '大盤'];
+    const sym = IDX_ALIAS.includes(raw) ? 'TAIEX'
+      : /^[0-9]/.test(raw) ? resolveTwSymbol(raw) : raw;
+    if (sym !== 'TAIEX' && !/^[0-9]{4,6}[A-Z]?$/.test(sym) && !/^[A-Z][A-Z.]{0,5}$/.test(sym)) return;
     setPicks([...picks(), sym]);
     input.value = '';
     refresh(el);
@@ -226,6 +313,29 @@ export function renderRiskCard(el) {
   }
   const btn = $('#rc-add', el);
   if (btn) btn.onclick = add;
+  const top = $('#rc-top', el);
+  if (top) {
+    top.onclick = async () => {
+      top.disabled = true;
+      top.textContent = '載入中…';
+      try {
+        const { data, error } = await sb.rpc('top_ratio', { p_limit: 20, p_scope: 'fut' });
+        if (error) throw error;
+        if (!data || !data.length) { toast('目前沒有符合條件的標的', 2500); return; }
+        // **台指一定要放進候選。** 它的波動只有個股的三分之一，
+        // 在風險等價下常常是最有效率的一塊，不放進去等於先排除了正確答案。
+        setPicks(['TAIEX', ...data.map((r) => String(r.symbol))]);
+        await ensure(picks());
+        renderRiskCard(el);
+      } catch (e) { fail(e); } finally { top.disabled = false; }
+    };
+  }
+  const clr = $('#rc-clear', el);
+  if (clr) clr.onclick = () => { setPicks([]); renderRiskCard(el); };
+  $$('input[name=rcmode]', el).forEach((r) => (r.onchange = () => {
+    localStorage.setItem(MODE_KEY, r.value);
+    renderRiskCard(el);
+  }));
   $$('[data-rm]', el).forEach((b) => (b.onclick = () => {
     setPicks(picks().filter((s) => s !== b.dataset.rm));
     refresh(el);

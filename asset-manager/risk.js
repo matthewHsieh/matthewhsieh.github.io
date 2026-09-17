@@ -19,22 +19,26 @@ const ANN = Math.sqrt(252);
 
 // 從 risk_stats / us_stats 抓日報酬序列
 export async function loadSeries(symbols) {
-  const tw = [...new Set(symbols.filter((s) => /^[0-9]/.test(s)))];
-  const us = [...new Set(symbols.filter((s) => !/^[0-9]/.test(s)))];
+  // **TAIEX 住在 risk_stats，不是 us_stats。** 只用「開頭是不是數字」分流的話
+  // 它會被丟去美股那張表，而且只有在同時挑了台股時才會因為附帶查詢而僥倖抓到。
+  const isTw = (s) => /^[0-9]/.test(s) || s === 'TAIEX';
+  const tw = [...new Set(symbols.filter(isTw))];
+  const us = [...new Set(symbols.filter((s) => !isTw(s)))];
   const out = new Map();
   const take = (rows) => {
     for (const r of rows || []) {
       if (!r.rets || !r.ret_days || !r.rets.length) continue;
-      out.set(String(r.symbol), { days: r.ret_days, rets: r.rets, vol: num(r.vol1y ?? r.vol) });
+      out.set(String(r.symbol), { days: r.ret_days, rets: r.rets,
+        vol: num(r.vol1y ?? r.vol), ratio: num(r.ratio), cagr: num(r.cagr) });
     }
   };
   const jobs = [];
   if (tw.length) {
-    jobs.push(sb.from('risk_stats').select('symbol,vol,vol1y,ret_days,rets')
-      .in('symbol', [...tw, 'TAIEX']).then(({ data }) => take(data)));
+    jobs.push(sb.from('risk_stats').select('symbol,vol,vol1y,ratio,cagr,ret_days,rets')
+      .in('symbol', [...new Set([...tw, 'TAIEX'])]).then(({ data }) => take(data)));
   }
   if (us.length) {
-    jobs.push(sb.from('us_stats').select('symbol,vol,ret_days,rets')
+    jobs.push(sb.from('us_stats').select('symbol,vol,ratio,cagr,ret_days,rets')
       .in('symbol', us).then(({ data }) => take(data)));
   }
   await Promise.all(jobs);
@@ -149,6 +153,108 @@ export function riskParity(st, iters = 600) {
     w = norm(w.map((wi, i) => Math.max(1e-9, wi * (1 + 0.08 * (target / (rc[i] || 1e-9) - 1)))));
   }
   return w;
+}
+
+// ------------------------------------------------------------
+// 最大報酬/波動（tangency portfolio）
+//
+//   風險平價只回答「同樣的風險怎麼分」，不看預期報酬。要「組合的報酬/波動
+//   最好」就得把預期報酬放進去，也就是做 mean-variance 最佳化。
+//
+//   **最危險的一步是預期報酬怎麼來的。** 用過去三年的年化報酬直接當預期，
+//   旺矽是 208%／年、永豐金 43%——最佳化會把幾乎全部的錢壓到前一兩檔，
+//   而那是對估計誤差的過度反應，不是真的洞見。兩個護欄：
+//     1. **往橫斷面平均收縮**（預設收一半）。收縮在報酬/波動這個尺度上做，
+//        因為比值 1.8~3.3 的離散度遠小於報酬 43%~208%，數值穩定得多。
+//     2. **單檔權重上限**，預設 35%。沒有上限的 MVO 幾乎一定會出角解。
+//   即使如此，這一欄要標成「假設」，不能標成「預測」。
+// ------------------------------------------------------------
+
+// 投影到 {w ≥ 0, Σw = 1}（Duchi et al. 2008）
+function projSimplex(v) {
+  const n = v.length;
+  const u = [...v].sort((a, b) => b - a);
+  let css = 0, theta = 0;
+  for (let i = 0; i < n; i += 1) {
+    css += u[i];
+    const t = (css - 1) / (i + 1);
+    if (u[i] - t > 0) theta = t;
+  }
+  return v.map((x) => Math.max(0, x - theta));
+}
+
+// 再加上單檔上限：超過的釘在上限，剩下的按比例重分配
+function projCapped(v, cap) {
+  let w = projSimplex(v);
+  const n = w.length;
+  if (cap >= 1 || n * cap < 1) return w;
+  for (let it = 0; it < 60; it += 1) {
+    const over = w.map((x, i) => (x > cap + 1e-12 ? i : -1)).filter((i) => i >= 0);
+    if (!over.length) return w;
+    const set = new Set(over);
+    const rest = w.reduce((a, x, i) => a + (set.has(i) ? 0 : x), 0);
+    const room = 1 - over.length * cap;
+    const k = rest > 1e-12 ? room / rest : 0;
+    w = w.map((x, i) => (set.has(i) ? cap : x * k));
+  }
+  return w;
+}
+
+// 把比值往平均收縮，再乘回各自的波動，得到「假設的預期年化報酬」
+export function assumedMu(st, ratios, shrink = 0.5) {
+  const avg = ratios.reduce((a, b) => a + b, 0) / (ratios.length || 1);
+  return ratios.map((r, i) => (shrink * r + (1 - shrink) * avg) * st.vol[i]);
+}
+
+export function maxSharpe(st, mu, { cap = 0.35, iters = 900, step = 0.08 } = {}) {
+  const n = st.keys.length;
+  if (!n) return [];
+  if (n === 1) return [1];
+  let w = new Array(n).fill(1 / n);
+  for (let t = 0; t < iters; t += 1) {
+    const sd = portVol(w, st);
+    if (!sd) break;
+    const mr = w.reduce((a, x, i) => a + x * mu[i], 0);
+    const g = w.map((_, i) => {
+      let sw = 0;
+      for (let j = 0; j < n; j += 1) sw += w[j] * st.vol[i] * st.vol[j] * st.corr[i][j];
+      return mu[i] / sd - (mr * sw) / (sd ** 3);
+    });
+    const gn = Math.sqrt(g.reduce((a, x) => a + x * x, 0)) || 1;
+    w = projCapped(w.map((x, i) => x + (step / gn) * g[i]), Math.min(1, Math.max(1 / n, cap)));
+  }
+  return w;
+}
+
+// 這組權重在「假設的預期報酬」下的報酬/波動
+export const sharpeOf = (w, st, mu) => {
+  const sd = portVol(w, st);
+  return sd ? w.reduce((a, x, i) => a + x * mu[i], 0) / sd : 0;
+};
+
+// ------------------------------------------------------------
+// 離 60 日高點幾個標準差
+//
+//   「跌 20%」在不同波動的標的上意義完全不同：
+//   月波動 10% 的股票跌 20% 是 −1.15 個標準差；
+//   月波動 4% 的指數只跌 10%，卻是 −1.44 個標準差，其實更極端。
+//   要比較不同標的的「位階」，一定要換成標準差。
+// ------------------------------------------------------------
+export function dropZ(series, key, win = 60) {
+  const s = series.get(key);
+  if (!s || !s.rets || s.rets.length < win + 5) return null;
+  const r = s.rets.slice(-win);
+  const m = r.reduce((a, b) => a + b, 0) / r.length;
+  const sd = Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / r.length);
+  if (!(sd > 0)) return null;
+  // 從高點算起的累積報酬：往回累加，最小值就是「離期間高點多遠」
+  let cum = 0, best = 0;
+  for (let i = r.length - 1; i >= 0; i -= 1) {
+    cum += r[i];
+    if (cum > best) best = cum;
+  }
+  const dd = -best;                       // ≤ 0，對數報酬
+  return { dd, sd, z: dd / (sd * Math.sqrt(win)) };
 }
 
 // 把一組權重整體縮放到指定的組合波動

@@ -818,6 +818,12 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 .rc-kpis b { font-size: 20px; line-height: 1.3; font-variant-numeric: tabular-nums; }
 .rc-kpis .sub { display: block; font-size: 12px; }
 
+/* 欄位多的表格讓它自己橫向捲，**不要讓它撐破整頁**。
+   之前 .hist-seg 用 nowrap 就害整頁橫向溢出 8px，那種 bug 很難找。 */
+.rc-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 4px -2px; }
+.rc-scroll > .rc-tab { min-width: 100%; width: max-content; }
+.rc-zero td { opacity: .45; }
+
 .rc-tab { width: 100%; border-collapse: collapse; font-size: 13px; margin: 4px 0 8px; }
 .rc-tab th, .rc-tab td { padding: 6px 4px; text-align: right; font-variant-numeric: tabular-nums; }
 .rc-tab th:first-child, .rc-tab td:first-child { text-align: left; }
