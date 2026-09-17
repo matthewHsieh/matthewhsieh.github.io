@@ -177,3 +177,18 @@ begin
 end $fn$;
 
 revoke all on function public.refresh_us_ret_series(integer) from public, anon;
+-- 讓既有的排程順便補日報酬序列，不另外開 cron job。
+-- **放在 refresh 之後**：risk_stats 那一列要先存在，update 才會命中。
+create or replace function public.update_risk()
+returns void language plpgsql security definer set search_path = public, extensions as $fn$
+begin
+  perform public.refresh_risk_stats(600);
+  perform public.refresh_ret_series(120);
+end $fn$;
+
+create or replace function public.update_us_risk()
+returns void language plpgsql security definer set search_path = public, extensions as $fn$
+begin
+  perform public.refresh_us_risk(600);
+  perform public.refresh_us_ret_series(80);
+end $fn$;
