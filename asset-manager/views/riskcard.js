@@ -1,7 +1,7 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, sb, state, toast } from '../core.js';
 import {
-  IM_RATE, assumedMu, dropZ, exposureRows, loadSeries, marginRoom, maxSharpe, moveOdds,
-  portVol, riskContrib, riskParity, scaleTo, sharpeOf, statsOf, usableKeys,
+  IM_RATE, assumedMu, dropZ, exposureRows, indexSignal, loadSeries, marginRoom, maxSharpe,
+  moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf, statsOf, usableKeys,
 } from '../risk.js';
 import { compute } from '../portfolio.js';
 import { TW_STOCKS, attachLookup, resolveTwSymbol } from '../symbols.js';
@@ -161,7 +161,11 @@ function allocBlock(c) {
   const pickable = usableKeys(cache(), loaded);
   const have = pickable.kept;
   const assets = num(c.totalAssets);
-  const mult = num(state.allocTarget ?? 1);
+  const sig = indexSignal(cache(), (state.riskStats || []).find((x) => String(x.symbol) === 'TAIEX'));
+  // 預設就跟規則走；他手動選過才用他選的
+  const mult = state.allocTarget === undefined
+    ? (sig ? Math.round(sig.lev * 100) / 100 : 1)
+    : num(state.allocTarget);
 
   // **指數波動要跟組合用同一段樣本。** 分開算的話，標籤上寫「指數 1 倍」
   // 用的是指數自己 260 天的 26%，表格裡卻顯示 31%（150 天交集），
@@ -180,17 +184,21 @@ function allocBlock(c) {
       <button type="button" class="small" id="rc-top">★ 推薦 20 檔</button>
       <button type="button" class="small" id="rc-clear">清空</button>
     </div>
-    <div class="seg rc-seg">
-      <label><input type="radio" name="rcmode" value="sharpe" ${
-        (localStorage.getItem(MODE_KEY) || 'sharpe') === 'sharpe' ? 'checked' : ''
-      }><span>最佳報酬/波動</span></label>
-      <label><input type="radio" name="rcmode" value="parity" ${
-        localStorage.getItem(MODE_KEY) === 'parity' ? 'checked' : ''
-      }><span>風險平價</span></label>
-    </div>
-    <div class="seg rc-seg">${TARGETS.map((t) => `<label><input type="radio" name="rctgt"
-      value="${t}" ${Math.abs(t - mult) < 1e-9 ? 'checked' : ''}><span>指數 ${
-      fmtMax(t, 2)} 倍</span></label>`).join('')}</div>
+    <div class="seg rc-seg">${[['sharpe', '最佳報酬/波動'], ['aggr', '潛在報酬最大'],
+      ['parity', '風險平價']].map(([v, lab]) => `<label><input type="radio" name="rcmode"
+      value="${v}" ${(localStorage.getItem(MODE_KEY) || 'sharpe') === v ? 'checked' : ''
+      }><span>${lab}</span></label>`).join('')}</div>
+    <div class="seg rc-seg">${[...(sig ? [Math.round(sig.lev * 100) / 100] : []), ...TARGETS]
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .map((tv, i) => `<label><input type="radio" name="rctgt"
+      value="${tv}" ${Math.abs(tv - mult) < 1e-9 ? 'checked' : ''}><span>${
+      sig && i === 0 ? '規則 ' : ''}指數 ${fmtMax(tv, 2)} 倍</span></label>`).join('')}</div>
+    ${sig ? `<p class="sub rc-sig">規則算出來是 <b>${fmtMax(sig.lev, 2)} 倍</b>
+      ＝ 趨勢 ${fmtMax(sig.base, 1)}（指數${sig.above ? '在' : '跌破'} MA200，
+      現在是均線的 ${fmtMax(sig.maRatio, 2)} 倍）
+      ＋ 回撤加碼 ${fmtMax(sig.add, 2)}（距 52 週高點 ${fmt(sig.dd * 100)}%）<br>
+      <span class="muted">只用趨勢濾網的話是 ${fmtMax(sig.levFilter, 1)} 倍。
+      2008 年完整規則 0.50x、只用濾網 0.82x——回撤加碼在真正的崩盤裡是加速器。</span></p>` : ''}
     <p class="sub muted">指數年化波動 ${fmt(ivol * 100)}%　→　目標組合波動 ${fmt(target * 100)}%</p>`;
 
   if (!sel.length) {
@@ -213,7 +221,13 @@ function allocBlock(c) {
   const ratios = rawRatios.map((r) => (isNum(r) && r !== 0 ? num(r) : avgR));
   const guessed = have.filter((_, i) => !(isNum(rawRatios[i]) && rawRatios[i] !== 0));
   const mu = assumedMu(st, ratios);
-  const raw = mode === 'parity' ? riskParity(st) : maxSharpe(st, mu);
+  // **在固定的波動目標下，最大報酬/波動的組合本來就是報酬最大的組合**
+  //   （報酬 = 比值 × 目標波動，同樣波動下比值最高的報酬就最高）。
+  //   所以「潛在報酬最大」真正在調的不是目標，而是**你有多相信那組預期報酬**：
+  //   少收縮＋放寬單檔上限 = 往比值高的那幾檔壓得更重。
+  const raw = mode === 'parity' ? riskParity(st)
+    : mode === 'aggr' ? maxSharpe(st, assumedMu(st, ratios, 0.85), { cap: 0.6 })
+      : maxSharpe(st, mu);
   const w = scaleTo(raw, st, target);
   const pv = portVol(w, st);
   const rc = riskContrib(w, st);
@@ -267,14 +281,69 @@ function allocBlock(c) {
       <span class="sub muted">（樣本 ${st.days} 天${
         pickable.dropped.length ? `；${pickable.dropped.map(esc).join('、')} 資料太短，未納入` : ''}）</span></p>
     ${cor}
-    <p class="hint"><b>最佳報酬/波動</b>把預期報酬放進去做最佳化；
-      <b>風險平價</b>完全不看報酬，只讓每一檔貢獻一樣多的波動。<br>
+    <p class="hint"><b>在固定的波動目標下，「最佳報酬/波動」本來就是報酬最大的組合</b>
+      ——報酬 ＝ 比值 × 目標波動，同樣波動下比值最高的報酬就最高。
+      所以<b>潛在報酬最大</b>調的不是目標，是「你有多相信那組預期報酬」：
+      收縮從一半降到 15%、單檔上限從 35% 放寬到 60%，往比值高的那幾檔壓得更重。
+      押對賺更多，押錯也錯更多。<b>風險平價</b>則完全不看報酬。<br>
       <b>預期報酬是「假設」不是「預測」</b>：用過去三年的比值往橫斷面平均收縮一半，
       再乘回各自的波動。單檔上限 35%——沒有上限的最佳化幾乎一定會把錢全壓在一檔，
       那是對估計誤差的過度反應。<br>
       <b>位階</b>是「離 60 日高點幾個標準差」。跌 20% 在月波動 10% 的股票上是 −1.2σ，
       但指數只跌 10%、月波動 4%，卻是 −1.4σ，其實更極端——**用百分比比不同標的會比錯**。<br>
       單檔要獨立抓就用這條：<b>曝險 ＝ 總資產 × 風險預算 ÷ 年化波動</b>。</p>`;
+}
+
+// 追蹤清單：手上的部位 ＋ 試算裡挑的，全部看一次位階
+export const watchList = () => [
+  ...new Set([...exposureRows().filter((r) => !r.key.startsWith('IDX:')).map((r) => r.key),
+              ...picks(), 'TAIEX']),
+];
+
+const Z_HIT = -2;
+
+// 位階掃描。**在資料庫算**：全市場兩千檔、每檔 260 個日報酬，
+// 全部送到瀏覽器要好幾 MB，而他只需要命中的那幾檔。
+export async function loadDropHits() {
+  try {
+    const { data, error } = await sb.rpc('drop_hits',
+      { p_z: Z_HIT, p_scope: 'fut', p_limit: 12 });
+    if (error) throw error;
+    return data || [];
+  } catch { return []; }
+}
+
+// 總覽頁用：沒有命中就整張卡不畫
+export function renderDropWatch(el) {
+  if (!el) return;
+  loadDropHits().then((hits) => {
+    if (!hits.length) { el.innerHTML = ''; return; }
+    const held = new Set(watchList());
+    el.innerHTML = `
+      <div class="card list">
+        <div class="list-title" role="heading" aria-level="2">位階警示（≤ ${Z_HIT}σ）</div>
+        <div class="rc-scroll"><table class="rc-tab"><thead><tr>
+          <th>標的</th><th>位階</th><th>近三個月跌幅</th><th>波動</th><th>比值</th>
+        </tr></thead><tbody>
+        ${hits.map((h) => `<tr>
+          <td>${esc(h.symbol)} ${esc(h.name || '')}${
+            held.has(String(h.symbol)) ? '<span class="badge">持有</span>' : ''}</td>
+          <td class="gain">${fmtMax(num(h.z), 2)}σ</td>
+          <td>${fmt(num(h.dd) * 100)}%</td>
+          <td>${fmt(num(h.vol1y) * 100)}%</td>
+          <td>${fmtMax(num(h.ratio), 2)}</td></tr>`).join('')}
+        </tbody></table></div>
+        <p class="hint">離<b>近三個月高點</b>超過 ${-Z_HIT} 個標準差，而且實際跌幅 ≥ 12%、
+          報酬/波動不低於加權指數。<br>
+          <b>兩個條件缺一不可。</b>只看標準差會掃出一堆金融股——波動 20% 的金控跌一點點
+          就是好幾個標準差，但那個跌幅小到沒有交易價值；只看跌幅則會一直掃到高波動股，
+          因為它們本來就天天在跌。<br>
+          實測 2022-2026：−2σ 以下的樣本未來 20 個交易日平均 <b>+2.93%</b>、勝率 64%
+          （全市場 347 個樣本，t ≈ 2.3）。<b>但那是全市場的數字</b>——在報酬/波動前段的
+          好標的裡，回檔與未來報酬其實是 U 型（貼近高點最好、−1σ 附近最差），
+          所以這張表只拿來看極端值，不是「回檔就買」的理由。</p>
+      </div>`;
+  });
 }
 
 export function renderRiskCard(el) {

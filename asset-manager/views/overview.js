@@ -3,6 +3,7 @@ import { ALERT_LABEL, alertBadge, heldAlerts } from '../alerts.js';
 import { $, $$, esc, fmt, fmtCompact, fmtX, isNum, norm, num, pct, plClass, signed, state, sum } from '../core.js';
 import { saveSnapshot } from '../data.js';
 import { ackBannerHtml, ackDisclaimer, disclaimerAcked } from '../legal.js';
+import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
@@ -103,6 +104,7 @@ export function renderOverview(el) {
         delta 曝險是線性近似，大幅波動時實際曝險會比這個數字放大（gamma），賣方尤其明顯。
         所以最大損益另外列出，不併進槓桿。${c.optNoDelta ? '<br>⚠ 有部位還沒算出 delta，按右上角 ↻ 或等下次自動更新。' : ''}</p>
     </div>` : ''}
+    <div data-drop-watch></div>
     ${tradeButton()}
     <button type="button" class="block" id="snap-btn">📌 記錄今日快照</button>
     <p class="hint">${priceStamp()}。收盤價、結算價與匯率每天自動更新，不用手動改。匯率 ${fmt(c.rate, 3)}。</p>
@@ -142,6 +144,7 @@ export function renderOverview(el) {
   // 整頁重畫會把甜甜圈與捲動位置一起重置，按個確認鈕不該有那種副作用。
   const ackBtn = $('#ack-btn', el);
   if (ackBtn) ackBtn.onclick = () => { ackDisclaimer(); ackBtn.closest('.ack-card').remove(); };
+  renderDropWatch($('[data-drop-watch]', el));
   bindListActions(el);
   bindStockOpen(el);
 }

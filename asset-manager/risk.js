@@ -239,9 +239,12 @@ export const sharpeOf = (w, st, mu) => {
 //   月波動 10% 的股票跌 20% 是 −1.15 個標準差；
 //   月波動 4% 的指數只跌 10%，卻是 −1.44 個標準差，其實更極端。
 //   要比較不同標的的「位階」，一定要換成標準差。
+//
+//   窗口 63 個交易日 ≈ 三個月。（60 個交易日其實也差不多是三個月，
+//   容易被當成 60 個日曆日＝兩個月，所以寫 63。）
 // ------------------------------------------------------------
-export function dropZ(series, key, win = 60) {
-  const s = series.get(key);
+export function dropZ(series, key, win = 63) {
+  const s = series?.get?.(key);
   if (!s || !s.rets || s.rets.length < win + 5) return null;
   const r = s.rets.slice(-win);
   const m = r.reduce((a, b) => a + b, 0) / r.length;
@@ -309,6 +312,52 @@ function erfc(x) {
     + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398
     + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
   return x >= 0 ? r : 2 - r;
+}
+
+// ------------------------------------------------------------
+// 指數該開幾倍：MA200 趨勢 ＋ 回撤加碼
+//
+//   2026-09-17 用 25 年加權指數（2002-07~2026-09、5,557 個 18 個月滾動窗口）測的：
+//     固定 1.86 倍        終值 15.08x、最大回撤 −82.7%
+//     只用 MA200 濾網     終值 14.87x、最大回撤 −60.9%、平均槓桿只有 1.40 倍
+//   **報酬一樣，但濾網用少了四分之一的槓桿、少掉 22 個百分點的回撤。**
+//   原因不是它會躲下跌——均線之下平均起來還是漲的——而是報酬/波動從
+//   0.76 掉到 0.32，槓桿的價值完全取決於這個比值。
+//
+//   回撤加碼那一段要當心：2008 年「只用濾網」是 0.82x，加了回撤加碼變成 0.50x。
+//   它在大多頭貢獻最多報酬，在真正的崩盤裡是加速器。所以兩個數字都給。
+//
+//   **這是指數的倍率，不能套到個股上。** 同一條規則套金居是 −95.7% 且被追繳。
+// ------------------------------------------------------------
+const toPrices = (rets) => {
+  const out = [1];
+  for (const r of rets) out.push(out[out.length - 1] * Math.exp(num(r)));
+  return out;
+};
+
+export function indexSignal(series, riskRow, win = 200) {
+  const s = series?.get?.('TAIEX');
+  if (!s || !s.rets || s.rets.length < win) return null;
+  // 還原成價格指數。**比例是多少不重要**，價格與均線的比值是尺度不變的。
+  const p = toPrices(s.rets);
+  const last = p[p.length - 1];
+  const seg = p.slice(-win);
+  const ma = seg.reduce((a, b) => a + b, 0) / seg.length;
+  const above = last >= ma;
+
+  // 回撤用 risk_stats 的 52 週高點，跟畫面其它地方同一個來源。
+  // （回測用的是歷史最高點，指數在高檔時兩者幾乎一樣。）
+  const hi = num(riskRow?.hi52);
+  const px = num(riskRow?.last);
+  const dd = hi > 0 && px > 0 ? Math.max(0, (hi - px) / hi) : 0;
+  const add = Math.min(1, 4 * dd);
+  return {
+    above, maRatio: last / ma, dd, hi, px,
+    base: above ? 2 : 0,
+    add,
+    lev: (above ? 2 : 0) + add,      // 完整規則
+    levFilter: above ? 2 : 0,        // 只用濾網（2008 年表現比較好的那個）
+  };
 }
 
 // 目前持倉的曝險明細（台股現股、個股期貨、指數期貨、複委託）
