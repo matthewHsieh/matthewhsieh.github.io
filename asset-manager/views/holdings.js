@@ -1,11 +1,12 @@
 import { alertBadge, alertOf } from '../alerts.js';
-import { $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
+import { $, $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
 import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
 import { bindListActions, itemRow, section, tradeButton, valuationCard } from '../widgets.js';
+import { renderRiskCard } from './riskcard.js';
 
 // 到期損益。**這是整組的數字，不是一腳一腳加起來的。**
 //   買權多頭價差（買低履約 ＋ 賣高履約）最大虧損就是淨支出，
@@ -162,6 +163,7 @@ export function renderHoldings(el) {
 
   el.innerHTML =
     tradeButton() +
+    '<div data-risk-card></div>' +
     section('台股', 'stock', stockRows, `市值 ${fmt(c.stockValue)}　<span class="${plClass(stockPl)}">${signed(stockPl)}</span>`) +
     section('期貨部位（指數 + 個股）', 'future', futRows,
       `名目合計 ${fmt(c.futGross)}　${c.futProfit === null
@@ -187,6 +189,7 @@ export function renderHoldings(el) {
       期貨的<b>權益數</b>計入總資產，<b>名目金額</b>計入曝險。個股期貨以標的股價計價：大型 = 2 張（2,000 股）、小型 = 100 股。
       選擇權的<b>權利金市值</b>計入總資產（買方為正、賣方為負），<b>delta 曝險</b>計入槓桿；
       delta 由期交所結算價每天自動反推，不用手動填。</p>`;
+  renderRiskCard($('[data-risk-card]', el));
   bindListActions(el);
   $$('[data-eps]', el).forEach((b) => (b.onclick = () => editEps(b.dataset.eps, b.dataset.nm)));
 }
