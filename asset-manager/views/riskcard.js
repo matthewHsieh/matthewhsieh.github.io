@@ -24,6 +24,12 @@ const PICK_KEY = 'allocPicks';
 //   才是一個穩定的、他腦子裡真的在用的單位。
 const TARGETS = [0.75, 1, 1.5, 2];
 const MODE_KEY = 'allocMode';
+const NOFIN_KEY = 'allocNoFin';
+
+// 排除產業。目前只有「金融保險業」一個選項——他明講不想持有金融股。
+// **傳 null 而不是空陣列**：空陣列在 SQL 那邊 `<> all ('{}')` 永遠為真，
+// 等於沒有排除，但看起來像有在過濾。
+const EXCL = () => (localStorage.getItem(NOFIN_KEY) === '1' ? ['金融保險業'] : null);
 const DEF_IDX_VOL = 0.27;   // 抓不到指數序列時的退路
 
 const picks = () => {
@@ -184,6 +190,9 @@ function allocBlock(c) {
       <button type="button" class="small" id="rc-top">★ 推薦 20 檔</button>
       <button type="button" class="small" id="rc-clear">清空</button>
     </div>
+    <label class="chk rc-chk"><input type="checkbox" id="rc-nofin" ${
+      localStorage.getItem(NOFIN_KEY) === '1' ? 'checked' : ''}>
+      <span>排除金融股（推薦與位階警示都套用）</span></label>
     <div class="seg rc-seg">${[['sharpe', '最佳報酬/波動'], ['aggr', '潛在報酬最大'],
       ['parity', '風險平價']].map(([v, lab]) => `<label><input type="radio" name="rcmode"
       value="${v}" ${(localStorage.getItem(MODE_KEY) || 'sharpe') === v ? 'checked' : ''
@@ -307,7 +316,7 @@ const Z_HIT = -2;
 export async function loadDropHits() {
   try {
     const { data, error } = await sb.rpc('drop_hits',
-      { p_z: Z_HIT, p_scope: 'fut', p_limit: 12 });
+      { p_z: Z_HIT, p_scope: 'fut', p_limit: 12, p_exclude_ind: EXCL() });
     if (error) throw error;
     return data || [];
   } catch { return []; }
@@ -323,21 +332,32 @@ export function renderDropWatch(el) {
       <div class="card list">
         <div class="list-title" role="heading" aria-level="2">位階警示（≤ ${Z_HIT}σ）</div>
         <div class="rc-scroll"><table class="rc-tab"><thead><tr>
-          <th>標的</th><th>位階</th><th>近三個月跌幅</th><th>波動</th><th>比值</th>
+          <th>標的</th><th>位階</th><th>近三個月跌幅</th><th>年波動</th>
+          <th title="近 21 日年化波動 ÷ 近一年">近期波動</th><th>比值</th>
         </tr></thead><tbody>
-        ${hits.map((h) => `<tr>
+        ${hits.map((h) => {
+          const shift = num(h.vol_shift);
+          const moved = shift >= 1.2;
+          return `<tr>
           <td>${esc(h.symbol)} ${esc(h.name || '')}${
-            held.has(String(h.symbol)) ? '<span class="badge">持有</span>' : ''}</td>
-          <td class="gain">${fmtMax(num(h.z), 2)}σ</td>
+            held.has(String(h.symbol)) ? '<span class="badge">持有</span>' : ''}${
+            moved ? '<span class="badge warn-badge">波動變了</span>' : ''}</td>
+          <td class="${moved ? 'muted' : 'gain'}">${fmtMax(num(h.z), 2)}σ</td>
           <td>${fmt(num(h.dd) * 100)}%</td>
           <td>${fmt(num(h.vol1y) * 100)}%</td>
-          <td>${fmtMax(num(h.ratio), 2)}</td></tr>`).join('')}
+          <td class="${moved ? 'loss' : ''}">${fmt(num(h.vol_recent) * 100)}%${
+            shift ? `<span class="sub muted">${fmtMax(shift, 2)}x</span>` : ''}</td>
+          <td>${fmtMax(num(h.ratio), 2)}</td></tr>`;
+        }).join('')}
         </tbody></table></div>
         <p class="hint">離<b>近三個月高點</b>超過 ${-Z_HIT} 個標準差，而且實際跌幅 ≥ 12%、
           報酬/波動不低於加權指數。<br>
           <b>兩個條件缺一不可。</b>只看標準差會掃出一堆金融股——波動 20% 的金控跌一點點
           就是好幾個標準差，但那個跌幅小到沒有交易價值；只看跌幅則會一直掃到高波動股，
           因為它們本來就天天在跌。<br>
+          <b>標了「波動變了」的那幾檔，位階數字不能當真。</b>z 分數的分母是歷史波動，
+          一檔年化 18% 的股票跌 27%，代表那個波動估計已經不適用——分母是舊的，z 會被高估。
+          近 21 日波動超過近一年 1.2 倍就標出來。<br>
           實測 2022-2026：−2σ 以下的樣本未來 20 個交易日平均 <b>+2.93%</b>、勝率 64%
           （全市場 347 個樣本，t ≈ 2.3）。<b>但那是全市場的數字</b>——在報酬/波動前段的
           好標的裡，回檔與未來報酬其實是 U 型（貼近高點最好、−1σ 附近最差），
@@ -388,7 +408,8 @@ export function renderRiskCard(el) {
       top.disabled = true;
       top.textContent = '載入中…';
       try {
-        const { data, error } = await sb.rpc('top_ratio', { p_limit: 20, p_scope: 'fut' });
+        const { data, error } = await sb.rpc('top_ratio',
+          { p_limit: 20, p_scope: 'fut', p_exclude_ind: EXCL() });
         if (error) throw error;
         if (!data || !data.length) { toast('目前沒有符合條件的標的', 2500); return; }
         // **台指一定要放進候選。** 它的波動只有個股的三分之一，
@@ -401,6 +422,15 @@ export function renderRiskCard(el) {
   }
   const clr = $('#rc-clear', el);
   if (clr) clr.onclick = () => { setPicks([]); renderRiskCard(el); };
+  const nf = $('#rc-nofin', el);
+  if (nf) {
+    nf.onchange = () => {
+      localStorage.setItem(NOFIN_KEY, nf.checked ? '1' : '0');
+      // 已經挑進來的金融股一併拿掉，否則勾了還留在表上很奇怪
+      if (nf.checked) setPicks(picks().filter((s) => !/^28[0-9]{2}$/.test(s)));
+      renderRiskCard(el);
+    };
+  }
   $$('input[name=rcmode]', el).forEach((r) => (r.onchange = () => {
     localStorage.setItem(MODE_KEY, r.value);
     renderRiskCard(el);

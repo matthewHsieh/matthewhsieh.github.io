@@ -861,6 +861,7 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
   /* 觸控目標要夠大，但視覺上不能把 chip 撐開 */
   min-width: 24px; min-height: 24px;
 }
+.rc-chk { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 13px; }
 .rc-sum { font-size: 13px; margin: 6px 0; }
 .rc-sum b { font-size: 15px; }
 
