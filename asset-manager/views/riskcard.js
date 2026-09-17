@@ -30,6 +30,17 @@ const NOFIN_KEY = 'allocNoFin';
 // **傳 null 而不是空陣列**：空陣列在 SQL 那邊 `<> all ('{}')` 永遠為真，
 // 等於沒有排除，但看起來像有在過濾。
 const EXCL = () => (localStorage.getItem(NOFIN_KEY) === '1' ? ['金融保險業'] : null);
+
+const DDK_KEY = 'allocDdK';
+
+// 位階加權：ratio_adj = (年化報酬 ＋ 從三個月高點的跌幅) ÷ 波動
+//
+//   回測（48 個不重疊換股點、配對檢定）：每期 +0.27%、t = +1.28，**不顯著**；
+//   換持股檔數也沒有一致性。但它有統計以外的理由——比值的分子是過去 250 日的
+//   報酬，一檔剛跌 20% 的股票，分子正是因為這段跌幅而變低的；加回去約等於問
+//   「不算這一段回檔，它的報酬是多少」，那是在拿掉回頭看才有的偏誤。
+//   所以做成選項、預設關閉，開了會在畫面上把兩個比值都列出來。
+const ddK = () => (localStorage.getItem(DDK_KEY) === '1' ? 1 : 0);
 const DEF_IDX_VOL = 0.27;   // 抓不到指數序列時的退路
 
 const picks = () => {
@@ -193,6 +204,9 @@ function allocBlock(c) {
     <label class="chk rc-chk"><input type="checkbox" id="rc-nofin" ${
       localStorage.getItem(NOFIN_KEY) === '1' ? 'checked' : ''}>
       <span>排除金融股（推薦與位階警示都套用）</span></label>
+    <label class="chk rc-chk"><input type="checkbox" id="rc-ddk" ${
+      localStorage.getItem(DDK_KEY) === '1' ? 'checked' : ''}>
+      <span>位階加權：比值改用（報酬 ＋ 三個月跌幅）÷ 波動</span></label>
     <div class="seg rc-seg">${[['sharpe', '最佳報酬/波動'], ['aggr', '潛在報酬最大'],
       ['parity', '風險平價']].map(([v, lab]) => `<label><input type="radio" name="rcmode"
       value="${v}" ${(localStorage.getItem(MODE_KEY) || 'sharpe') === v ? 'checked' : ''
@@ -224,7 +238,16 @@ function allocBlock(c) {
 
   // 比值缺漏的（例如上市太短還沒算出來）用橫斷面平均頂替，
   // **不要當成 0**——當成 0 等於直接判它出局，那不是「沒資料」該有的待遇。
-  const rawRatios = have.map((s2) => cache().get(s2)?.ratio);
+  // 位階加權開著的話，最佳化用的預期報酬也要一起調，
+  // 否則推薦名單是一套邏輯、配置權重是另一套，兩邊會打架。
+  const kk = ddK();
+  const rawRatios = have.map((s2, i2) => {
+    const base = cache().get(s2)?.ratio;
+    if (!kk || !isNum(base)) return base;
+    const d = dropZ(cache(), s2);
+    const v = st.vol[i2];
+    return d && v > 0 ? num(base) + (kk * Math.abs(d.dd)) / v : base;
+  });
   const known = rawRatios.filter((r) => isNum(r) && r !== 0);
   const avgR = known.length ? known.reduce((a, b) => a + num(b), 0) / known.length : 1;
   const ratios = rawRatios.map((r) => (isNum(r) && r !== 0 ? num(r) : avgR));
@@ -253,7 +276,8 @@ function allocBlock(c) {
     const dz = dropZ(cache(), s);
     return `<tr class="${w[i] < 1e-4 ? 'rc-zero' : ''}">
       <td>${esc(labelOf(s))}</td>
-      <td>${fmtMax(ratios[i], 2)}${guessed.includes(s) ? '<span class="sub muted">估</span>' : ''}</td>
+      <td>${fmtMax(ratios[i], 2)}${guessed.includes(s) ? '<span class="sub muted">估</span>'
+        : kk ? `<span class="sub muted">原 ${fmtMax(num(cache().get(s)?.ratio), 2)}</span>` : ''}</td>
       <td>${fmt(st.vol[i] * 100)}%</td>
       <td class="${dz && dz.z <= -1.5 ? 'gain' : ''}">${dz ? `${fmtMax(dz.z, 1)}σ` : '–'}</td>
       <td>${fmt(exp)}</td>
@@ -298,7 +322,11 @@ function allocBlock(c) {
       <b>預期報酬是「假設」不是「預測」</b>：用過去三年的比值往橫斷面平均收縮一半，
       再乘回各自的波動。單檔上限 35%——沒有上限的最佳化幾乎一定會把錢全壓在一檔，
       那是對估計誤差的過度反應。<br>
-      <b>位階</b>是「離 60 日高點幾個標準差」。跌 20% 在月波動 10% 的股票上是 −1.2σ，
+      <b>位階加權</b>把三個月跌幅加進報酬再除波動，等於問「不算這段回檔，它的報酬是多少」。
+      回測每期 +0.27% 但 <b>t 只有 1.28，不顯著</b>，換持股檔數也沒有一致性——
+      當成「讓排序符合你看位階的直覺」，不要當成已經證實的優勢。
+      開著的時候會強制要求原始比值不低於加權指數，否則它會變成「誰跌最慘買誰」。<br>
+      <b>位階</b>是「離三個月高點幾個標準差」。跌 20% 在月波動 10% 的股票上是 −1.2σ，
       但指數只跌 10%、月波動 4%，卻是 −1.4σ，其實更極端——**用百分比比不同標的會比錯**。<br>
       單檔要獨立抓就用這條：<b>曝險 ＝ 總資產 × 風險預算 ÷ 年化波動</b>。</p>`;
 }
@@ -409,7 +437,7 @@ export function renderRiskCard(el) {
       top.textContent = '載入中…';
       try {
         const { data, error } = await sb.rpc('top_ratio',
-          { p_limit: 20, p_scope: 'fut', p_exclude_ind: EXCL() });
+          { p_limit: 20, p_scope: 'fut', p_exclude_ind: EXCL(), p_dd_k: ddK() });
         if (error) throw error;
         if (!data || !data.length) { toast('目前沒有符合條件的標的', 2500); return; }
         // **台指一定要放進候選。** 它的波動只有個股的三分之一，
@@ -422,6 +450,13 @@ export function renderRiskCard(el) {
   }
   const clr = $('#rc-clear', el);
   if (clr) clr.onclick = () => { setPicks([]); renderRiskCard(el); };
+  const dk = $('#rc-ddk', el);
+  if (dk) {
+    dk.onchange = () => {
+      localStorage.setItem(DDK_KEY, dk.checked ? '1' : '0');
+      renderRiskCard(el);
+    };
+  }
   const nf = $('#rc-nofin', el);
   if (nf) {
     nf.onchange = () => {
