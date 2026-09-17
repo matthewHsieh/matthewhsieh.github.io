@@ -845,9 +845,46 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
 }
 .rc-bar > i { display: block; height: 100%; background: var(--primary); }
 
-.rc-add { display: flex; gap: 8px; align-items: flex-end; margin: 6px 0; }
-.rc-add label { flex: 1; margin: 0; }
-.rc-seg { margin: 8px 0; }
+/* ---------- 推薦配置頁的控制項 ----------
+   原本把「加入」「推薦」「清空」三顆鈕跟兩個 checkbox 擠在同一列，
+   在 390px 會擠成一團而且 checkbox 是裸的方框。拆成四組，每組一件事。 */
+.rc-add { display: flex; gap: 8px; margin: 8px 0; }
+.rc-add input {
+  flex: 1; min-width: 0;     /* **min-width:0 不能省**，否則 input 撐破 flex 容器 */
+  margin: 0;
+}
+.rc-add button { flex: 0 0 auto; white-space: nowrap; }
+.rc-btns { display: flex; gap: 8px; margin: 8px 0; }
+.rc-btns button { flex: 1; }
+
+/* 兩個開關做成跟 .seg 同語彙的方塊，不要用裸 checkbox */
+.rc-toggles { display: flex; gap: 8px; margin: 8px 0; }
+.rc-toggle { flex: 1; margin: 0; position: relative; }
+.rc-toggle input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.rc-toggle span {
+  display: block; text-align: center; padding: 10px 8px;
+  border: 1px solid var(--border); border-radius: 10px;
+  font-size: 13px; font-weight: 600; color: var(--muted);
+}
+.rc-toggle input:checked + span {
+  background: var(--primary); border-color: var(--primary); color: var(--on-primary);
+}
+
+.rc-group { margin: 10px 0; }
+.rc-lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.rc-seg { margin: 0; }
+/* 三、四個選項在 390px 會把字擠掉，縮小一階並允許換行 */
+.rc-seg span { padding: 9px 4px; font-size: 13px; line-height: 1.3; }
+.rc-seg b { font-size: 11px; font-weight: 700; }
+
+/* 桌機有空間，控制項排成一列比較好掃 */
+@media (min-width: 720px) {
+  .rc-add, .rc-btns, .rc-toggles { display: inline-flex; margin-right: 8px; }
+  .rc-add { min-width: 320px; }
+  .rc-btns button, .rc-toggle { flex: 0 0 auto; }
+  .rc-toggle span { padding: 10px 16px; }
+  .rc-seg span { padding: 12px 8px; font-size: 14px; }
+}
 .rc-picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .rc-chip {
   display: inline-flex; align-items: center; gap: 4px; font-size: 13px;
@@ -866,7 +903,6 @@ label.check input { width: 20px; height: 20px; margin: 0; flex: none; accent-col
   /* 觸控目標要夠高，但別把整列撐開 */
   min-height: 28px;
 }
-.rc-chk { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 13px; }
 .rc-sum { font-size: 13px; margin: 6px 0; }
 .rc-sum b { font-size: 15px; }
 

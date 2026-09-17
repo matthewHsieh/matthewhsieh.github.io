@@ -3,6 +3,7 @@ import { liveMap } from './live.js';
 import { renderFunds } from './views/funds.js';
 import { renderHistory } from './views/history.js';
 import { renderHoldings } from './views/holdings.js';
+import { renderAlloc } from './views/riskcard.js';
 import { renderJournal } from './views/journal.js';
 import { renderOverview } from './views/overview.js';
 import { renderSettings } from './views/settings.js';
@@ -11,12 +12,16 @@ import { renderThemes } from './views/themes.js';
 // ============================================================
 // 畫面
 // ============================================================
-export const TITLES = { overview: '總覽', holdings: '持倉', funds: '資金', themes: '族群', journal: '心得', history: '紀錄', settings: '設定' };
+export const TITLES = { overview: '總覽', holdings: '持倉', alloc: '推薦配置', funds: '資金', themes: '族群', journal: '心得', history: '紀錄', settings: '設定' };
 
-export const RENDERERS = { overview: renderOverview, holdings: renderHoldings, funds: renderFunds, themes: renderThemes, journal: renderJournal, history: renderHistory, settings: renderSettings };
+export const RENDERERS = { overview: renderOverview, holdings: renderHoldings, alloc: renderAlloc, funds: renderFunds, themes: renderThemes, journal: renderJournal, history: renderHistory, settings: renderSettings };
 
-// 訪客看得到的分頁。其餘六頁全部跟他的錢有關，一律不給。
-export const GUEST_TABS = ['themes'];
+// 訪客看得到的分頁。
+//   族群與配置都只用公開市場資料的衍生值（報酬/波動、相關係數、位階），
+//   不含任何個人部位，所以開放。**其餘六頁全部跟他的錢有關，一律不給。**
+//   配置頁在訪客模式下會自己切換：沒有部位可以分析，改成讓他填一個試算金額，
+//   而「主觀看法」要存資料庫，所以鎖住。
+export const GUEST_TABS = ['themes', 'alloc'];
 
 // 只更新外框（導覽、標題、哪一個分頁可見）。很便宜，一定同步做完。
 function renderChrome() {

@@ -34,6 +34,14 @@ const NOFIN_KEY = 'allocNoFin';
 const EXCL = () => (localStorage.getItem(NOFIN_KEY) === '1' ? ['金融保險業'] : null);
 
 const DDK_KEY = 'allocDdK';
+const ASSETS_KEY = 'allocAssets';
+
+// 沒登入就沒有總資產可以乘，讓他自己填一個試算金額。
+// 登入的人用真實總資產，不給改——那是算出來的，能改只會讓兩個數字對不起來。
+const guestAssets = () => {
+  const v = num(localStorage.getItem(ASSETS_KEY));
+  return v > 0 ? v : 1000000;
+};
 
 // 主觀看法：−2~+2，每一格換算成比值的 0.5。
 //
@@ -150,8 +158,10 @@ function currentBlock(c) {
   const miss = [...keys.filter((k) => !cache().get(k)), ...pickable.dropped];
 
   if (!st) {
-    return `<p class="muted">還沒有足夠的日報酬資料可以算組合波動${
-      miss.length ? `（缺 ${miss.map(esc).join('、')}）` : ''}。每小時的排程會自動補上。</p>`;
+    return state.guest
+      ? '<p class="muted">沒有登入，所以沒有部位可以分析。下面的「推薦配置」不需要帳號就能用。</p>'
+      : `<p class="muted">還沒有足夠的日報酬資料可以算組合波動${
+        miss.length ? `（缺 ${miss.map(esc).join('、')}）` : ''}。每小時的排程會自動補上。</p>`;
   }
   const assets = num(c.totalAssets);
   const w = have.map((k) => num(rows.find((r) => r.key === k).exposure) / assets);
@@ -207,7 +217,7 @@ function allocBlock(c) {
   const loaded = sel.filter((s) => cache().get(s));
   const pickable = usableKeys(cache(), loaded);
   const have = pickable.kept;
-  const assets = num(c.totalAssets);
+  const assets = state.guest ? guestAssets() : num(c.totalAssets);
   const sig = indexSignal(cache(), (state.riskStats || []).find((x) => String(x.symbol) === 'TAIEX'));
   // 預設就跟規則走；他手動選過才用他選的
   const mult = state.allocTarget === undefined
@@ -223,29 +233,40 @@ function allocBlock(c) {
     : (cache().get('TAIEX') ? statsOf(cache(), ['TAIEX'])?.vol[0] ?? DEF_IDX_VOL : DEF_IDX_VOL);
   const target = mult * ivol;
 
+  const chip = (id, on, label) => `<label class="rc-toggle"><input type="checkbox" id="${id}" ${
+    on ? 'checked' : ''}><span>${label}</span></label>`;
+
   const head = `
+    ${state.guest ? `<div class="rc-group"><span class="rc-lab">試算金額（總資產）</span>
+      <div class="rc-add"><input type="number" id="rc-assets" inputmode="numeric"
+        value="${assets}" min="10000" step="10000"></div></div>` : ''}
     <div class="rc-add">
-      <label>加入標的<input type="text" id="rc-sym" autocomplete="off"
-        autocapitalize="characters" placeholder="台股代號／名稱、美股代號，或「台指」"></label>
+      <input type="text" id="rc-sym" autocomplete="off" autocapitalize="characters"
+        placeholder="代號／名稱，或「台指」">
       <button type="button" class="small" id="rc-add">＋ 加入</button>
+    </div>
+    <div class="rc-btns">
       <button type="button" class="small" id="rc-top">★ 推薦 20 檔</button>
       <button type="button" class="small" id="rc-clear">清空</button>
     </div>
-    <label class="chk rc-chk"><input type="checkbox" id="rc-nofin" ${
-      localStorage.getItem(NOFIN_KEY) === '1' ? 'checked' : ''}>
-      <span>排除金融股（推薦與位階警示都套用）</span></label>
-    <label class="chk rc-chk"><input type="checkbox" id="rc-ddk" ${
-      localStorage.getItem(DDK_KEY) === '1' ? 'checked' : ''}>
-      <span>位階加權：比值改用（報酬 ＋ 三個月跌幅）÷ 波動</span></label>
-    <div class="seg rc-seg">${[['sharpe', '最佳報酬/波動'], ['aggr', '潛在報酬最大'],
-      ['parity', '風險平價']].map(([v, lab]) => `<label><input type="radio" name="rcmode"
-      value="${v}" ${(localStorage.getItem(MODE_KEY) || 'sharpe') === v ? 'checked' : ''
-      }><span>${lab}</span></label>`).join('')}</div>
-    <div class="seg rc-seg">${[...(sig ? [Math.round(sig.lev * 100) / 100] : []), ...TARGETS]
-      .filter((v, i, a) => a.indexOf(v) === i)
-      .map((tv, i) => `<label><input type="radio" name="rctgt"
-      value="${tv}" ${Math.abs(tv - mult) < 1e-9 ? 'checked' : ''}><span>${
-      sig && i === 0 ? '規則 ' : ''}指數 ${fmtMax(tv, 2)} 倍</span></label>`).join('')}</div>
+    <div class="rc-toggles">
+      ${chip('rc-nofin', localStorage.getItem(NOFIN_KEY) === '1', '排除金融股')}
+      ${chip('rc-ddk', localStorage.getItem(DDK_KEY) === '1', '考慮位階')}
+    </div>
+
+    <div class="rc-group"><span class="rc-lab">配置方式</span>
+      <div class="seg rc-seg">${[['sharpe', '最佳報酬/波動'], ['aggr', '潛在報酬最大'],
+        ['parity', '風險平價']].map(([v, lab]) => `<label><input type="radio" name="rcmode"
+        value="${v}" ${(localStorage.getItem(MODE_KEY) || 'sharpe') === v ? 'checked' : ''
+        }><span>${lab}</span></label>`).join('')}</div></div>
+
+    <div class="rc-group"><span class="rc-lab">整體曝險</span>
+      <div class="seg rc-seg">${[...(sig ? [Math.round(sig.lev * 100) / 100] : []), ...TARGETS]
+        .filter((v, i, a) => a.indexOf(v) === i)
+        .map((tv, i) => `<label><input type="radio" name="rctgt"
+        value="${tv}" ${Math.abs(tv - mult) < 1e-9 ? 'checked' : ''}><span>${
+        sig && i === 0 ? '<b>規則</b><br>' : ''}指數 ${fmtMax(tv, 2)} 倍</span></label>`).join('')}</div></div>
+
     ${sig ? `<p class="sub rc-sig">規則算出來是 <b>${fmtMax(sig.lev, 2)} 倍</b>
       ＝ 趨勢 ${fmtMax(sig.base, 1)}（指數${sig.above ? '在' : '跌破'} MA200，
       現在是均線的 ${fmtMax(sig.maRatio, 2)} 倍）
@@ -318,7 +339,8 @@ function allocBlock(c) {
       <td>${fmtMax(ratios[i], 2)}${guessed.includes(s) ? '<span class="sub muted">估</span>'
         : (kk || viewOf(s)) ? `<span class="sub muted">原 ${
           fmtMax(num(cache().get(s)?.ratio), 2)}</span>` : ''}</td>
-      <td><select class="rc-view" data-view="${esc(s)}">${[2, 1, 0, -1, -2].map((v) =>
+      <td><select class="rc-view" data-view="${esc(s)}" ${
+        state.guest ? 'disabled title="登入後才能存主觀看法"' : ''}>${[2, 1, 0, -1, -2].map((v) =>
         `<option value="${v}" ${viewOf(s) === v ? 'selected' : ''}>${
           v > 0 ? '+' : ''}${v === 0 ? '－' : v}</option>`).join('')}</select></td>
       <td>${fmt(st.vol[i] * 100)}%</td>
@@ -448,15 +470,16 @@ export function renderDropWatch(el) {
   });
 }
 
-export function renderRiskCard(el) {
+export function renderAlloc(el) {
   if (!el) return;
   const c = compute();
   el.innerHTML = `
     <div class="card list rc-card">
-      <div class="list-title" role="heading" aria-level="2">組合風險</div>
+      <div class="list-title" role="heading" aria-level="2">現在的組合風險</div>
       <div data-rc-now>${currentBlock(c)}</div>
-      <div class="rc-div"></div>
-      <div class="list-title" role="heading" aria-level="2">配置試算</div>
+    </div>
+    <div class="card list rc-card">
+      <div class="list-title" role="heading" aria-level="2">推薦配置</div>
       <div data-rc-alloc>${allocBlock(c)}</div>
     </div>`;
 
@@ -498,20 +521,27 @@ export function renderRiskCard(el) {
         // 在風險等價下常常是最有效率的一塊，不放進去等於先排除了正確答案。
         setPicks(['TAIEX', ...data.map((r) => String(r.symbol))]);
         await ensure(picks());
-        renderRiskCard(el);
+        renderAlloc(el);
       } catch (e) { fail(e); } finally { top.disabled = false; }
     };
   }
   const clr = $('#rc-clear', el);
-  if (clr) clr.onclick = () => { setPicks([]); renderRiskCard(el); };
+  if (clr) clr.onclick = () => { setPicks([]); renderAlloc(el); };
   $$('select[data-view]', el).forEach((sel) => (sel.onchange = () => {
     setView(sel.dataset.view, sel.value);
   }));
+  const ai = $('#rc-assets', el);
+  if (ai) {
+    ai.onchange = () => {
+      localStorage.setItem(ASSETS_KEY, String(num(ai.value) > 0 ? num(ai.value) : 1000000));
+      renderAlloc(el);
+    };
+  }
   const dk = $('#rc-ddk', el);
   if (dk) {
     dk.onchange = () => {
       localStorage.setItem(DDK_KEY, dk.checked ? '1' : '0');
-      renderRiskCard(el);
+      renderAlloc(el);
     };
   }
   const nf = $('#rc-nofin', el);
@@ -520,12 +550,12 @@ export function renderRiskCard(el) {
       localStorage.setItem(NOFIN_KEY, nf.checked ? '1' : '0');
       // 已經挑進來的金融股一併拿掉，否則勾了還留在表上很奇怪
       if (nf.checked) setPicks(picks().filter((s) => !/^28[0-9]{2}$/.test(s)));
-      renderRiskCard(el);
+      renderAlloc(el);
     };
   }
   $$('input[name=rcmode]', el).forEach((r) => (r.onchange = () => {
     localStorage.setItem(MODE_KEY, r.value);
-    renderRiskCard(el);
+    renderAlloc(el);
   }));
   $$('[data-rm]', el).forEach((b) => (b.onclick = () => {
     setPicks(picks().filter((s) => s !== b.dataset.rm));
@@ -539,11 +569,11 @@ export function renderRiskCard(el) {
   // 缺的序列補抓完再畫一次
   const need = [...exposureRows().filter((r) => !r.key.startsWith('IDX:')).map((r) => r.key),
                 ...picks()];
-  ensure(need).then((changed) => { if (changed) renderRiskCard(el); });
+  ensure(need).then((changed) => { if (changed) renderAlloc(el); });
 }
 
 function refresh(el) {
   const need = picks();
-  ensure(need).then(() => renderRiskCard(el));
-  renderRiskCard(el);
+  ensure(need).then(() => renderAlloc(el));
+  renderAlloc(el);
 }
