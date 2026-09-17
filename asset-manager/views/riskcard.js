@@ -375,7 +375,9 @@ function allocBlock(c) {
       ${order.filter((i) => w[i] < 1e-4).length
         ? `<br><span class="sub muted">有 ${order.filter((i) => w[i] < 1e-4).length
           } 檔配到 0——不是壞掉，是它的風險已經被其他檔涵蓋（看相關係數）</span>` : ''}
-      <br>組合報酬/波動 <b>${fmtMax(shOpt, 2)}</b>${
+      <br>組合報酬/波動 <b>${fmtMax(shOpt, 2)}</b>
+      <span class="sub muted">（這是用估出來的預期報酬算的，不是實測績效——
+        設定頁「配置最佳化到底做到了什麼」有樣本外的對照表）</span>${
         mode === 'sharpe' ? `（風險平價會是 ${fmtMax(shPar, 2)}）` : `（最佳化可到 ${fmtMax(shOpt > shPar ? shOpt : shPar, 2)}）`}
       <span class="sub muted">（樣本 ${st.days} 天${
         pickable.dropped.length ? `；${pickable.dropped.map(esc).join('、')} 資料太短，未納入` : ''}）</span></p>
