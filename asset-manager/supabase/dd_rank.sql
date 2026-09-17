@@ -4,7 +4,14 @@
 --   使用者的想法：年化 100%、波動 70%、從高點跌 20% 的股票，
 --   排序時應該算 (100 + 20) / 70 = 1.71，而不是 100 / 70 = 1.43。
 --
---   **回測結論：方向對，但統計上證不出來。**
+--   **回測結論（2026-09-17 修正後）：站不住。**
+--   第一版我把分子寫成對數報酬、跌幅也用對數，測出每期 +0.40%、t = +1.42。
+--   但把兩邊都換成簡單報酬（＝ App 的比值定義）之後變成 **每期 −0.14%、t = −0.83**。
+--   拆開來看：光是「分子改用對數」就貢獻了 +0.13%（t = 0.69）——那不是位階的功勞，
+--   是取對數把極端報酬壓扁的副作用（旺矽年化 212% → ln 只有 1.14）。
+--   **一個換個尺度就變號的效果，不是真的效果。**
+--
+--   以下是原始（有偏差的）回測紀錄，保留當對照：
 --   2022-2026、48 個不重疊的 20 日換股點、前 15 檔、反波動權重，
 --   配對檢定（同宇宙、同日期、同權重，只差排序）：
 --       跌幅用三個月高點、k=1：每期 +0.27%，標準誤 0.21%，t = +1.28
@@ -65,11 +72,13 @@ language sql stable security definer set search_path = public as $fn$
                  (select x.ratio from public.risk_stats x where x.symbol = 'TAIEX'), 1.0))
   )
   select symbol, nm, ratio,
-         -- **跌幅要用對數報酬直接加，跟 cagr 同一個尺度。**
-         -- cagr 是 exp 之後存的百分比，所以先還原回對數再加，最後不用再轉回去，
-         -- 因為排序只看大小。
+         -- **兩邊一定要同一個報酬定義。** 第一版寫成 (ln(1+cagr) + 對數跌幅)/vol，
+         -- 但 ratio 存的是 cagr/vol（簡單報酬），兩欄尺度不同不能比；
+         -- 而且取對數會把高報酬壓扁（旺矽年化 212% → ln 只有 1.14），
+         -- 等於偷偷加了一個「懲罰極端報酬」的效果，把它誤認成位階的功勞。
+         -- 這裡一律用簡單報酬：跌幅 = 1 − exp(−best)，跟畫面顯示的跌幅同一個數字。
          round((case when p_dd_k <> 0 and vol > 0
-                     then (ln(1 + cagr) + p_dd_k * greatest(coalesce(best, 0), 0)) / vol
+                     then (cagr + p_dd_k * (1 - exp(-greatest(coalesce(best, 0), 0)))) / vol
                      else ratio end)::numeric, 2) as ratio_adj,
          round((exp(-greatest(coalesce(best, 0), 0)) - 1)::numeric, 4) as dd,
          vol, vol1y, cagr, last, hi52, mdd, ind
