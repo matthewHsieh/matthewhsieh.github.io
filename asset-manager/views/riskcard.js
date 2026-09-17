@@ -1,4 +1,6 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, sb, state, toast } from '../core.js';
+// 這個檔案本來就有一個區域的 refresh(el)，所以改名匯入
+import { refresh as reloadAll } from '../data.js';
 import {
   IM_RATE, assumedMu, dropZ, exposureRows, indexSignal, loadSeries, marginRoom, maxSharpe,
   moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf, statsOf, usableKeys,
@@ -32,6 +34,34 @@ const NOFIN_KEY = 'allocNoFin';
 const EXCL = () => (localStorage.getItem(NOFIN_KEY) === '1' ? ['金融保險業'] : null);
 
 const DDK_KEY = 'allocDdK';
+
+// 主觀看法：−2~+2，每一格換算成比值的 0.5。
+//
+//   **調整量放在比值不是報酬。** 同樣 +0.5，在波動 60% 的股票上等於 +30%/年、
+//   在波動 25% 的股票上等於 +12.5%/年——看法講的是「每承受一單位風險值不值得」，
+//   不是「會漲幾 %」，而後者他也估不準。
+//   只給五格不讓他填數字：填數字會產生精確的錯覺，看法是序位判斷。
+const VIEW_STEP = 0.5;
+const VIEW_LABEL = { '-2': '很看壞', '-1': '看壞', 0: '中性', 1: '看好', 2: '很看好' };
+const viewOf = (sym) =>
+  num((state.stockViews || []).find((v) => String(v.symbol) === String(sym))?.score);
+
+async function setView(sym, score) {
+  try {
+    if (num(score) === 0) {
+      const { error } = await sb.from('stock_views').delete()
+        .eq('user_id', state.user.id).eq('symbol', String(sym));
+      if (error) throw error;
+    } else {
+      const { error } = await sb.from('stock_views').upsert({
+        user_id: state.user.id, symbol: String(sym),
+        score: num(score), updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,symbol' });
+      if (error) throw error;
+    }
+    await reloadAll();
+  } catch (e) { fail(e); }
+}
 
 // 位階加權：ratio_adj = (年化報酬 ＋ 從三個月高點的跌幅) ÷ 波動
 //
@@ -243,12 +273,19 @@ function allocBlock(c) {
   const kk = ddK();
   const rawRatios = have.map((s2, i2) => {
     const base = cache().get(s2)?.ratio;
-    if (!kk || !isNum(base)) return base;
-    const d = dropZ(cache(), s2);
-    const v = st.vol[i2];
-    // **跌幅要換成簡單報酬**（1 − exp(跌幅)），跟 ratio 的分子同一個定義。
-    // 混用對數與簡單會讓兩欄不能比，而且會偷偷懲罰高報酬的標的。
-    return d && v > 0 ? num(base) + (kk * (1 - Math.exp(-Math.abs(d.dd)))) / v : base;
+    if (!isNum(base)) return base;
+    let r = num(base);
+    if (kk) {
+      const d = dropZ(cache(), s2);
+      const v = st.vol[i2];
+      // **跌幅要換成簡單報酬**（1 − exp(跌幅)），跟 ratio 的分子同一個定義。
+      // 混用對數與簡單會讓兩欄不能比，而且會偷偷懲罰高報酬的標的。
+      if (d && v > 0) r += (kk * (1 - Math.exp(-Math.abs(d.dd)))) / v;
+    }
+    // **主觀看法跟位階加權是兩件事，不能綁在一起。**
+    // 第一版把它寫在 `if (!kk) return base` 的後面，結果位階加權關掉時
+    // 看法整個不生效——下拉選單有存到、畫面也標了「原」，但數字完全沒動。
+    return r + viewOf(s2) * VIEW_STEP;
   });
   const known = rawRatios.filter((r) => isNum(r) && r !== 0);
   const avgR = known.length ? known.reduce((a, b) => a + num(b), 0) / known.length : 1;
@@ -279,7 +316,11 @@ function allocBlock(c) {
     return `<tr class="${w[i] < 1e-4 ? 'rc-zero' : ''}">
       <td>${esc(labelOf(s))}</td>
       <td>${fmtMax(ratios[i], 2)}${guessed.includes(s) ? '<span class="sub muted">估</span>'
-        : kk ? `<span class="sub muted">原 ${fmtMax(num(cache().get(s)?.ratio), 2)}</span>` : ''}</td>
+        : (kk || viewOf(s)) ? `<span class="sub muted">原 ${
+          fmtMax(num(cache().get(s)?.ratio), 2)}</span>` : ''}</td>
+      <td><select class="rc-view" data-view="${esc(s)}">${[2, 1, 0, -1, -2].map((v) =>
+        `<option value="${v}" ${viewOf(s) === v ? 'selected' : ''}>${
+          v > 0 ? '+' : ''}${v === 0 ? '－' : v}</option>`).join('')}</select></td>
       <td>${fmt(st.vol[i] * 100)}%</td>
       <td class="${dz && dz.z <= -1.5 ? 'gain' : ''}">${dz ? `${fmtMax(dz.z, 1)}σ` : '–'}</td>
       <td>${fmt(exp)}</td>
@@ -304,7 +345,8 @@ function allocBlock(c) {
       cache().get(s) ? '' : ' rc-chip-off'}">${esc(labelOf(s))}<button type="button"
       data-rm="${esc(s)}">×</button></span>`).join('')}</div>
     <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th title="過去三年 報酬÷波動">比值</th>
-      <th>波動</th><th title="離 60 日高點幾個標準差">位階</th><th>建議曝險</th>
+      <th title="主觀看法，每格調整比值 0.5">看法</th>
+      <th>波動</th><th title="離三個月高點幾個標準差">位階</th><th>建議曝險</th>
       <th>大型個股期</th><th>風險佔比</th><th>目前</th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="rc-sum">合計曝險 <b>${fmt(totExp)}</b> 元　＝ 總資產的 ${
       fmtMax(totExp / assets, 2)} 倍　組合波動 ${fmt(target * 100)}%
@@ -333,6 +375,13 @@ function allocBlock(c) {
       開著的時候會強制要求原始比值不低於加權指數，否則它會變成「誰跌最慘買誰」。<br>
       <b>位階</b>是「離三個月高點幾個標準差」。跌 20% 在月波動 10% 的股票上是 −1.2σ，
       但指數只跌 10%、月波動 4%，卻是 −1.4σ，其實更極端——**用百分比比不同標的會比錯**。<br>
+      <b>看法</b>是你自己的判斷，每一格把比值調 ${VIEW_STEP}
+      （在波動 60% 的股票上約等於年化 ±30%、波動 25% 的約 ±12.5%——
+      一格在不同標的上代表同樣的「每單位風險值不值得」）。
+      刻意只給五格不讓你填數字：<b>填數字會產生精確的錯覺</b>，看法本來就是序位判斷。
+      它存在雲端、跟著帳號走。<br>
+      <b>但要知道這是整套裡最不可靠的輸入</b>——最佳化會忠實放大你給的任何觀點，
+      包括錯的。看法設得越極端，單檔上限那條護欄就越重要。<br>
       單檔要獨立抓就用這條：<b>曝險 ＝ 總資產 × 風險預算 ÷ 年化波動</b>。</p>`;
 }
 
@@ -455,6 +504,9 @@ export function renderRiskCard(el) {
   }
   const clr = $('#rc-clear', el);
   if (clr) clr.onclick = () => { setPicks([]); renderRiskCard(el); };
+  $$('select[data-view]', el).forEach((sel) => (sel.onchange = () => {
+    setView(sel.dataset.view, sel.value);
+  }));
   const dk = $('#rc-ddk', el);
   if (dk) {
     dk.onchange = () => {

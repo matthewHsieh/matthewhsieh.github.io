@@ -38,6 +38,7 @@ const personalQueries = (uid) => ({
   futures:     () => sb.from('futures').select('*').order('created_at'),
   us:          () => sb.from('us_stocks').select('*').order('created_at'),
   balances:    () => sb.from('balances').select('*').order('kind').order('created_at'),
+  stockViews:  () => sb.from('stock_views').select('symbol,score,note'),
   snapshots:   () => sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
   trades:      () => sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
   options:     () => sb.from('options').select('*').order('expiry').order('strike'),

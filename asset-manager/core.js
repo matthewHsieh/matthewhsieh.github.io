@@ -34,6 +34,7 @@ export const state = {
   valuation: [],   // 我的持股估值（本益比等）
   themeVal: [],    // 各族群本益比中位數
   riskStats: [],   // 報酬/波動計分
+  stockViews: [],  // 對個股的主觀看法 −2~+2
   usStats: [], usThemeTrend: [], usThemeMembers: [],
   themeMeta: [], themeLinks: [],   // 產業樹與供應鏈關係
   themeDay: [],    // 今天哪個族群在動
