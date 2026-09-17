@@ -41,7 +41,37 @@ export function dayNet(dateISO, market, extra) {
 export const OPT_ITM_DEEP = 0.01;       // 履約價要比遠期指數低 1% 以上才算深度價內
 export const OPT_CALL_BUDGET = 40000;   // 預設當日額度，規則列的 amount 可以蓋掉
 
-const optPremium = (t) => num(t.quantity) * num(t.price) * OPT_SIZE;
+const optPremium = (t, q) => num(q === undefined ? t.quantity : q) * num(t.price) * OPT_SIZE;
+
+// ------------------------------------------------------------
+// 平倉不是新的賭注
+//
+//   買權價差要退出的時候，賣出的那一腳得「買回來」。可是那筆在資料上
+//   就是一筆「買進買權」，於是被這條規則當成破戒擋下來——
+//   **他做的是減少風險的動作，卻被記成違規。**
+//   2026-09-17 收掉 45500/46800 價差時就發生了。
+//
+//   判斷方式不用他自己選，資料本來就知道：
+//     已存檔的交易有 prev_shares（平倉前的淨口數，空方是負的）；
+//     還沒存檔的就去看 state.options 裡同一個到期別、同履約價、同買賣權的部位。
+//   方向相反才算平倉，而且只算平掉的那幾口——
+//   買 10 口去平 5 口的空單，剩下的 5 口是真的新倉，照樣要檢查。
+// ------------------------------------------------------------
+function closingLots(t) {
+  const dir = t.side === 'buy' ? 1 : -1;
+  let prev = null;
+  if (isNum(t.prev_shares)) prev = num(t.prev_shares);
+  else {
+    const pos = (state.options || []).find((o) => String(o.expiry) === String(t.opt_expiry)
+      && num(o.strike) === num(t.opt_strike) && o.cp === t.opt_cp);
+    if (pos) prev = pos.side === 'short' ? -num(pos.lots) : num(pos.lots);
+  }
+  if (prev === null || Math.sign(prev) !== -dir) return 0;
+  return Math.min(num(t.quantity), Math.abs(prev));
+}
+
+// 真正屬於「新開倉」的口數
+const openingLots = (t) => Math.max(0, num(t.quantity) - closingLots(t));
 
 const isBuyCall = (t) => t.market === 'option' && t.side === 'buy' && t.opt_cp === 'call';
 const isSellPut = (t) => t.market === 'option' && t.side === 'sell' && t.opt_cp === 'put';
@@ -67,7 +97,7 @@ function callSpentBefore(dateISO, before) {
   let s = 0;
   for (const t of state.trades) {
     if (t.trade_date !== dateISO || !isBuyCall(t) || !earlier(t, before)) continue;
-    s += optPremium(t);
+    s += optPremium(t, openingLots(t));      // 回補的那幾口不吃額度
   }
   return s;
 }
@@ -101,7 +131,7 @@ function callExempt(t) {
 }
 
 // 買 call 的判定。回傳 null 代表這筆沒問題。
-function buyCallBreak(t, rule, before) {
+function buyCallBreak(t, rule, before, open) {
   const ex = callExempt(t);
   if (!ex.how) {
     // 價內是負的就要講成「價外」。寫成「只價內 -1,070 點」沒有人看得懂。
@@ -123,7 +153,7 @@ function buyCallBreak(t, rule, before) {
   const base = isNum(rule?.amount) ? num(rule.amount) : OPT_CALL_BUDGET;
   const earned = Math.max(0, realizedBefore(t.trade_date, before));
   const budget = base + earned;
-  const spent = callSpentBefore(t.trade_date, before) + optPremium(t);
+  const spent = callSpentBefore(t.trade_date, before) + optPremium(t, open);
   if (spent > budget + 1e-6) {
     return {
       kind: 'opt_only_hedge',
@@ -142,12 +172,14 @@ function buyCallBreak(t, rule, before) {
 export function optCallNote(t) {
   const rule = activeRule('opt_only_hedge');
   if (!rule || !isBuyCall(t) || !(num(t.quantity) > 0) || !(num(t.price) > 0)) return null;
+  const open = openingLots(t);
+  if (open <= 1e-9) return `買回自己賣出的買權＝平倉，不算新的買 call，也不吃額度`;
   const ex = callExempt(t);
   if (!ex.how) return null;
   const base = isNum(rule.amount) ? num(rule.amount) : OPT_CALL_BUDGET;
   const earned = Math.max(0, realizedBefore(t.trade_date, null));
   const budget = base + earned;
-  const spent = callSpentBefore(t.trade_date, null) + optPremium(t);
+  const spent = callSpentBefore(t.trade_date, null) + optPremium(t, open);
   if (spent > budget + 1e-6) return null;   // 超額的話由 checkRules 出面講
   return `${ex.note}　權利金 ${fmt(spent)} ／ 額度 ${fmt(budget)} 元`
     + `${earned > 0 ? `（含今天已實現的 ${fmt(earned)}）` : ''}`;
@@ -159,17 +191,22 @@ export function checkRules(t) {
   if (!t || !state.rules.length) return out;
 
   const hedge = activeRule('opt_only_hedge');
-  if (hedge && t.market === 'option') {
+  // **平倉先扣掉。** 買回自己賣出的買權、賣掉自己買進的賣權，都是在收部位，
+  // 不是在開新的賭注，擋它等於懲罰他做對的事。
+  const opening = hedge && t.market === 'option' ? openingLots(t) : 0;
+  if (hedge && t.market === 'option' && opening > 1e-9) {
+    const part = opening < num(t.quantity)
+      ? `（${fmtMax(num(t.quantity) - opening, 2)} 口是平倉，不算）` : '';
     if (isSellPut(t)) {
       out.push({
         kind: 'opt_only_hedge',
-        text: '賣出賣權違反「只做 buy put 與 sell call」',
+        text: `賣出賣權違反「只做 buy put 與 sell call」${part}`,
         reason: '賣方賣權沒有解 ban',
         why: '賣 put 是把所有下跌一次承接下來，跟避險的方向相反，這條沒有例外。',
       });
     } else if (isBuyCall(t)) {
-      const v = buyCallBreak(t, hedge, null);
-      if (v) out.push(v);
+      const v = buyCallBreak(t, hedge, null, opening);
+      if (v) { v.text += part; out.push(v); }
     }
   }
 
@@ -216,9 +253,11 @@ export function breaksOn(dateISO) {
       .sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
     const bad = [];
     for (const t of opts) {
+      const open = openingLots(t);
+      if (open <= 1e-9) continue;                  // 純平倉，不是新的賭注
       if (isSellPut(t)) bad.push({ t, reason: '賣方賣權沒有解 ban' });
       else if (isBuyCall(t)) {
-        const v = buyCallBreak(t, hedge, t.created_at);
+        const v = buyCallBreak(t, hedge, t.created_at, open);
         if (v) bad.push({ t, reason: v.reason });
       }
     }
