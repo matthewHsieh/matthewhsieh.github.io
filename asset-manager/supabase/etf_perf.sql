@@ -121,7 +121,14 @@ begin
 
   for r in select symbol, name, benchmark from public.active_etf order by symbol loop
     begin
-      delete from _px;
+      -- **沒有 where 的 delete 一定要補 `where true`。**
+      --   Supabase 給 PostgREST 的連線載入 safeupdate，它會擋掉沒有 where 的
+      --   DELETE／UPDATE，而且 SECURITY DEFINER 換角色時不會卸掉這個 session 設定。
+      --   症狀最難查：用 Management API（postgres session）跑得過，
+      --   從 App 呼叫同一支 RPC 一定失敗，畫面上完全看不出來。
+      --   2026-09-08 選擇權結算價就是這樣一整天沒更新的。
+      --   這裡目前只走排程所以碰不到，但哪天被接到 refresh_market 就會炸。
+      delete from _px where true;
       b_sym := null;
       -- 上市的是 .TW，上櫃的是 .TWO。哪一檔在哪裡不用另外查，抓不到就換。
       y_sym := r.symbol || '.TW';
@@ -132,7 +139,7 @@ begin
         y_sym := r.symbol || '.TWO';
         body := public.pm_fetch('https://query1.finance.yahoo.com/v8/finance/chart/'
                                 || y_sym || '?interval=1d&range=2y');
-        delete from _px;
+        delete from _px where true;
         insert into _px select * from public.pm_yahoo_series(body);
       end if;
 

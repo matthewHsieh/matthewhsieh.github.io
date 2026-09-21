@@ -530,6 +530,9 @@ dialog h2 { margin: 0 0 6px; font-size: 18px; }
   background: var(--bg); border: 1px solid var(--border);
 }
 .preview.err { color: var(--danger); border-color: var(--danger); }
+/* 預覽框裡的提醒。**用琥珀不用紅**：紅在這個 app 是「跌」，
+   而「你是不是忘了勾當沖」是提醒不是壞消息。 */
+.preview .note-warn { color: var(--warn); }
 .trade-side {
   display: inline-block; min-width: 1.6em; text-align: center; border-radius: 6px;
   padding: 1px 4px; margin-right: 6px; color: #fff; font-size: 12px; vertical-align: middle;

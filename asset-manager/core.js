@@ -35,6 +35,11 @@ export const state = {
   themeVal: [],    // 各族群本益比中位數
   riskStats: [],   // 報酬/波動計分
   stockViews: [],  // 對個股的主觀看法 −2~+2
+  // 配置頁用的日報酬序列快取。**抓報價之後一定要清掉**，
+  // 不然按了 ↻ 重算 risk_stats，配置頁用的還是開啟 App 那一刻的舊序列。
+  // 跟 etfBoard 是同一件事，見 data.js 的 refreshPrices()。
+  retSeries: null,
+  allocTarget: undefined,   // 配置頁的曝險倍率；undefined = 跟著槓桿規則走
   usStats: [], usThemeTrend: [], usThemeMembers: [],
   themeMeta: [], themeLinks: [],   // 產業樹與供應鏈關係
   themeDay: [],    // 今天哪個族群在動

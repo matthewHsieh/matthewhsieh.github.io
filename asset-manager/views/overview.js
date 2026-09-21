@@ -89,7 +89,9 @@ export function renderOverview(el) {
       ${line('最大損失（買方賠光權利金）', c.warMaxLoss)}
       <div class="row-between line"><span>每日時間價值流失</span><span class="loss">${fmt(c.warTheta)}</span></div>
       <p class="hint">權證的隱含波動率由發行券商決定，可以在發行後調降，這會讓權證價格下跌但 delta 完全反映不出來。
-        系統每天記錄各檔隱波，被調降時會在「持倉」標示。${c.warNoDelta ? '<br>⚠ 有部位還沒算出 delta。' : ''}</p>
+        系統每天記錄各檔隱波，被調降時會在「持倉」標示。${c.warNoDelta ? '<br>⚠ 有部位還沒算出 delta。' : ''}${
+        c.warNoBasis ? `<br>⚠ 有 ${fmt(c.warNoBasis)} 檔沒填成本、權證價也還沒抓到，
+        <b>沒有計入上面的最大損失</b>，實際數字比顯示的大。` : ''}</p>
     </div>` : ''}
     ${state.options.length ? `<div class="card list">
       <div class="list-title" role="heading" aria-level="2">選擇權風險</div>

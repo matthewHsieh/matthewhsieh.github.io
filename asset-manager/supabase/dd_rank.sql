@@ -28,6 +28,15 @@
 --   所以做成**可以關掉的選項**，預設 k = 0（不啟用），視窗固定三個月
 --   （回測裡唯一有正向跡象的那個）。
 -- ============================================================
+-- **先把舊的多載清掉。** top_ratio 改過兩次參數（4 個 → 5 個 → 8 個），
+--   而 `create or replace` 只會取代**同一組參數**的那一支，
+--   參數數量不同就是一支新函式。三個版本會同時存在資料庫裡，
+--   前端現在有帶 p_dd_k 所以還指得到對的那一支，但只要哪天少帶一個參數，
+--   Postgres 就會回 "function is not unique" 而且看起來像前端寫錯。
+--   **這個檔案要在 top_ratio.sql 與 screen_filters.sql 之後套用。**
+drop function if exists public.top_ratio(integer, text, integer, numeric);
+drop function if exists public.top_ratio(integer, text, integer, numeric, text[]);
+
 create or replace function public.top_ratio(
   p_limit integer default 20,
   p_scope text default 'fut',

@@ -111,7 +111,11 @@ export function compute() {
   const warExp = wars.reduce((a, w) => a + Math.abs(warExposure(w) ?? 0), 0);
   const warWithPl = wars.filter((w) => isNum(w.cost));
   const warProfit = warWithPl.length ? sum(warWithPl, warPl) : null;
-  const warMaxLoss = sum(wars, warMaxRisk);
+  // 算得出基準的才加總，算不出來的另外標。**不能用 ?? 0 補**——
+  // 那會讓「最大損失」這個數字安靜地變小，而變小的風險數字最危險。
+  const warBasis = wars.filter((w) => warMaxRisk(w) !== null);
+  const warMaxLoss = sum(warBasis, warMaxRisk);
+  const warNoBasis = wars.length - warBasis.length;
   const warTheta = sum(wars.filter((w) => isNum(w.theta_day)), (w) => num(w.theta_day) * num(w.lots) * WAR_UNITS);
   const warNoDelta = wars.some((w) => warDelta(w) === null);
 
@@ -135,7 +139,7 @@ export function compute() {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
     optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optMaxGain, optPlans, optRiskUnlimited, optNoDelta,
-    warMarket, warExp, warProfit, warMaxLoss, warTheta, warNoDelta,
+    warMarket, warExp, warProfit, warMaxLoss, warNoBasis, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
   };

@@ -243,13 +243,25 @@ function openOptionsForm(existing) {
         //   買進買權接住就封頂了。他現在正在建的往往就是第二腳，
         //   那一刻正是最需要看到「組起來之後最壞是多少」的時候。
         const others = state.options.filter((x) => x.id !== existing?.id && String(x.expiry) === val.expiry);
+        // 這一腳的成本基準。新增的時候成本欄可以空著、權利金也還沒抓進來，
+        // **那就是算不出金額，不是 0**。原本寫 `price: cur ?? 0`，
+        // 結果新增一口買進買權會顯示「到期最大虧損 0 元」——
+        // 正好是作者自己註解說「最需要看到最壞是多少」的那一刻，卻給了最好看的數字。
+        //
+        // 形狀（是不是無上限）跟權利金無關，只看右尾買權的淨口數，所以照樣算得出來，
+        // 金額則等成本填了再說。
+        const basisKnown = isNum(val.cost) || cur !== null;
         const plan = optStrategy([...others, { ...val, price: cur ?? 0 }]);
         if (plan) {
           const un = plan.maxLoss === null;
           lines.push(`${others.length ? `${val.expiry} 整組（${others.length + 1} 腳）` : ''}${plan.name}`);
-          lines.push(un ? '⚠ 到期最大虧損無上限' : `到期最大虧損 ${fmt(-plan.maxLoss)} 元`
-            + `　最大獲利 ${plan.maxGain === null ? '無上限' : fmt(plan.maxGain) + ' 元'}`);
-          if (plan.breakEvens.length) lines.push(`損益兩平 ${plan.breakEvens.map((x) => fmt(x)).join(' / ')}`);
+          lines.push(un ? '⚠ 到期最大虧損無上限'
+            : !basisKnown ? '到期最大虧損：填了平均成本才算得出金額'
+              : `到期最大虧損 ${fmt(-plan.maxLoss)} 元`
+                + `　最大獲利 ${plan.maxGain === null ? '無上限' : fmt(plan.maxGain) + ' 元'}`);
+          if (basisKnown && plan.breakEvens.length) {
+            lines.push(`損益兩平 ${plan.breakEvens.map((x) => fmt(x)).join(' / ')}`);
+          }
           preview.classList.toggle('err', un);
         }
         preview.innerHTML = lines.join('<br>');
@@ -337,7 +349,13 @@ function openWarrantForm(existing, info) {
         } else {
           lines.push('權證價、隱波、delta 存檔後會自動帶入');
         }
-        lines.push(`最大損失 ${fmt(warMaxRisk(w))} 元（權證買方最多賠光權利金）`);
+        // 新增的那一刻成本還沒填、權證價也還沒抓進來，算不出最大損失。
+        // **這時候不能印 0。**「最大損失 0 元」看起來像一個好消息，
+        // 實際上是「我不知道」，而那正是他最需要看清楚的一個數字。
+        const wMax = warMaxRisk(w);
+        lines.push(wMax === null
+          ? '最大損失：填了成本才算得出來（權證買方最多賠光權利金）'
+          : `最大損失 ${fmt(wMax)} 元（權證買方最多賠光權利金）`);
         if (!ok) lines.push('⚠ 這是界限型／重設型，Black-Scholes 不適用，delta 請手動填');
         preview.innerHTML = lines.join('<br>');
       };
@@ -575,13 +593,27 @@ function openTradeForm(defaults = {}) {
             `均價 ${fmtMax(p.prevCost, 2)} → ${fmtMax(p.newCost, 2)}` +
             (p.after ? '' : '（全部出清，部位將移除）');
         }
-        // 這一筆的手續費與交易稅
+        // 這一筆的手續費與交易稅。
+        //
+        //   **費率一定要照「當沖」那個勾選算，不能推斷。** 這裡原本寫的是
+        //   「同一天同標的有反向成交就當成當沖」，但那正是 trades.js 開頭
+        //   明文放棄的推論法：當沖 1 口的同一天又賣掉 5 口長期部位，
+        //   那 5 口會被誤判成當沖。後果是預覽顯示減半的證交稅、
+        //   存進去之後紀錄頁用 is_day_trade 算出全額，**兩個數字對不起來**，
+        //   而使用者是看著預覽按下確定的。
+        //
+        //   推斷本身還是有用，只是用途不同：它該拿來提醒「你是不是忘了勾」，
+        //   不是拿來改費率。
+        const cc = tradeCost(v, false);
         const sameDay = state.trades.some((x) => tradeKey(x) === tradeKey(v) && x.side !== v.side);
-        const cc = tradeCost(v, sameDay);
         if (cc.total > 0) {
           preview.innerHTML = preview.innerHTML +
             `<br><span class="muted">手續費 ${fmtMax(cc.fee, 0)}${cc.tax > 0 ? `　交易稅 ${fmtMax(cc.tax, 0)}` : ''}` +
-            `　成本合計 ${fmtMax(cc.total, 0)} ${cc.ccy}${sameDay ? '（當沖費率）' : ''}</span>`;
+            `　成本合計 ${fmtMax(cc.total, 0)} ${cc.ccy}</span>` +
+            (sameDay && v.market === 'tw' && v.side === 'sell'
+              ? '<br><span class="note-warn">今天這一檔已經有反向成交。'
+                + '如果這一筆是當沖，記得勾「當沖」，證交稅才會減半；沒勾就是照全額算。</span>'
+              : '');
         }
       };
 

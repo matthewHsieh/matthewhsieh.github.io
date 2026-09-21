@@ -95,6 +95,24 @@ grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
                                                numeric, numeric, numeric, text, text, integer) to anon;
 grant execute on function public.app_risk()                to anon;
 
+-- ------------------------------------------------------------
+-- 配置頁的三支。**授權一定要寫在這裡，不能只留在 guest_alloc.sql。**
+--
+--   這個檔案的作法是「先全部 revoke，再一支一支開回來」，所以它一跑完，
+--   寫在別的檔案裡的授權就被洗掉了。2026-09-21 實測：跑完 public_read.sql
+--   之後 top_ratio / drop_hits / pm_industry_of 對 anon 與 authenticated
+--   **全部變成 false**，配置頁對訪客和登入者一起壞掉，而畫面上只會看到
+--   「資料載入中」，不會有錯誤訊息。
+--
+--   通則：新增函式之後，要補的是**兩個地方**——下面的授權，以及最後那兩張
+--   斷言白名單。只補斷言會讓檔案跑得過，但功能是壞的。
+-- ------------------------------------------------------------
+grant execute on function public.top_ratio(integer, text, integer, numeric,
+                                           text[], numeric, integer, numeric) to anon;
+grant execute on function public.drop_hits(numeric, numeric, integer, text,
+                                           integer, numeric, text[])          to anon;
+grant execute on function public.pm_industry_of(text, text)                   to anon;
+
 -- stock_detail 內部會呼叫 eps_resolved()，而 eps_resolved 讀 eps_override
 -- 時是用 auth.uid() 過濾的。匿名時 auth.uid() 是 null，所以拿不到任何人的自填值，
 -- 只會看到自動抓的與人工整理的公開預估——這正是我們要的。
@@ -138,6 +156,12 @@ grant execute on function public.delete_me()               to authenticated;
 grant execute on function public.screen_stocks(text, boolean, boolean, boolean,
                                                numeric, numeric, numeric, text, text, integer) to authenticated;
 grant execute on function public.app_risk()                to authenticated;
+-- 配置頁：登入者這一份同樣不能漏，理由見上面 anon 那一段
+grant execute on function public.top_ratio(integer, text, integer, numeric,
+                                           text[], numeric, integer, numeric) to authenticated;
+grant execute on function public.drop_hits(numeric, numeric, integer, text,
+                                           integer, numeric, text[])          to authenticated;
+grant execute on function public.pm_industry_of(text, text)                   to authenticated;
 
 -- ------------------------------------------------------------
 -- 驗一次：對外開放的函式清單要跟預期一模一樣。
@@ -154,7 +178,12 @@ begin
                           'stock_day', 'us_theme_trend', 'us_theme_members',
                           'theme_tree', 'theme_chain', 'active_alerts',
                           'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
-                          'stock_stories', 'etf_board', 'theme_etf');
+                          'stock_stories', 'etf_board', 'theme_etf',
+                          -- 配置頁開放給訪客用的三支，授權寫在 guest_alloc.sql。
+                          -- **後來新增的授權一定要補進這張清單**，否則這個檔案
+                          -- 重跑就會 raise exception 中止——而它正是「新增函式後要重跑」
+                          -- 的那個安全檢查，中止等於整套權限收斂再也跑不起來。
+                          'top_ratio', 'drop_hits', 'pm_industry_of');
   if extra is not null then
     raise exception '這些函式不該開給匿名：%', extra;
   end if;
@@ -178,7 +207,10 @@ begin
                           'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
                           'stock_stories', 'etf_board', 'theme_etf',
                           'my_valuation', 'journal_days', 'bootstrap_me', 'delete_me',
-                          'refresh_market', 'refresh_prices', 'sync_my_positions');
+                          'refresh_market', 'refresh_prices', 'sync_my_positions',
+                          -- 配置頁：選股排行、位階掃描、產業分類（screen_filters.sql
+                          -- 與 dd_rank.sql 授權給 authenticated，guest_alloc.sql 再開給 anon）
+                          'top_ratio', 'drop_hits', 'pm_industry_of');
   if extra is not null then
     raise exception '這些函式不該開給登入者：%', extra;
   end if;

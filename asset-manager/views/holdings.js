@@ -171,6 +171,7 @@ export function renderHoldings(el) {
     settleNote +
     section('權證', 'warrant', warRows,
       `市值 ${fmt(c.warMarket)}　delta 曝險 ${fmt(c.warExp)}　最大損失 ${fmt(c.warMaxLoss)}${
+        c.warNoBasis ? `<span class="loss">（${fmt(c.warNoBasis)} 檔無成本未計入）</span>` : ''}${
         c.warProfit === null ? '' : `　<span class="${plClass(c.warProfit)}">${signed(c.warProfit)}</span>`}${
         c.warTheta ? `　<span class="loss">每日時間價值 ${fmt(c.warTheta)}</span>` : ''}`) +
     section('台指選擇權', 'option', optRows,

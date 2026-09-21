@@ -9,6 +9,12 @@
 -- 時間是 UTC，台北要 +8。台股 13:30 收，櫃買的收盤檔 16:00 後才出，
 -- Yahoo 的日線還要再晚一點才穩，所以排在台北晚上八點之後。
 -- ============================================================
+-- **am-etf-px 與 am-etf-tilt 已經停用，這裡只負責把它們排掉。**
+--   那兩個 job 叫的是 refresh_px_daily() 與 refresh_etf_tilt()，
+--   而 etf_tilt.sql 結尾已經把這兩支函式 drop 掉了（改用 MoneyDJ 的實際持股）。
+--   這個檔案原本還照排，所以**只要有人重跑一次 etf_cron.sql，
+--   兩個叫不到函式的 job 就會復活**，然後每個交易日固定失敗兩次。
+--   排程檔與它呼叫的函式必須一起改，不然「重跑安裝腳本」就是一個陷阱。
 do $do$
 begin
   perform cron.unschedule(j) from unnest(array[
@@ -19,17 +25,10 @@ begin
   perform cron.schedule('am-etf-list', '0 12 * * 1',
     $c$select public.refresh_active_etf()$c$);                      -- 週一 20:00 台北
 
-  -- 日線：族群成員 ＋ 對照組 ＋ 基金本身，250 檔實測 43 秒
-  perform cron.schedule('am-etf-px', '10 12 * * 1-5',
-    $c$select public.refresh_px_daily(250)$c$);                     -- 20:10
-
-  -- 掛牌以來報酬 vs 同期被動對照組
+  -- 掛牌以來報酬 vs 同期被動對照組。
+  -- 它自己抓 Yahoo 日線進暫存表，不依賴已經停用的 px_daily。
   perform cron.schedule('am-etf-perf', '25 12 * * 1-5',
     $c$select public.refresh_etf_perf()$c$);                        -- 20:25
-
-  -- 族群傾向。要等 px_daily 與 etf_perf 都跑完才有東西可以算。
-  perform cron.schedule('am-etf-tilt', '40 12 * * 1-5',
-    $c$select public.refresh_etf_tilt()$c$);                        -- 20:40
 end $do$;
 
 -- ------------------------------------------------------------

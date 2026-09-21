@@ -54,6 +54,10 @@ grant execute on function public.top_ratio(integer, text, integer, numeric, text
 revoke all on function public.top_ratio(integer, text, integer, numeric, text[]) from public, anon;
 
 
+-- 舊的六參數版本（drop_hits.sql）要清掉，理由同 dd_rank.sql 裡那一段：
+-- 參數數量不同的多載會並存，呼叫時少帶一個參數就變成不唯一。
+drop function if exists public.drop_hits(numeric, numeric, integer, text, integer, numeric);
+
 create or replace function public.drop_hits(
   p_z numeric default -2.0,
   p_min_ratio numeric default null,

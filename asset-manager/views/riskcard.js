@@ -148,8 +148,45 @@ const bar = (pct) => `<span class="rc-bar"><i style="width:${Math.max(0, Math.mi
 
 // ---------- 上半：現在的風險 ----------
 function currentBlock(c) {
-  const rows = exposureRows().filter((r) => !r.key.startsWith('IDX:'));
-  const idx = exposureRows().filter((r) => r.key.startsWith('IDX:'));
+  // ------------------------------------------------------------
+  // 指數期貨要納進來，用加權指數的日報酬當它的序列。
+  //
+  //   原本這裡把 `IDX:` 開頭的整個濾掉，只在最下面用小字說「未納入」。
+  //   但頭條那個「組合年化波動」是他真正在讀的數字，少算一整塊台指期
+  //   等於**低估自己的風險**，而小字救不了一個已經印在最上面的大數字。
+  //   序列本來就在手上：watchList() 一定會把 TAIEX 一起載進快取。
+  //
+  //   同一個到期以外的細節不重要，所有指數期貨併成一筆就好——
+  //   它們追的是同一個標的，分開列只會讓相關係數矩陣多出一列 1.00。
+  //
+  //   **空單要記成負的。** exposureRows() 一直有 side 這個欄位，
+  //   但以前沒有人用它，等於把避險的空單當成加碼的多單算，方向是反的。
+  // ------------------------------------------------------------
+  const all = exposureRows().map((r) => ({ ...r, exposure: num(r.exposure) * (r.side < 0 ? -1 : 1) }));
+  const idx = all.filter((r) => r.key.startsWith('IDX:'));
+  const flat = all.filter((r) => !r.key.startsWith('IDX:'));
+  const idxExp = idx.reduce((a, r) => a + num(r.exposure), 0);
+  if (idxExp !== 0) flat.push({ key: 'TAIEX', exposure: idxExp });
+
+  // ------------------------------------------------------------
+  // **同一個代號只能佔一列。**
+  //
+  //   一檔同時有現股與個股期貨的時候（2317 的現股加 2317 的期貨），
+  //   exposureRows() 會給出兩列同樣的 key。下面每個地方都是
+  //   `rows.find(r => r.key === k)`，find 只會回第一筆，所以
+  //   **兩列都會拿到期貨那一筆的金額，現股的金額整個消失**，
+  //   而且相關係數矩陣裡會多出一條跟自己完全相同的欄位。
+  //   實測 2317 現股 230 萬加期貨 92 萬，算出來是 92 萬乘以二。
+  //
+  //   它們追的是同一個標的、共用同一條報酬序列，本來就該合成一筆。
+  // ------------------------------------------------------------
+  const merged = new Map();
+  for (const r of flat) {
+    const prev = merged.get(r.key);
+    if (prev) prev.exposure += num(r.exposure);
+    else merged.set(r.key, { key: r.key, exposure: num(r.exposure) });
+  }
+  const rows = [...merged.values()];
   const keys = rows.map((r) => r.key);
   const loaded = keys.filter((k) => cache().get(k));
   const pickable = usableKeys(cache(), loaded);
@@ -179,7 +216,9 @@ function currentBlock(c) {
   const worstVol = Math.max(...have.map((k, i) => st.vol[i]), 0);
   const odds = mr && mr.pct > 0 ? moveOdds(mr.pct, worstVol) : null;
 
-  const totExp = have.reduce((a, k) => a + num(rows.find((r) => r.key === k).exposure), 0);
+  // 曝險佔比的分母用**毛額**（絕對值加總）。有空單的時候淨額會縮得很小，
+  // 拿它當分母會讓每一列都變成好幾百 %，看起來像壞掉。
+  const totExp = have.reduce((a, k) => a + Math.abs(num(rows.find((r) => r.key === k).exposure)), 0);
   const list = have.map((k, i) => {
     const r = rows.find((x) => x.key === k);
     return { k, label: labelOf(k), exp: num(r.exposure), vol: st.vol[i], rc: rc[i] / pv };
@@ -197,17 +236,18 @@ function currentBlock(c) {
     </div>
     <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th>波動</th><th>曝險佔比</th><th>風險佔比</th></tr></thead><tbody>
     ${list.map((x) => `<tr>
-      <td>${esc(x.label)}</td>
+      <td>${esc(x.label)}${x.exp < 0 ? '<span class="badge">空</span>' : ''}</td>
       <td>${fmt(x.vol * 100)}%</td>
-      <td>${fmt(totExp ? (x.exp / totExp) * 100 : 0)}%</td>
-      <td>${fmt(x.rc * 100)}% ${bar(x.rc * 100)}</td></tr>`).join('')}
+      <td>${fmt(totExp ? (Math.abs(x.exp) / totExp) * 100 : 0)}%</td>
+      <td class="${x.rc < 0 ? 'gain' : ''}">${fmt(x.rc * 100)}% ${bar(x.rc * 100)}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="sub muted">樣本 ${st.days} 個交易日${
       miss.length ? `　未納入：${miss.map(esc).join('、')}（資料太短或還沒抓到）` : ''}</p>
-    ${idx.length ? `<p class="sub muted">指數期貨未納入個股相關係數計算：${
-      idx.map((r) => esc(r.label)).join('、')}</p>` : ''}
+    ${idx.length ? `<p class="sub muted">指數期貨（${idx.map((r) => esc(r.label)).join('、')}）
+      併成一筆，用加權指數的日報酬納入計算。</p>` : ''}
     <p class="hint">風險佔比是「這一檔對組合波動的貢獻」，加起來等於 100%。
       <b>它跟曝險佔比常常差很多</b>——高波動的標的用少少的錢就能佔掉大部分風險。
+      空單的曝險記成負的，所以它的風險佔比可能是<b>負數</b>，那代表它在扣掉組合的風險，不是壞事。
       追繳距離假設原始保證金 ${fmtMax(IM_RATE * 100, 1)}%、維持保證金為它的 75%，實際依標的與期貨商而定。</p>`;
 }
 
@@ -568,9 +608,13 @@ export function renderAlloc(el) {
     refresh(el);
   }));
 
-  // 缺的序列補抓完再畫一次
+  // 缺的序列補抓完再畫一次。
+  // **TAIEX 要明寫進來。** ensure() 裡面雖然每次都會附帶抓它，
+  // 但開頭有一行 `if (!want.length) return false`——手上只有台指期、
+  // 或該抓的都抓過了的時候會直接返回，TAIEX 就永遠補不上，
+  // 而現在組合風險那張卡要用它來代表指數期貨。
   const need = [...exposureRows().filter((r) => !r.key.startsWith('IDX:')).map((r) => r.key),
-                ...picks()];
+                ...picks(), 'TAIEX'];
   ensure(need).then((changed) => { if (changed) renderAlloc(el); });
 }
 

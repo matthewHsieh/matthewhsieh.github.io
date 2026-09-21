@@ -167,8 +167,15 @@ export const warExposure = (w) => {
 
 export const warPl = (w) => (isNum(w.cost) ? (num(w.price) - num(w.cost)) * num(w.lots) * WAR_UNITS : null);
 
-// 買方最大損失就是付出的權利金
-export const warMaxRisk = (w) => (isNum(w.cost) ? num(w.cost) : num(w.price)) * num(w.lots) * WAR_UNITS;
+// 買方最大損失就是付出的權利金。
+// **算不出來要回 null，不能回 0。** 成本沒填、權證價又還沒抓進來的時候
+// （剛新增的那一刻就是這樣），原本會回 0，畫面上就印出
+// 「最大損失 0 元」——一個看起來完全正常、實際上完全錯誤的風險數字。
+// 這個 app 的通則是寧可大聲說算不出來，也不要默默把風險算小。
+export const warMaxRisk = (w) => {
+  const basis = isNum(w.cost) ? num(w.cost) : num(w.price) > 0 ? num(w.price) : null;
+  return basis === null ? null : basis * num(w.lots) * WAR_UNITS;
+};
 
 // 剩餘交易日（粗估）
 export const warDaysLeft = (w) => {

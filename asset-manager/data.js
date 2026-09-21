@@ -266,6 +266,12 @@ export async function refreshPrices({ force = false } = {}) {
   syncStart();
   try {
     const done = await runStagedRefresh(syncShow);
+    // risk 階段剛把 risk_stats 重算過，配置頁的日報酬序列快取就過期了。
+    // **不清掉的話按 ↻ 完全沒作用**：組合波動、相關係數、位階全是舊的，
+    // 而畫面上看不出來。跟上面的 etfBoard 是同一個坑。
+    // 放在這裡而不是 loadAll()，是因為存一筆交易也會呼叫 loadAll()，
+    // 那時候序列並沒有變，清掉只是白抓一次幾百 KB。
+    state.retSeries = null;
     await loadAll();
     render();
     const bad = refreshSummary(done);
