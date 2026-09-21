@@ -112,6 +112,62 @@ export function statsOf(series, keys) {
   return { keys, vol, corr, days: days.length };
 }
 
+// ------------------------------------------------------------
+// 對大盤的 beta：把一檔「換算成等值的指數部位」
+//
+//   beta = cov(個股, 指數) / var(指數)。意思是指數動 1%，這一檔平均動幾 %。
+//   所以 曝險 × beta 就是「這個部位相當於持有多少大盤」。
+//
+//   **跟波動倍率是兩件事，不能混用。**
+//     beta 倍率  = Σ(曝險 × beta) ÷ 總資產 → 大盤跌 10% 你大概跌多少
+//     波動倍率   = 組合波動 ÷ 指數波動     → 你的總風險相當於開幾倍指數
+//   兩者的差距就是**選股帶來的個別風險**：押三檔同族群的話，波動倍率會遠高於
+//   beta 倍率，那個差額不會因為大盤沒跌就不存在。
+//
+//   **成對對齊，不跟主矩陣共用樣本期。** beta 是兩兩關係，用各自最長的
+//   共同期間估比較準；主矩陣那邊要取所有標的的交集，會浪費掉很多資料。
+// ------------------------------------------------------------
+export function betaVs(series, keys, ref = 'TAIEX') {
+  const r = series?.get?.(ref);
+  const out = new Map();
+  if (!r?.days?.length) return out;
+  const rm = new Map(r.days.map((d, i) => [d, r.rets[i]]));
+  for (const k of keys) {
+    if (k === ref) { out.set(k, 1); continue; }
+    const s = series.get(k);
+    if (!s?.days?.length) continue;
+    const xs = [], ys = [];
+    for (let i = 0; i < s.days.length; i += 1) {
+      const y = rm.get(s.days[i]);
+      if (y === undefined) continue;
+      xs.push(num(s.rets[i])); ys.push(num(y));
+    }
+    // 樣本太少的不要給數字。**回 null 比回一個亂估的 beta 好**，
+    // 因為 beta 會直接乘上曝險，估歪的影響是放大的。
+    if (xs.length < 60) continue;
+    const mx = mean(xs), my = mean(ys);
+    let cov = 0, vy = 0;
+    for (let i = 0; i < xs.length; i += 1) { cov += (xs[i] - mx) * (ys[i] - my); vy += (ys[i] - my) ** 2; }
+    if (!(vy > 0)) continue;
+    out.set(k, cov / vy);
+  }
+  return out;
+}
+
+// 一組權重換算成大盤曝險倍率。weights 是佔總資產的比例。
+// **算不出 beta 的要講出來，不能當 0。** 當 0 等於說「這個部位跟大盤無關」，
+// 那會讓倍率安靜地變小，而變小的風險數字最危險。
+export function indexLeverage(keys, weights, betas) {
+  let lev = 0;
+  const missing = [];
+  keys.forEach((k, i) => {
+    const b = betas.get(k);
+    if (b === undefined) { if (Math.abs(num(weights[i])) > 1e-9) missing.push(k); return; }
+    lev += num(weights[i]) * b;
+  });
+  return { lev, missing };
+}
+
 // 組合年化波動。weights 是「佔總資產的比例」，可以大於 1（有槓桿）。
 export function portVol(w, st) {
   let v = 0;

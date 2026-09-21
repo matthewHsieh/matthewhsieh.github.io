@@ -2,8 +2,9 @@ import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, sb, state, toast } fro
 // 這個檔案本來就有一個區域的 refresh(el)，所以改名匯入
 import { refresh as reloadAll } from '../data.js';
 import {
-  IM_RATE, assumedMu, dropZ, exposureRows, indexSignal, loadSeries, marginRoom, maxSharpe,
-  moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf, statsOf, usableKeys,
+  IM_RATE, assumedMu, betaVs, dropZ, exposureRows, indexLeverage, indexSignal, loadSeries,
+  marginRoom, maxSharpe, moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf,
+  statsOf, usableKeys,
 } from '../risk.js';
 import { compute } from '../portfolio.js';
 import { TW_STOCKS, attachLookup, resolveTwSymbol } from '../symbols.js';
@@ -208,6 +209,11 @@ function currentBlock(c) {
   const ivol = twii ? statsOf(cache(), ['TAIEX'])?.vol[0] : null;
   const daily = pv / Math.sqrt(252);
 
+  // 大盤曝險倍率：把每個部位乘上它對加權指數的 beta 再加總。
+  // 這是「我現在等於持有多少大盤」，跟下面的波動倍率是兩個問題。
+  const betas = betaVs(cache(), have);
+  const { lev: betaLev, missing: noBeta } = indexLeverage(have, w, betas);
+
   // 個股期貨的追繳距離
   const notional = (state.futures || []).reduce(
     (a, f) => a + num(f.lots) * num(f.price) * num(f.size), 0);
@@ -226,26 +232,47 @@ function currentBlock(c) {
 
   return `
     <div class="rc-kpis">
+      <div><span class="rc-k">大盤曝險倍率</span><b class="${betaLev > 2 ? 'loss' : ''}">${fmtMax(betaLev, 2)}x</b>
+        <span class="sub muted">${noBeta.length ? `缺 ${noBeta.length} 檔的 beta` : '指數跌 10%，約 ' + fmt(betaLev * 10) + '%'}</span></div>
       <div><span class="rc-k">組合年化波動</span><b class="${pv > 1 ? 'loss' : ''}">${fmt(pv * 100)}%</b>
-        ${ivol ? `<span class="sub muted">≈ 指數開 ${fmtMax(pv / ivol, 1)} 倍</span>` : ''}</div>
+        ${ivol ? `<span class="sub muted">波動倍率 ${fmtMax(pv / ivol, 2)}x</span>` : ''}</div>
       <div><span class="rc-k">一天的標準差</span><b>${fmtMax(daily * 100, 1)}%</b>
         <span class="sub muted">${fmt(assets * daily)} 元／天</span></div>
       ${mr ? `<div><span class="rc-k">離追繳</span><b class="${
         mr.pct < 0.25 ? 'loss' : ''}">${mr.pct === null ? '–' : fmtMax(mr.pct * 100, 1) + '%'}</b>
         <span class="sub muted">${odds ? `一個月內走到約 ${fmt(odds.p * 100)}%` : ''}</span></div>` : ''}
     </div>
-    <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th>波動</th><th>曝險佔比</th><th>風險佔比</th></tr></thead><tbody>
-    ${list.map((x) => `<tr>
+    <div class="rc-scroll"><table class="rc-tab"><thead><tr><th>標的</th><th>波動</th>
+      <th title="對加權指數的 beta">beta</th><th title="曝險 × beta，等值的大盤部位">大盤等值</th>
+      <th>曝險佔比</th><th>風險佔比</th></tr></thead><tbody>
+    ${list.map((x) => {
+      const b = betas.get(x.k);
+      return `<tr>
       <td>${esc(x.label)}${x.exp < 0 ? '<span class="badge">空</span>' : ''}</td>
       <td>${fmt(x.vol * 100)}%</td>
+      <td>${b === undefined ? '<span class="loss">–</span>' : fmtMax(b, 2)}</td>
+      <td>${b === undefined ? '–' : fmt(x.exp * b)}</td>
       <td>${fmt(totExp ? (Math.abs(x.exp) / totExp) * 100 : 0)}%</td>
-      <td class="${x.rc < 0 ? 'gain' : ''}">${fmt(x.rc * 100)}% ${bar(x.rc * 100)}</td></tr>`).join('')}
+      <td class="${x.rc < 0 ? 'gain' : ''}">${fmt(x.rc * 100)}% ${bar(x.rc * 100)}</td></tr>`;
+    }).join('')}
     </tbody></table></div>
     <p class="sub muted">樣本 ${st.days} 個交易日${
       miss.length ? `　未納入：${miss.map(esc).join('、')}（資料太短或還沒抓到）` : ''}</p>
     ${idx.length ? `<p class="sub muted">指數期貨（${idx.map((r) => esc(r.label)).join('、')}）
       併成一筆，用加權指數的日報酬納入計算。</p>` : ''}
-    <p class="hint">風險佔比是「這一檔對組合波動的貢獻」，加起來等於 100%。
+    <p class="hint"><b>兩個倍率要分開看，它們回答不同的問題。</b><br>
+      <b>大盤曝險倍率 ${fmtMax(betaLev, 2)}x</b> ＝ Σ(曝險 × beta) ÷ 總資產。
+      意思是「我現在等於持有多少大盤」，用來回答<b>大盤跌 10% 我大概跌多少</b>。<br>
+      ${ivol ? `<b>波動倍率 ${fmtMax(pv / ivol, 2)}x</b> ＝ 組合波動 ÷ 指數波動。
+      意思是「我承受的總風險相當於開幾倍指數」。<br>
+      ${pv / ivol > betaLev * 1.15
+        ? `<b>你的波動倍率比大盤曝險倍率高出 ${fmtMax((pv / ivol) / (betaLev || 1), 2)} 倍</b>，
+           那個差額是<b>選股帶來的個別風險</b>——押在少數幾檔或同一個族群的結果。
+           它不會因為大盤沒跌就不存在。`
+        : '兩者接近，代表你的風險主要來自大盤本身，不是個股的集中度。'}<br>` : ''}
+      ${noBeta.length ? `<b>⚠ ${noBeta.map(esc).join('、')} 算不出 beta，沒有計入大盤曝險倍率</b>，
+        實際數字比顯示的大。<br>` : ''}
+      風險佔比是「這一檔對組合波動的貢獻」，加起來等於 100%。
       <b>它跟曝險佔比常常差很多</b>——高波動的標的用少少的錢就能佔掉大部分風險。
       空單的曝險記成負的，所以它的風險佔比可能是<b>負數</b>，那代表它在扣掉組合的風險，不是壞事。
       追繳距離假設原始保證金 ${fmtMax(IM_RATE * 100, 1)}%、維持保證金為它的 75%，實際依標的與期貨商而定。</p>`;
@@ -272,6 +299,11 @@ function allocBlock(c) {
   const ivol = stIdx ? stIdx.vol[withIdx.indexOf('TAIEX')]
     : (cache().get('TAIEX') ? statsOf(cache(), ['TAIEX'])?.vol[0] ?? DEF_IDX_VOL : DEF_IDX_VOL);
   const target = mult * ivol;
+
+  // 目前這個倍率是不是預設鈕之外的值。是的話輸入框要顯示出來，
+  // 而且那幾顆鈕一顆都不該亮——不然畫面會同時說「2 倍」跟「1.3 倍」。
+  const presets = [...(sig ? [Math.round(sig.lev * 100) / 100] : []), ...TARGETS];
+  const customTarget = () => (presets.some((p) => Math.abs(p - mult) < 1e-9) ? null : mult);
 
   const chip = (id, on, label) => `<label class="rc-toggle"><input type="checkbox" id="${id}" ${
     on ? 'checked' : ''}><span>${label}</span></label>`;
@@ -301,11 +333,20 @@ function allocBlock(c) {
         }><span>${lab}</span></label>`).join('')}</div></div>
 
     <div class="rc-group"><span class="rc-lab">整體曝險</span>
-      <div class="seg rc-seg">${[...(sig ? [Math.round(sig.lev * 100) / 100] : []), ...TARGETS]
+      <div class="seg rc-seg">${presets
         .filter((v, i, a) => a.indexOf(v) === i)
         .map((tv, i) => `<label><input type="radio" name="rctgt"
         value="${tv}" ${Math.abs(tv - mult) < 1e-9 ? 'checked' : ''}><span>${
-        sig && i === 0 ? '<b>規則</b><br>' : ''}指數 ${fmtMax(tv, 2)} 倍</span></label>`).join('')}</div></div>
+        sig && i === 0 ? '<b>規則</b><br>' : ''}指數 ${fmtMax(tv, 2)} 倍</span></label>`).join('')}</div>
+      <!-- 自訂倍率。**預設鈕只有五格，但他腦子裡的數字常常落在格子之間**
+           （規則給 2.0、他想試 1.3）。給一個輸入框而不是再加幾顆鈕，
+           因為再加幾顆還是會落在格子之間。上限 5 倍純粹是防手滑打成 50。 -->
+      <label class="rc-custom">自訂
+        <input type="number" id="rc-tgt-custom" step="0.05" min="0" max="5"
+          inputmode="decimal" placeholder="${fmtMax(mult, 2)}"
+          value="${customTarget() === null ? '' : fmtMax(mult, 2)}">
+        <span class="muted">倍</span>
+      </label></div>
 
     ${sig ? `<p class="sub rc-sig">規則算出來是 <b>${fmtMax(sig.lev, 2)} 倍</b>
       ＝ 趨勢 ${fmtMax(sig.base, 1)}（指數${sig.above ? '在' : '跌破'} MA200，
@@ -361,6 +402,11 @@ function allocBlock(c) {
     : mode === 'aggr' ? maxSharpe(st, assumedMu(st, ratios, 0.85), { cap: 0.6 })
       : maxSharpe(st, mu);
   const w = scaleTo(raw, st, target);
+  // 這一組配置實際上等於持有多少大盤。**跟上面選的倍率不是同一回事**：
+  // 那個是波動目標（組合波動 ÷ 指數波動），這個是 beta 加權的方向性曝險。
+  // 挑到一堆高波動低 beta 的標的時，兩者會差很多，而他要下單的是後者。
+  const aBetas = betaVs(cache(), have);
+  const { lev: aBetaLev, missing: aNoBeta } = indexLeverage(have, w, aBetas);
   const pv = portVol(w, st);
   const rc = riskContrib(w, st);
   const totExp = w.reduce((a, x) => a + x * assets, 0);
@@ -412,6 +458,11 @@ function allocBlock(c) {
       <th>大型個股期</th><th>風險佔比</th><th>目前</th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="rc-sum">合計曝險 <b>${fmt(totExp)}</b> 元　＝ 總資產的 ${
       fmtMax(totExp / assets, 2)} 倍　組合波動 ${fmt(target * 100)}%
+      <br>大盤曝險倍率 <b>${fmtMax(aBetaLev, 2)}x</b>
+      <span class="sub muted">（Σ 曝險 × beta ÷ 總資產。你上面選的「指數 ${fmtMax(mult, 2)} 倍」
+        是<b>波動</b>目標，這一個是 <b>beta</b> 加權的方向性曝險，兩者不是同一回事——
+        挑到高波動但低 beta 的標的時會差很多，而下單前該看的是這一個。${
+        aNoBeta.length ? `<b>${aNoBeta.map(esc).join('、')} 算不出 beta，未計入。</b>` : ''}）</span>
       ${order.filter((i) => w[i] < 1e-4).length
         ? `<br><span class="sub muted">有 ${order.filter((i) => w[i] < 1e-4).length
           } 檔配到 0——不是壞掉，是它的風險已經被其他檔涵蓋（看相關係數）</span>` : ''}
@@ -599,6 +650,21 @@ export function renderAlloc(el) {
     localStorage.setItem(MODE_KEY, r.value);
     renderAlloc(el);
   }));
+
+  // 自訂倍率。**用 change 不用 input**：邊打邊重畫的話，
+  // 「1.35」在打到「1」的那一刻就會先重算一次整頁，游標還會被換掉的節點吃掉。
+  // Enter 也要收，手機上不見得會觸發 change。
+  const tc = $('#rc-tgt-custom', el);
+  if (tc) {
+    const applyCustom = () => {
+      const v = num(tc.value);
+      if (tc.value === '' || !(v > 0)) return;          // 清空＝回到原本選的那一顆，不要當成 0 倍
+      state.allocTarget = Math.min(5, v);
+      renderAlloc(el);
+    };
+    tc.onchange = applyCustom;
+    tc.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); applyCustom(); } };
+  }
   $$('[data-rm]', el).forEach((b) => (b.onclick = () => {
     setPicks(picks().filter((s) => s !== b.dataset.rm));
     refresh(el);
