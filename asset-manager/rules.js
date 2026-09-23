@@ -80,6 +80,66 @@ const isSellPut = (t) => t.market === 'option' && t.side === 'sell' && t.opt_cp 
 // 記錄新交易時傳 null（今天已經存檔的全部都算在它前面）。
 const earlier = (t, before) => !before || String(t.created_at) < String(before);
 
+// ------------------------------------------------------------
+// 不當沖：買進的至少隔天才能賣
+//
+//   2026-09-23 立的。九月現股當沖 −17 萬、個股期貨＋選擇權 −127 萬，
+//   六、七月各爆倉一次之後變成下殺不敢放、上漲急著跑。他自己的結論是
+//   「心態恢復之前沒有資格玩短線」。
+//
+//   兩種情況算違規，資料本來就分得出來：
+//     1. 交易勾了「當沖」——最直接；
+//     2. 沒勾，但同一天同一檔已經有反向的交易（先買後賣，或先空後補）。
+//        拆成兩筆波段來繞過勾選框，一樣會被抓到。
+//   **同一檔**用 tradeKey 判斷：代號與中文名稱解析成同一個，
+//   個股期貨看標的與規格，選擇權看到期別／履約價／買賣權。
+//   **轉倉不算**：賣近月、買遠月在資料上就是同一天同一檔一買一賣，
+//   但那是換合約不是進出，跟紀錄頁的分類用同一個判斷（note 開頭是「轉倉」）。
+//
+//   手上本來就有的部位、今天又買又賣的，也算。系統分不出賣掉的是哪一批，
+//   而「今天買、今天賣」正是這條要戒的動作，寧可多問一次。
+// ------------------------------------------------------------
+const isRoll = (t) => String(t.note || '').startsWith('轉倉');
+
+// 給違規訊息用的標的名稱
+function tradeLabel(t) {
+  if (t.market === 'option') return `${t.opt_expiry ?? ''} ${fmt(t.opt_strike)} ${cpLabel(t.opt_cp)}`.trim();
+  if (t.market === 'tw' || t.fut_kind === 'stock') {
+    const k = resolveTwSymbol(t.symbol);
+    return `${k} ${TW_STOCKS[k] || ''}${t.market === 'futures' ? ' 個股期' : ''}`.trim();
+  }
+  return String(t.symbol || '').trim();
+}
+
+// 同一天、同一檔、方向相反、排在這筆之前的交易
+function sameDayReverse(t, before) {
+  if (isRoll(t)) return [];
+  const key = tradeKey(t);
+  return state.trades.filter((x) => x !== t && x.trade_date === t.trade_date && x.side !== t.side
+    && !isRoll(x) && earlier(x, before) && tradeKey(x) === key);
+}
+
+// 回傳 null 代表這筆沒問題
+function dayTradeBreak(t, before) {
+  if (t.is_day_trade) {
+    return {
+      kind: 'no_day_trade',
+      text: `${tradeLabel(t)} 勾了當沖`,
+      why: '2026-09-23 發過誓：再也不當沖。短線能力在心態恢復之前沒有資格用，會死，有多少錢都沒用。',
+    };
+  }
+  const rev = sameDayReverse(t, before);
+  if (!rev.length) return null;
+  const qty = rev.reduce((a, x) => a + num(x.quantity), 0);
+  const first = t.side === 'sell' ? '買進' : '賣出';
+  const now = t.side === 'sell' ? '賣出' : '回補';
+  return {
+    kind: 'no_day_trade',
+    text: `${tradeLabel(t)} 今天才${first} ${fmtMax(qty, 2)}，當天就${now}`,
+    why: '買進的至少要隔天才能賣。沒勾當沖也一樣：同一天同一檔一買一賣就是當沖，只是記成兩筆波段。',
+  };
+}
+
 // 當天在這筆之前已經實現的損益。
 //   **定義要跟心得頁上那個數字一樣**（journal_days 也是直接加 realized_pl），
 //   不然畫面說今天賺了兩萬、規則卻說沒賺，使用者無從判斷誰對。
@@ -190,6 +250,13 @@ export function checkRules(t) {
   const out = [];
   if (!t || !state.rules.length) return out;
 
+  // 排第一個：這是 2026-09-23 之後最要緊的一條
+  const hold = activeRule('no_day_trade');
+  if (hold) {
+    const v = dayTradeBreak(t, null);
+    if (v) out.push(v);
+  }
+
   const hedge = activeRule('opt_only_hedge');
   // **平倉先扣掉。** 買回自己賣出的買權、賣掉自己買進的賣權，都是在收部位，
   // 不是在開新的賭注，擋它等於懲罰他做對的事。
@@ -243,9 +310,34 @@ export function checkRules(t) {
 export function breaksOn(dateISO) {
   const out = [];
   const day = state.trades.filter((t) => t.trade_date === dateISO);
+  const hold = activeRule('no_day_trade');
   const hedge = activeRule('opt_only_hedge');
   const cap = activeRule('day_max_amount');
   const one = activeRule('day_one_at_a_time');
+
+  if (hold && dateISO >= hold.started_on) {
+    // 勾了當沖的直接算；沒勾的看同一檔當天有沒有一買一賣（轉倉不算）
+    const flagged = day.filter((t) => t.is_day_trade);
+    const byKey = new Map();
+    for (const t of day) {
+      if (t.is_day_trade || isRoll(t)) continue;
+      const k = tradeKey(t);
+      const e = byKey.get(k) || { t, buy: 0, sell: 0 };
+      if (t.side === 'buy') e.buy += num(t.quantity); else e.sell += num(t.quantity);
+      byKey.set(k, e);
+    }
+    const pairs = [...byKey.values()].filter((e) => e.buy > 0 && e.sell > 0);
+    if (flagged.length || pairs.length) {
+      const names = new Set([...flagged.map(tradeLabel), ...pairs.map((e) => tradeLabel(e.t))]);
+      const how = [
+        flagged.length ? `勾了當沖 ${flagged.length} 筆` : '',
+        pairs.length ? `同一天一買一賣 ${pairs.length} 檔` : '',
+      ].filter(Boolean).join('、');
+      out.push({ kind: 'no_day_trade',
+        text: `當沖 ${names.size} 檔（${how}）`,
+        detail: [...names].join('、') });
+    }
+  }
 
   if (hedge && dateISO >= hedge.started_on) {
     // 額度是「當天累計」，所以要照時間重播，不能各看各的。

@@ -1007,6 +1007,7 @@ export async function editRule(existing) {
       { key: 'detail', label: '為什麼要有這條（寫給以後想破戒的自己）', type: 'text' },
       { key: 'kind', label: '檢查方式', type: 'select', options: [
         ['free', '只提醒，不自動檢查'],
+        ['no_day_trade', '不當沖：勾了當沖，或同一天同一檔一買一賣'],
         ['opt_only_hedge', '選擇權只准 buy put / sell call'],
         ['day_one_at_a_time', '個股當沖一次一檔'],
         ['day_max_amount', '個股當沖單檔金額上限'],

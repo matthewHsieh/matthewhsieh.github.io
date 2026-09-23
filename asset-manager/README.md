@@ -564,6 +564,7 @@ MRVU 是 Direxion Daily MRVL Bull 2X。買 US$28,800 賣掉只拿得回 US$28,80
 
 | `kind` | 檢查什麼 |
 |---|---|
+| `no_day_trade` | 不當沖（2026-09-23 立）。勾了當沖，或同一天同一檔一買一賣（先空後補也算）；轉倉不算。代號與中文名稱會解析成同一檔，拆成兩筆波段繞不過 |
 | `opt_only_hedge` | 選擇權只准 buy put 與 sell call。買 call 或賣 put 就是違規 |
 | `day_one_at_a_time` | 手上那檔當沖沒歸零就開下一檔 |
 | `day_max_amount` | 個股當沖單筆金額超過上限 |
