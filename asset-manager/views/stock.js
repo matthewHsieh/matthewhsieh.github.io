@@ -1,6 +1,6 @@
 import { ALERT_LABEL, alertLine, alertOf } from '../alerts.js';
 import { $, $$, esc, fmt, fmtMax, isNum, norm, num, plClass, rocPrevYm, rocYm, sb, signed, state, stripTags } from '../core.js';
-import { stockFutLabel } from '../instruments.js';
+import { stockFutLabel, usExposureUsd } from '../instruments.js';
 import { beatsIdx, idxRatio, usBeats, usIdxRatio, usdB } from '../portfolio.js';
 import { TW_STOCKS, resolveTwSymbol } from '../symbols.js';
 import { CAT_LABEL, CAT_ORDER, realizedSummary, tradeCategory, tradeNet } from '../trades.js';
@@ -47,9 +47,10 @@ function symbolHoldings(mk, sym) {
   if (mk === 'us') {
     for (const u of state.us) {
       if (norm(u.symbol) !== key) continue;
+      // 曝險要乘槓桿倍數（2X ETF 承受的是標的兩倍的波動），不是市值
       out.push({ how: '複委託', qty: `${fmt(u.shares)} 股`,
                  cost: u.cost_usd, price: u.price_usd,
-                 expo: num(u.shares) * num(u.price_usd), ccy: 'USD' });
+                 expo: usExposureUsd(u), ccy: 'USD' });
     }
     return out;
   }

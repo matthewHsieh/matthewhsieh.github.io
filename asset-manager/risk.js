@@ -1,4 +1,5 @@
-import { isNum, num, sb, state } from './core.js';
+import { num, sb, state } from './core.js';
+import { usExposureUsd, usLeverage } from './instruments.js';
 
 // ============================================================
 // 組合風險
@@ -435,10 +436,11 @@ export function exposureRows() {
   }
   const rate = num(state.settings?.usd_twd) || 32;
   for (const u of state.us || []) {
-    const lev = isNum(u.leverage) ? Math.abs(num(u.leverage)) : 1;
-    const v = num(u.shares) * num(u.price_usd) * rate * lev;
+    // 倍數走 usLeverage()：沒填倍數時從名稱推，跟總覽、持倉頁用同一套規則。
+    // 之前這裡只看欄位，名稱推得出 2X 的部位在總覽是兩倍、在配置頁卻是一倍。
+    const v = usExposureUsd(u) * rate;
     if (v > 0) rows.push({ key: String(u.symbol), label: `${u.symbol}`, exposure: v,
-                           kind: 'us', side: num(u.leverage) < 0 ? -1 : 1 });
+                           kind: 'us', side: usLeverage(u) < 0 ? -1 : 1 });
   }
   return rows;
 }

@@ -6,6 +6,7 @@ import {
   marginRoom, maxSharpe, moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf,
   statsOf, usableKeys,
 } from '../risk.js';
+import { usLeverage } from '../instruments.js';
 import { compute } from '../portfolio.js';
 import { TW_STOCKS, attachLookup, resolveTwSymbol } from '../symbols.js';
 
@@ -138,7 +139,7 @@ function lotValue(sym) {
 function usShares(sym, exposure) {
   const u = (state.us || []).find((x) => norm(x.symbol) === norm(sym));
   const rate = num(state.settings?.usd_twd) || 32;
-  const lev = u && isNum(u.leverage) ? Math.abs(num(u.leverage)) : 1;
+  const lev = u ? Math.abs(usLeverage(u)) : 1;   // 沒填倍數時從名稱推，跟總覽一致
   const px = u && num(u.price_usd) > 0 ? num(u.price_usd)
     : num((state.usStats || []).find((x) => String(x.symbol) === String(sym))?.price);
   if (!(px > 0)) return '–';

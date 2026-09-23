@@ -1208,10 +1208,46 @@ begin
 end $$;
 
 -- ------------------------------------------------------------
+-- 槓桿型美股 ETF 的倍數
+--
+--   跟 App 的 instruments.js usLeverage() 是**同一套規則**，改一邊要改另一邊：
+--     1. 使用者自己填的 us_stocks.leverage 優先（反向填負數）
+--     2. 沒填就從名稱推：ProShares UltraPro Short = -3、UltraShort = -2、
+--        UltraPro = 3、Ultra = 2；其餘看數字 Bull 2X / 2X Long / Bear 1X / 3X Shares，
+--        **方向只在真的找到倍數時才判斷**（iShares Short Treasury Bond 不是反向）
+--     3. 推不出來回 1
+--
+--   快照的曝險用它算。2026-09-23 之前快照只拿市值當曝險，
+--   MRVU（Direxion Daily MRVL Bull 2X）在 App 是 2 倍、在快照是 1 倍，
+--   兩邊的槓桿②對不起來，而且快照那邊是**默默少算**。
+-- ------------------------------------------------------------
+create or replace function public.pm_us_leverage(p_lev numeric, p_name text)
+returns numeric language plpgsql immutable as $fn$
+declare nm text := coalesce(p_name, ''); m text[]; x numeric;
+begin
+  if p_lev is not null then return p_lev; end if;
+  if nm = '' then return 1; end if;
+  -- ProShares 把倍數寫成字，而且 Short 是黏在一起的（UltraShort），不能靠詞邊界切
+  if nm ~* 'ultra\s*pro\s*short' then return -3; end if;
+  if nm ~* 'ultra\s*short' then return -2; end if;
+  if nm ~* 'ultra\s*pro' then return 3; end if;
+  m := regexp_match(nm, '(?:^|[\s(-])(\d(?:\.\d)?)\s*[xX]\y');
+  if m is not null then
+    x := m[1]::numeric;
+    if x <= 0 then return 1; end if;
+    return case when nm ~* '\y(bear|short|inverse)\y' then -x else x end;
+  end if;
+  if nm ~* '\yultra\y' then return 2; end if;
+  return 1;
+end $fn$;
+
+-- ------------------------------------------------------------
 -- 每天自動存一筆快照（折線圖的資料來源）
 -- 公式與 App 的 compute() 一致
 --   槓桿① = 總資產 / 淨資產（淨資產須為正）
 --   槓桿② = 總曝險 / 總資產
+--   複委託：資產用市值，**曝險用市值 × |槓桿倍數|**（2X ETF 賣掉只拿得回市值，
+--   但承受的是標的兩倍的波動，跟期貨「權益 vs 名目」是同一回事）
 -- ------------------------------------------------------------
 create or replace function public.auto_snapshot()
 returns integer language plpgsql security definer set search_path = public as $$
@@ -1222,6 +1258,8 @@ begin
     select u.id as user_id,
            coalesce((select sum(x.shares * x.price) from public.stocks x where x.user_id = u.id), 0) as stock_value,
            coalesce((select sum(x.shares * x.price_usd) from public.us_stocks x where x.user_id = u.id), 0) as us_usd,
+           coalesce((select sum(x.shares * x.price_usd * abs(public.pm_us_leverage(x.leverage, x.name)))
+                     from public.us_stocks x where x.user_id = u.id), 0) as us_expo_usd,
            coalesce((select sum(x.lots * x.price * x.size) from public.futures x where x.user_id = u.id), 0) as fut_notional,
            coalesce((select sum(x.lots * x.price * x.size * case when x.side = 'short' then -1 else 1 end)
                      from public.options x where x.user_id = u.id), 0) as opt_value,
@@ -1249,12 +1287,14 @@ begin
   f as (
     select b.*,
            b.us_usd * b.rate as us_value,
+           b.us_expo_usd * b.rate as us_exposure,
            b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash + b.opt_value + b.war_value as total_assets
     from b
   ),
   g as (
     select f.*, f.total_assets - f.liab as net_assets,
-           f.stock_value + f.us_value + f.fut_notional + f.opt_exposure + f.war_exposure as exposure
+           -- 複委託這一項是曝險不是市值：槓桿型 ETF 兩者不同
+           f.stock_value + f.us_exposure + f.fut_notional + f.opt_exposure + f.war_exposure as exposure
     from f
   )
   insert into public.snapshots (
@@ -1509,6 +1549,7 @@ grant execute on function public.refresh_prices(boolean) to authenticated;
 revoke all on function public.update_all_prices(boolean) from public, anon, authenticated;
 revoke all on function public.sync_positions(uuid) from public, anon, authenticated;
 revoke all on function public.auto_snapshot() from public, anon, authenticated;
+revoke all on function public.pm_us_leverage(numeric, text) from public, anon, authenticated;
 
 -- ------------------------------------------------------------
 -- 排程（時間為 UTC；台灣 = UTC+8）
