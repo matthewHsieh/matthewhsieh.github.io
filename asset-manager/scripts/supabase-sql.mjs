@@ -56,5 +56,5 @@ const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/dat
 const body = await res.text();
 // 保險：萬一伺服器把權杖回吐在錯誤訊息裡，不要讓它印出來
 console.log('HTTP ' + res.status);
-console.log(body.split(token).join('[REDACTED]').slice(0, 4000));
+console.log(body.split(token).join('[REDACTED]').slice(0, process.argv.includes('--full') ? undefined : 4000));
 process.exit(res.ok ? 0 : 1);
