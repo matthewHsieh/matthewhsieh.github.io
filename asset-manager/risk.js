@@ -303,17 +303,23 @@ export const sharpeOf = (w, st, mu) => {
 export function dropZ(series, key, win = 63) {
   const s = series?.get?.(key);
   if (!s || !s.rets || s.rets.length < win + 5) return null;
-  const r = s.rets.slice(-win);
+  // 用對數報酬：往回累加才會等於「從那一天到現在的報酬」，簡單報酬相加不會
+  const r = s.rets.slice(-win).map((x) => Math.log(1 + num(x)));
   const m = r.reduce((a, b) => a + b, 0) / r.length;
   const sd = Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / r.length);
   if (!(sd > 0)) return null;
-  // 從高點算起的累積報酬：往回累加，最小值就是「離期間高點多遠」
-  let cum = 0, best = 0;
+  // 從最後一天往回累加，cum 就是「從第 i 天收盤到現在漲了多少」。
+  // 期間高點是讓 cum **最小**的那一天（從高點到現在是最負的），
+  // 所以要取最小值。2026-09-23 之前這裡取的是最大值，那是離期間**最低點**多遠再加負號，
+  // 結果漲越多的股票 σ 越負：健策漲停創歷史新高那天被標成 −1.8σ，
+  // 聯發科貼在高點是 −1.5σ，真的回檔中的台光電反而只有 −0.4σ。
+  // 位階加權因此一直在加碼漲最多的，跟「在下跌中買入」完全相反。
+  let cum = 0, worst = 0;
   for (let i = r.length - 1; i >= 0; i -= 1) {
     cum += r[i];
-    if (cum > best) best = cum;
+    if (cum < worst) worst = cum;
   }
-  const dd = -best;                       // ≤ 0，對數報酬
+  const dd = worst;                       // ≤ 0，對數報酬；0 = 今天就是高點
   return { dd, sd, z: dd / (sd * Math.sqrt(win)) };
 }
 

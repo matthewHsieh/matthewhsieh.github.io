@@ -99,25 +99,31 @@ language sql stable security definer set search_path = public as $fn$
             or coalesce(public.pm_industry_of(k.symbol, u.industry), '') <> all (p_exclude_ind))
   ), m as (
     select symbol, nm, vol1y, ratio, last, ind,
-           (select stddev_pop(v) from unnest(r) v) as sd,
-           (select stddev_pop(v) from unnest(r21) v) as sd21,
-           (select max(c) from (
-              select sum(v) over (order by ord desc
+           (select stddev_pop(ln(1 + greatest(v, -0.99))) from unnest(r) v) as sd,
+           (select stddev_pop(ln(1 + greatest(v, -0.99))) from unnest(r21) v) as sd21,
+           -- 從最後一天往回累加對數報酬，c = 「從那一天收盤到現在漲了多少」。
+           -- 期間高點是讓 c **最小**的那一天，所以取 min。
+           -- **2026-09-23 修正：原本取 max，那是離期間最低點多遠再加負號**，
+           -- 漲越多 z 越負——健策漲停創新高被標成 −1.8σ、聯發科貼高點 −1.5σ，
+           -- 真正回檔中的台光電反而只有 −0.4σ。位階警示從 9/17 上線起列的其實是強勢股。
+           -- App 的 risk.js dropZ() 同一天一起修，兩邊的定義必須一致。
+           (select min(c) from (
+              select sum(ln(1 + greatest(v, -0.99))) over (order by ord desc
                                   rows between unbounded preceding and current row) as c
-                from unnest(r) with ordinality t(v, ord)) q) as best
+                from unnest(r) with ordinality t(v, ord)) q) as worst
       from s
   )
   select symbol, nm,
-         round((-greatest(best, 0) / (sd * sqrt(p_win)))::numeric, 2),
-         round((exp(-greatest(best, 0)) - 1)::numeric, 4),
+         round((least(worst, 0) / (sd * sqrt(p_win)))::numeric, 2),
+         round((exp(least(worst, 0)) - 1)::numeric, 4),
          vol1y,
          round((sd21 * sqrt(252.0))::numeric, 4),
          case when vol1y > 0 then round((sd21 * sqrt(252.0) / vol1y)::numeric, 2) end,
          ratio, last, ind
     from m
    where sd > 0
-     and (-greatest(best, 0) / (sd * sqrt(p_win))) <= p_z
-     and (exp(-greatest(best, 0)) - 1) <= -p_min_dd
+     and (least(worst, 0) / (sd * sqrt(p_win))) <= p_z
+     and (exp(least(worst, 0)) - 1) <= -p_min_dd
    order by 3
    limit greatest(1, least(p_limit, 50));
 $fn$;
