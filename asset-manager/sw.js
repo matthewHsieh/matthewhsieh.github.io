@@ -15,7 +15,7 @@
 //   本來就不該被快取。下面用網域白名單，只收自己的檔案與 CDN。
 // ============================================================
 
-const VERSION = 'am-2026-09-21b';
+const VERSION = 'am-2026-09-23';
 const SHELL = 'shell-' + VERSION;
 
 // 只快取這幾個來源。其餘（Supabase、證交所……）一律直接走網路。
@@ -56,9 +56,17 @@ self.addEventListener('fetch', (e) => {
   const isNav = req.mode === 'navigate';
   const skipStore = isNav && url.search !== '';
 
+  // **network-first 還不夠，要 no-cache。** fetch(req) 預設會走瀏覽器的 HTTP 快取，
+  // 而 GitHub Pages 對每個檔案都給 max-age=600：更新後十分鐘內按重新整理，
+  // 拿到的 risk.js 還是舊的，而且 service worker 老實地把那份舊的存進 shell。
+  // 2026-09-23 修 σ 算反的 bug 時就是這樣——推上去了、Pages 也端出新檔了，
+  // 使用者按重新整理看到的仍是 −2σ。
+  // no-cache 是「每次都問伺服器」，不是「不快取」：帶 ETag 去問，沒變就回 304，
+  // 成本是一個很小的請求。CDN 的檔案網址裡有版本號、不會變，維持預設。
+  // 導覽請求不能帶 init（Request 的 mode 是 navigate 時不能重建），照舊。
   e.respondWith((async () => {
     try {
-      const res = await fetch(req);
+      const res = await fetch(isNav || url.host !== self.location.host ? req : new Request(req, { cache: 'no-cache' }));
       // 只存成功的回應。把 404 或 500 存進去，離線時就會拿到一個壞掉的檔案
       if (res && res.ok && !skipStore) {
         const copy = res.clone();

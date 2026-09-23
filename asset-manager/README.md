@@ -1704,6 +1704,16 @@ A 剛抓完 10 秒後 B 再按，B 要的東西早就在資料庫裡了。所以
 
 `sw.js` 一律 **network-first，不是 cache-first**。cache-first 會讓使用者更新程式之後
 還跑舊版，而且是「清了瀏覽器快取也沒用、要自己去反註冊 service worker」的卡法。
+
+**network-first 還不夠，fetch 要帶 `cache: 'no-cache'`（2026-09-23 補的）。**
+service worker 裡的 `fetch(req)` 預設會走瀏覽器的 HTTP 快取，而 GitHub Pages 對每個檔案
+都給 `Cache-Control: max-age=600`。所以更新後十分鐘內按重新整理，拿到的模組還是舊的，
+而且 service worker 會老實地把那份舊的再存進 shell。修 σ 算反的 bug 那天就撞到：
+推上去了、Pages 也端出新檔了，使用者重新整理看到的仍是 −2σ。
+`no-cache` 是「每次都帶 ETag 問伺服器」，沒變就回 304，不是不快取。
+導覽請求不能帶 init（navigate 模式的 Request 不能重建），維持原樣。
+同一天加了兩個配套：`core.js` 的 `BUILD` 顯示在設定頁最下面，**每次部署改它**；
+service worker 換新版接管頁面時會跳一個「程式已更新，重新整理一次」的提示。
 一個每天要看部位的工具卡在舊版，比慢 200ms 嚴重得多。
 
 **絕對不碰 Supabase 的請求**——那些是部位與交易紀錄，存進 Cache Storage 等於

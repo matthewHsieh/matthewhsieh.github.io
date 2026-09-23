@@ -15,6 +15,12 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 export const DEFAULT_SETTINGS = { target_amount: 0, usd_twd: 32 };
 
+// 程式版本，顯示在設定頁最下面。每次部署改這一行。
+// 用途只有一個：使用者說「還是舊的」時，兩邊能對出他跑的到底是哪一版。
+// 2026-09-23 修 σ 算反的 bug，推上去之後他重新整理看到的仍是舊值，
+// 當時沒有任何地方能證明他跑的是哪一版，只能猜。
+export const BUILD = '2026-09-23c';
+
 export const state = {
   user: null,
   tab: 'overview',

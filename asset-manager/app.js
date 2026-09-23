@@ -258,6 +258,14 @@ async function init() {
 function registerSw() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return;
+  // 新版 service worker 接管頁面時提醒一聲。這一頁的模組已經載入了，
+  // 是舊版；重新整理一次才會經過新的 worker 拿到新檔。
+  // 第一次安裝（之前沒有 controller）不提醒，那不是「更新」。
+  let hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) toast('程式已更新，重新整理一次就是新版', 6000);
+    hadController = true;
+  });
   navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('sw 註冊失敗', e));
 }
 

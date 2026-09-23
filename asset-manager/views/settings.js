@@ -1,4 +1,4 @@
-import { $, esc, fail, fmt, num, sb, state, toast } from '../core.js';
+import { $, BUILD, esc, fail, fmt, num, sb, state, toast } from '../core.js';
 import { MARKET_NAME, newestAsOf, refreshPrices, statusOf } from '../data.js';
 import { disclaimerCardHtml } from '../legal.js';
 import { render } from '../render.js';
@@ -82,6 +82,7 @@ export function renderSettings(el) {
         <p class="sub muted">把部位、交易紀錄、快照、心得、紀律規則與設定全部刪掉，並註銷登入帳號。
           <b>刪掉就救不回來</b>，這裡沒有備份也沒有垃圾桶。要留底的話先到「紀錄」頁自己抄一份。</p>
       </div>
+      <p class="sub muted">程式版本 ${esc(BUILD)}。看到「還是舊的」時先對這一行。</p>
     </div>
     ${disclaimerCardHtml()}
     <div class="card">
