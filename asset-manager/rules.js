@@ -1,5 +1,5 @@
 import { fmt, fmtMax, isNum, norm, num, state } from './core.js';
-import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO } from './instruments.js';
+import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usLeverage } from './instruments.js';
 import { compute } from './portfolio.js';
 import { exposureRows } from './risk.js';
 import { TW_STOCKS, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js';
@@ -270,7 +270,14 @@ const isIndexTrade = (t) => (t.market === 'futures' && t.fut_kind !== 'stock')
 function tradeNotional(t) {
   const q = num(t.quantity), p = num(t.price);
   if (t.market === 'futures') return q * p * num(t.fut_size || (t.fut_kind === 'stock' ? 2000 : indexProduct(t.symbol)?.size || 0));
-  if (t.market === 'us') return q * p * (num(state.settings?.usd_twd) || 32);
+  if (t.market === 'us') {
+    // **槓桿型 ETF 要乘倍數。** 交易表單上沒有倍數欄，先看手上同一檔部位填的倍數，
+    // 沒有就從名稱推（MUU、MRVU 這種 Bull 2X）。不乘的話 2X 的部位在這條規則裡只算一半，
+    // 而他 2026-09-24 假期裡想做的正是 MRVU 換 MUU。
+    const held = (state.us || []).find((u) => norm(u.symbol) === norm(t.symbol));
+    const lev = Math.abs(usLeverage({ leverage: isNum(t.leverage) ? t.leverage : held?.leverage, name: t.name || held?.name }));
+    return q * p * (num(state.settings?.usd_twd) || 32) * (lev || 1);
+  }
   if (t.market === 'option') return 0;          // 選擇權用 delta 曝險，不在這條的範圍
   return q * p;                                 // 台股、權證
 }
