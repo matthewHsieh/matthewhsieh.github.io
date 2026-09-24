@@ -1,6 +1,8 @@
-import { fmt, fmtMax, isNum, num, state } from './core.js';
+import { fmt, fmtMax, isNum, norm, num, state } from './core.js';
 import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO } from './instruments.js';
-import { TW_STOCKS, resolveTwSymbol, tradeKey } from './symbols.js';
+import { compute } from './portfolio.js';
+import { exposureRows } from './risk.js';
+import { TW_STOCKS, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js';
 
 // ------------------------------------------------------------
 // 紀律規則
@@ -245,10 +247,83 @@ export function optCallNote(t) {
     + `${earned > 0 ? `（含今天已實現的 ${fmt(earned)}）` : ''}`;
 }
 
+// ------------------------------------------------------------
+// 部位大小：單檔上限與總曝險上限
+//
+//   2026-09-24 立的。前一天南亞個股期 20 口 = 900 萬名目 = 總資產 2.6 倍，
+//   跌到 223 那天帳面 −63.6 萬、總資產的 18%，在低點停損；隔天反彈。
+//   同一個判斷放 1 口，那天帳面只有 −3.2 萬，根本不會看它。
+//   判斷對不對從來不是問題，**部位大到超出心理範圍，出場一定發生在低點。**
+//
+//   基準用**總資產**不用淨資產：他的淨資產是負的，百分比算不出來，
+//   而且桌上的錢就是總資產，虧掉的每一塊都是要還家人的。
+//   指數不受單檔上限（0050 / 006208 / 指數期貨），那是設計裡唯一准開槓桿的東西。
+//   規則列的 amount：單檔上限填「總資產的百分比」（15 = 15%），
+//   總曝險上限填「總資產的倍數」（1 = 100%）。
+// ------------------------------------------------------------
+const INDEX_ETFS = new Set(['0050', '006208', '00631L', '00675L']);
+
+const isIndexTrade = (t) => (t.market === 'futures' && t.fut_kind !== 'stock')
+  || (t.market === 'tw' && INDEX_ETFS.has(norm(t.symbol)));
+
+// 這筆交易的名目金額（台幣）
+function tradeNotional(t) {
+  const q = num(t.quantity), p = num(t.price);
+  if (t.market === 'futures') return q * p * num(t.fut_size || (t.fut_kind === 'stock' ? 2000 : indexProduct(t.symbol)?.size || 0));
+  if (t.market === 'us') return q * p * (num(state.settings?.usd_twd) || 32);
+  if (t.market === 'option') return 0;          // 選擇權用 delta 曝險，不在這條的範圍
+  return q * p;                                 // 台股、權證
+}
+
+// 同一檔現在的曝險。個股期貨跟現股算同一檔（key 都是代號）。
+function symbolExposure(t) {
+  const key = t.market === 'us' ? norm(t.symbol) : resolveTwSymbol(t.symbol);
+  return exposureRows().filter((r) => r.key === key).reduce((a, r) => a + r.exposure, 0);
+}
+
+function sizeBreaks(t) {
+  const out = [];
+  const cap = activeRule('max_position_pct');
+  const tot = activeRule('max_exposure');
+  if (!cap && !tot) return out;
+  if (t.market === 'option' || t.market === 'warrant') return out;
+  const c = compute();
+  const assets = num(c.totalAssets);
+  if (!(assets > 0)) return out;
+  const add = tradeNotional(t) * (t.side === 'buy' ? 1 : -1);
+  if (cap && isNum(cap.amount) && !isIndexTrade(t) && add > 0) {
+    const after = symbolExposure(t) + add;
+    const pct = after / assets;
+    if (pct > num(cap.amount) / 100 + 1e-9) {
+      const label = t.market === 'us' ? norm(t.symbol) : `${resolveTwSymbol(t.symbol)} ${TW_STOCKS[resolveTwSymbol(t.symbol)] || ''}`.trim();
+      out.push({
+        kind: 'max_position_pct',
+        text: `${label} 這筆之後曝險 ${fmt(after)} 元，佔總資產 ${fmt(pct * 100)}%，超過單檔上限 ${fmt(cap.amount)}%（上限約 ${fmt(assets * num(cap.amount) / 100)} 元）`,
+        why: `一檔一天動 3% 的金額要是你看了不會想動的數字。南亞 20 口那天是 −63.6 萬、總資產的 18%，在低點停損；照上限只會是 −3 萬。判斷對不對從來不是問題，大小才是。`,
+      });
+    }
+  }
+  if (tot && isNum(tot.amount) && add > 0) {
+    const after = num(c.exposure) + add;
+    const lev = after / assets;
+    if (lev > num(tot.amount) + 1e-9) {
+      out.push({
+        kind: 'max_exposure',
+        text: `這筆之後總曝險 ${fmt(after)} 元，是總資產的 ${fmtMax(lev, 2)} 倍，超過上限 ${fmtMax(tot.amount, 2)} 倍`,
+        why: '冷靜期總曝險不超過一倍：現貨買多少就是多少，沒有借來的部位。要開槓桿只能開在指數上，而且要等冷靜期結束。',
+      });
+    }
+  }
+  return out;
+}
+
 // 一筆交易（可以是還沒存檔的）違反了哪些規則
 export function checkRules(t) {
   const out = [];
   if (!t || !state.rules.length) return out;
+
+  // 部位大小排最前面：這是 2026-09-24 之後最要緊的一條
+  out.push(...sizeBreaks(t));
 
   // 排第一個：這是 2026-09-23 之後最要緊的一條
   const hold = activeRule('no_day_trade');
