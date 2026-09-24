@@ -292,13 +292,17 @@ function sizeBreaks(t) {
   if (!(assets > 0)) return out;
   const add = tradeNotional(t) * (t.side === 'buy' ? 1 : -1);
   if (cap && isNum(cap.amount) && !isIndexTrade(t) && add > 0) {
+    // 單檔上限的分母是「總曝險上限」，不是總資產：他要的是「這檔佔整個部位的幾 %」。
+    // 冷靜期上限 1 倍，兩者相同；上限放到 1.3 倍時單檔跟著變 19.5% 的總資產。
+    // **用上限不用實際曝險**：用實際曝險的話，曝險開越大單檔上限跟著越寬，規則會自己失效。
+    const base = assets * (tot && isNum(tot.amount) && num(tot.amount) > 0 ? num(tot.amount) : 1);
     const after = symbolExposure(t) + add;
-    const pct = after / assets;
+    const pct = after / base;
     if (pct > num(cap.amount) / 100 + 1e-9) {
       const label = t.market === 'us' ? norm(t.symbol) : `${resolveTwSymbol(t.symbol)} ${TW_STOCKS[resolveTwSymbol(t.symbol)] || ''}`.trim();
       out.push({
         kind: 'max_position_pct',
-        text: `${label} 這筆之後曝險 ${fmt(after)} 元，佔總資產 ${fmt(pct * 100)}%，超過單檔上限 ${fmt(cap.amount)}%（上限約 ${fmt(assets * num(cap.amount) / 100)} 元）`,
+        text: `${label} 這筆之後曝險 ${fmt(after)} 元，佔總曝險上限的 ${fmt(pct * 100)}%，超過單檔上限 ${fmt(cap.amount)}%（上限約 ${fmt(base * num(cap.amount) / 100)} 元）`,
         why: `一檔一天動 3% 的金額要是你看了不會想動的數字。南亞 20 口那天是 −63.6 萬、總資產的 18%，在低點停損；照上限只會是 −3 萬。判斷對不對從來不是問題，大小才是。`,
       });
     }
