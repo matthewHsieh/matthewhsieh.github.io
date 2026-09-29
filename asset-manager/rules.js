@@ -340,6 +340,28 @@ function lastRealizedAt(dateISO) {
   return at;
 }
 
+// 當天的「痛」有多大。**不能只看已實現，也不能對未實現太敏感。**
+//   2026-09-29 是反例：當天已實現 +30,000（早上賣掉 2 口華新科），
+//   但含未實現是 −42 萬，而他下午想加碼金居時 no_open_after_loss 完全不會跳。
+//   規則要擋的是「痛到會亂下單」的狀態，那個狀態跟著總損益走，不跟著會計科目走。
+//
+//   兩個訊號分開判斷，因為性質不同：
+//     1. **已實現虧損**：他主動平在虧損的價位，這是刻意的痛，任何金額都算。
+//     2. **淨資產相對最近快照的變化**：每天都在跳動，只差 20 元也會是負的，
+//        所以要有門檻，否則每個小跌日都跳，警告就變成雜訊。
+//        門檻用規則列的 amount，沒填就用總資產的 1%。
+//   不把兩者相加：期貨的實現損益要等他手動更新權益數才會進總資產，相加會重複計算。
+function dayPain(dateISO) {
+  const realized = realizedBefore(dateISO, null);
+  let drop = null;
+  const snap = (state.snapshots || [])[0];
+  if (snap && isNum(snap.net_assets)) {
+    const now = num(compute().netAssets);
+    if (Number.isFinite(now)) drop = now - num(snap.net_assets);
+  }
+  return { realized, drop };
+}
+
 function gateBreaks(t) {
   const out = [];
   const lossDay = activeRule('no_open_after_loss');
@@ -347,14 +369,23 @@ function gateBreaks(t) {
   if ((!lossDay && !cool) || !isOpening(t)) return out;
 
   if (lossDay) {
-    // amount = 虧損超過多少才算；留空或 0 = 只要當天實現是負的就不開新倉
-    const lim = -Math.abs(isNum(lossDay.amount) ? num(lossDay.amount) : 0);
-    const realized = realizedBefore(t.trade_date, null);
-    if (realized < lim - 1e-6) {
+    const { realized, drop } = dayPain(t.trade_date);
+    // 未實現的門檻：amount 有填就用它，沒填用總資產的 1%
+    const floor = isNum(lossDay.amount) && num(lossDay.amount) > 0
+      ? Math.abs(num(lossDay.amount))
+      : Math.abs(num(compute().totalAssets)) * 0.01;
+    const byRealized = realized < -1e-6;
+    const byDrop = drop !== null && drop < -floor;
+    if (byRealized || byDrop) {
+      const parts = [];
+      if (byRealized) parts.push(`已實現 ${fmt(realized)}`);
+      if (drop !== null) parts.push(`含未實現 ${fmt(drop)}`);
       out.push({
         kind: 'no_open_after_loss',
-        text: `今天已經實現 ${fmt(realized)} 元，這筆是開新倉或加碼`,
-        why: '虧損之後的下一筆，中位數在 0 分鐘內發生，而那些交易合計輸掉 120 萬。今天結束，明天再看。減碼不受這條限制。',
+        text: `今天${parts.join('、')}，這筆是開新倉或加碼`,
+        why: byRealized
+          ? '虧損之後的下一筆，中位數在 0 分鐘內發生，而那些交易合計輸掉 120 萬。今天結束，明天再看。減碼不受這條限制。'
+          : `今天的未實現跌幅超過門檻 ${fmt(floor)} 元。帳面在痛的時候開新倉，跟實現虧損之後開新倉是同一個狀態。減碼不受這條限制。`,
       });
     }
   }
@@ -493,16 +524,18 @@ export function breaksOn(dateISO) {
   const lossDay = activeRule('no_open_after_loss');
   const cool = activeRule('cooldown_after_close');
 
-  // 時間閘門的每日檢討：依時間重播，累加到那一筆之前的已實現損益
+  // 時間閘門的每日檢討：依時間重播，累加到那一筆之前的已實現損益。
+  // **檢討只看得到已實現**：事後回頭算不出當時的帳面損益（沒有逐筆的盤中報價），
+  // 所以這裡的門檻固定是「任何已實現虧損」，不用規則列的 amount
+  //（amount 在即時檢查裡是未實現的門檻，用在這裡會變成兩種意思）。
   if ((lossDay || cool) && day.length) {
     const list = [...day].sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
     let acc = 0, lastAt = null;
     const lossHits = [], coolHits = [];
-    const lim = lossDay ? -Math.abs(isNum(lossDay.amount) ? num(lossDay.amount) : 0) : 0;
     const mins = cool ? (isNum(cool.amount) && num(cool.amount) > 0 ? num(cool.amount) : 60) : 60;
     for (const t of list) {
       const open = isOpening(t);
-      if (open && lossDay && dateISO >= lossDay.started_on && acc < lim - 1e-6) lossHits.push({ t, acc });
+      if (open && lossDay && dateISO >= lossDay.started_on && acc < -1e-6) lossHits.push({ t, acc });
       if (open && cool && dateISO >= cool.started_on && lastAt) {
         const gap = (Date.parse(t.created_at) - Date.parse(lastAt)) / 60000;
         if (gap >= 0 && gap < mins) coolHits.push({ t, gap });
