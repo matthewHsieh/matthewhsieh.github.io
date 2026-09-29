@@ -1007,6 +1007,8 @@ export async function editRule(existing) {
       { key: 'detail', label: '為什麼要有這條（寫給以後想破戒的自己）', type: 'text' },
       { key: 'kind', label: '檢查方式', type: 'select', options: [
         ['free', '只提醒，不自動檢查'],
+        ['no_open_after_loss', '虧損日不開新倉（金額 = 虧超過多少才算，留空 = 任何虧損）'],
+        ['cooldown_after_close', '平倉後隔多久才能開新倉（金額 = 分鐘，留空 = 60）'],
         ['max_position_pct', '單檔曝險上限（金額填總資產的 %，指數不算）'],
         ['max_exposure', '總曝險上限（金額填總資產的倍數，例如 1）'],
         ['no_day_trade', '不當沖：勾了當沖，或同一天同一檔一買一賣'],

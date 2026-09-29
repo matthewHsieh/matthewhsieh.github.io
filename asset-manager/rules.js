@@ -288,6 +288,94 @@ function symbolExposure(t) {
   return exposureRows().filter((r) => r.key === key).reduce((a, r) => a + r.exposure, 0);
 }
 
+// ------------------------------------------------------------
+// 時間閘門：做錯決定之後，不要讓它影響下一個決定
+//
+//   2026-09-29 用他 208 筆交易（9/08–9/29、15 個交易日）量出來的：
+//     78% 的交易發生在前一筆的 5 分鐘內，只有 6% 間隔超過一小時；
+//     前一筆實現虧損之後，下一筆的間隔**中位數是 0 分鐘**（35 次裡 29 次在 5 分鐘內）；
+//     叢聚（前一筆在 30 分鐘內）的 79 筆合計 −120 萬，孤立的 15 筆 −14 萬；
+//     當天交易 ≥8 筆的 11 天合計 −140 萬。
+//   **「當天交易筆數」是他最強的單一虧損預測因子**，比任何選股指標都強。
+//   所以「下一個決定」根本不是新決定，是同一個情緒事件的延長。
+//   文獻：Thaler & Johnson 1990 的 break-even effect（虧損後更願意冒險求回本）、
+//   Coval & Shumway 2005（早盤虧損的期貨自營商下午加大風險，而那些交易賠錢）。
+//
+//   **兩條都只擋開新倉與加碼，減碼與平倉永遠放行。**
+//   虧損之後「賣出」是該鼓勵的動作，擋它等於懲罰他做對的事。
+//   時間差用 created_at（記錄的時間）算，所以**要先在 App 記、再去券商下單**，
+//   事後補記的話這條只會變成統計，不會在決定的當下擋人。
+// ------------------------------------------------------------
+
+// 手上這一檔的方向：1 多、−1 空、0 沒有部位
+function heldDirection(t) {
+  if (t.market === 'futures') {
+    const key = t.fut_kind === 'stock' ? resolveTwSymbol(t.symbol) : norm(t.symbol);
+    const f = (state.futures || []).find((x) => (x.kind === 'stock' ? resolveTwSymbol(x.symbol) : norm(x.symbol)) === key);
+    if (!f) return 0;
+    return f.side === 'short' ? -1 : 1;
+  }
+  if (t.market === 'us') return (state.us || []).some((u) => norm(u.symbol) === norm(t.symbol)) ? 1 : 0;
+  if (t.market === 'warrant') return (state.warrants || []).some((w) => norm(w.code) === norm(t.symbol)) ? 1 : 0;
+  return (state.stocks || []).some((s) => resolveTwSymbol(s.symbol) === resolveTwSymbol(t.symbol)) ? 1 : 0;
+}
+
+// 這筆是不是在增加曝險。**減碼、平倉、回補一律回 false。**
+function isOpening(t) {
+  if (t.market === 'option') return openingLots(t) > 1e-9;
+  if (isRoll(t)) return false;                      // 轉倉是換合約不是新賭注
+  const held = heldDirection(t);
+  if (held > 0) return t.side === 'buy';
+  if (held < 0) return t.side === 'sell';
+  return true;                                      // 沒部位，任何一邊都是開新倉
+}
+
+// 當天最後一筆有實現損益的交易是什麼時候
+function lastRealizedAt(dateISO) {
+  let at = null;
+  for (const x of state.trades) {
+    if (x.trade_date !== dateISO || !isNum(x.realized_pl) || !x.created_at) continue;
+    if (!at || String(x.created_at) > String(at)) at = x.created_at;
+  }
+  return at;
+}
+
+function gateBreaks(t) {
+  const out = [];
+  const lossDay = activeRule('no_open_after_loss');
+  const cool = activeRule('cooldown_after_close');
+  if ((!lossDay && !cool) || !isOpening(t)) return out;
+
+  if (lossDay) {
+    // amount = 虧損超過多少才算；留空或 0 = 只要當天實現是負的就不開新倉
+    const lim = -Math.abs(isNum(lossDay.amount) ? num(lossDay.amount) : 0);
+    const realized = realizedBefore(t.trade_date, null);
+    if (realized < lim - 1e-6) {
+      out.push({
+        kind: 'no_open_after_loss',
+        text: `今天已經實現 ${fmt(realized)} 元，這筆是開新倉或加碼`,
+        why: '虧損之後的下一筆，中位數在 0 分鐘內發生，而那些交易合計輸掉 120 萬。今天結束，明天再看。減碼不受這條限制。',
+      });
+    }
+  }
+
+  if (cool) {
+    const mins = isNum(cool.amount) && num(cool.amount) > 0 ? num(cool.amount) : 60;
+    const at = lastRealizedAt(t.trade_date);
+    if (at) {
+      const gap = (Date.now() - Date.parse(at)) / 60000;
+      if (gap >= 0 && gap < mins) {
+        out.push({
+          kind: 'cooldown_after_close',
+          text: `上一筆平倉是 ${fmt(gap)} 分鐘前，還沒滿 ${fmt(mins)} 分鐘`,
+          why: `你 94% 的交易間隔在一小時以內，而那些正是虧損集中的地方。等滿 ${fmt(mins)} 分鐘再決定，通常就不會想做了。`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 function sizeBreaks(t) {
   const out = [];
   const cap = activeRule('max_position_pct');
@@ -335,6 +423,8 @@ export function checkRules(t) {
 
   // 部位大小排最前面：這是 2026-09-24 之後最要緊的一條
   out.push(...sizeBreaks(t));
+  // 時間閘門：2026-09-29 之後，這兩條攔的是「連環決定」
+  out.push(...gateBreaks(t));
 
   // 排第一個：這是 2026-09-23 之後最要緊的一條
   const hold = activeRule('no_day_trade');
@@ -400,6 +490,39 @@ export function breaksOn(dateISO) {
   const hedge = activeRule('opt_only_hedge');
   const cap = activeRule('day_max_amount');
   const one = activeRule('day_one_at_a_time');
+  const lossDay = activeRule('no_open_after_loss');
+  const cool = activeRule('cooldown_after_close');
+
+  // 時間閘門的每日檢討：依時間重播，累加到那一筆之前的已實現損益
+  if ((lossDay || cool) && day.length) {
+    const list = [...day].sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
+    let acc = 0, lastAt = null;
+    const lossHits = [], coolHits = [];
+    const lim = lossDay ? -Math.abs(isNum(lossDay.amount) ? num(lossDay.amount) : 0) : 0;
+    const mins = cool ? (isNum(cool.amount) && num(cool.amount) > 0 ? num(cool.amount) : 60) : 60;
+    for (const t of list) {
+      const open = isOpening(t);
+      if (open && lossDay && dateISO >= lossDay.started_on && acc < lim - 1e-6) lossHits.push({ t, acc });
+      if (open && cool && dateISO >= cool.started_on && lastAt) {
+        const gap = (Date.parse(t.created_at) - Date.parse(lastAt)) / 60000;
+        if (gap >= 0 && gap < mins) coolHits.push({ t, gap });
+      }
+      if (isNum(t.realized_pl)) {
+        acc += num(t.realized_pl) * (t.realized_ccy === 'USD' ? num(state.settings.usd_twd) : 1);
+        lastAt = t.created_at;
+      }
+    }
+    if (lossHits.length) {
+      out.push({ kind: 'no_open_after_loss',
+        text: `虧損之後又開新倉 ${lossHits.length} 筆`,
+        detail: lossHits.map(({ t, acc: a }) => `${tradeLabel(t)}（當時已實現 ${fmt(a)}）`).join('、') });
+    }
+    if (coolHits.length) {
+      out.push({ kind: 'cooldown_after_close',
+        text: `平倉後不滿 ${fmt(mins)} 分鐘就開新倉 ${coolHits.length} 筆`,
+        detail: coolHits.map(({ t, gap }) => `${tradeLabel(t)}（隔 ${fmt(gap)} 分鐘）`).join('、') });
+    }
+  }
 
   if (hold && dateISO >= hold.started_on) {
     // 勾了當沖的直接算；沒勾的看同一檔當天有沒有一買一賣（轉倉不算）
