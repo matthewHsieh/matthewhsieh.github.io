@@ -67,7 +67,11 @@ export function renderHoldings(el) {
       `${esc(f.contract || futDisplayName(f.kind, f.symbol, f.size))}${monthBadge(f.month)}<span class="badge">${
         f.side === 'short' ? '空' : '多'}</span>${
         isStock ? alertBadge(alertOf(f.symbol)) : ''}${
-        autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}`,
+        autoPriceOk(f) ? '' : '<span class="badge warn-badge">價格不會自動更新</span>'}${
+        // 期交所的期貨行情檔常常落後一天，落後時 sync_positions 會改用當日加權指數。
+        // 這個標記一定要出現——「昨天的結算價」跟「今天的現貨推算」是兩種不同的數字，
+        // 使用者看到未實現損益時必須知道自己在看哪一種。
+        f.price_src === 'spot' ? '<span class="badge warn-badge">現貨推算</span>' : ''}`,
       `${fmtMax(f.lots, 2)} 口 × ${fmtMax(futPx(f), 2)}${
         isStock && livePx(f.symbol) ? liveTag(f.symbol) : ''} × ${fmt(f.size)}${isStock ? ' 股' : ' 元/點'}${
         isNum(f.cost) ? `　均價 ${fmtMax(f.cost, 2)}` : ''}`,
