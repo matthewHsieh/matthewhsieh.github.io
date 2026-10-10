@@ -1297,7 +1297,17 @@ begin
            coalesce((select sum(x.lots * x.price * x.size) from public.futures x where x.user_id = u.id), 0) as fut_notional,
            coalesce((select sum(x.lots * x.price * x.size * case when x.side = 'short' then -1 else 1 end)
                      from public.options x where x.user_id = u.id), 0) as opt_value,
-           coalesce((select sum(abs(x.lots * coalesce(x.delta, 0) * coalesce(x.forward, 0) * x.size))
+           -- 2026-10-10：**買方淨、賣方毛**。原本一律 abs()，結果買進賣權這種純避險
+           -- 的部位會增加總曝險——實測 2026-10-09 買 20 口價外賣權（delta 曝險 −551.6 萬）
+           -- 讓曝險倍數從 3.36x「漲」到 4.61x，方向整個反掉，而這個數字還餵給
+           -- max_exposure 規則，等於罰他做對的事。正確算法是 2.22x。
+           -- 買方最大虧損就是權利金（已算在 opt_value／總資產裡），沒有尾部，可以淨；
+           -- 賣方虧損無上限，淨掉會讓人用賣出買權把曝險壓低，所以維持絕對值。
+           -- 這裡要跟 portfolio.js 的 compute() 用同一套規則，兩邊對不起來比算錯更糟。
+           coalesce((select sum(case when x.side = 'short'
+                                     then abs(x.lots * coalesce(x.delta, 0) * coalesce(x.forward, 0) * x.size)
+                                     else      x.lots * coalesce(x.delta, 0) * coalesce(x.forward, 0) * x.size
+                                end)
                      from public.options x where x.user_id = u.id), 0) as opt_exposure,
            coalesce((select sum(x.lots * 1000 * x.price)
                      from public.warrants x where x.user_id = u.id), 0) as war_value,

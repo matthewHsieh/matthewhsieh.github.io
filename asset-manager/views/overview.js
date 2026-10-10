@@ -74,11 +74,18 @@ export function renderOverview(el) {
       ${c.usLevExtra > 0 ? line('　└ 槓桿型多出來的曝險', c.usLevExtra, 0, 'sub') : ''}
       ${line('指數期貨名目', c.futIndex)}
       ${line('個股期貨名目', c.futStock)}
-      ${line('選擇權 delta 曝險', c.optExposure)}
+      ${line('選擇權 delta 曝險（買方淨、賣方毛）', c.optExposure)}
+      ${c.optGrossExp !== c.optExposure
+        ? line('　└ 絕對值加總（不分買賣）', c.optGrossExp, 0, 'sub') : ''}
       ${line('權證 delta 曝險', c.warExp)}
       ${line('期貨名目・多單', c.futLong)}
       ${line('期貨名目・空單', c.futShort)}
       ${line('總曝險', c.exposure, 0, 'total')}
+      ${c.optExposure < 0 ? `<p class="hint">選擇權那一列是負的，因為手上的買方部位（買進賣權）
+        是在<b>抵銷</b>方向曝險，不是增加。2026-10-09 改過這個算法：原本一律取絕對值，
+        結果買 20 口價外賣權讓曝險倍數從 3.36x「漲」到 4.61x——
+        <b>避險讓風險數字變大</b>，而那個數字還餵給總曝險規則，等於罰你做對的事。
+        賣方仍然取絕對值（虧損無上限，淨掉會讓人用賣出買權把數字壓低）。</p>` : ''}
       ${c.warNoDelta || c.optNoDelta ? `<p class="hint warn-hint">⚠ 有${
         [c.warNoDelta ? '權證' : '', c.optNoDelta ? '選擇權' : ''].filter(Boolean).join('、')
         }部位還沒算出 delta，<b>這些部位目前沒有計入上面的總曝險</b>，實際曝險比顯示的高。
@@ -124,6 +131,17 @@ export function renderOverview(el) {
       slot.appendChild(donutChart({
         slices, total, centerLabel: '總曝險', centerValue: fmtCompact(total), format: fmt,
       }));
+      // 圓餅圖畫不出負的切片，所以避險的買方（買進賣權）沒有畫進去。
+      // 差額要講出來，否則圖中央的「總曝險」會比上面的曝險倍數大一截，
+      // 而兩個同名數字不一致比少一塊更糟。
+      const offset = c.exposure - total;
+      if (Math.abs(offset) > 1) {
+        const p = document.createElement('p');
+        p.className = 'hint';
+        p.innerHTML = `圖上是 ${fmt(total)}，而曝險倍數用的是 <b>${fmt(c.exposure)}</b>——
+          差額 ${fmt(offset)} 是<b>買方選擇權在抵銷方向曝險</b>（圓餅圖畫不出負的切片）。`;
+        slot.appendChild(p);
+      }
     } else {
       slot.appendChild(donutChart({
         slices: [

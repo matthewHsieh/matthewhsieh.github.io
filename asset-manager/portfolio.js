@@ -45,7 +45,13 @@ export function exposureSlices() {
     });
   }
   for (const o of state.options) {
-    const v = Math.abs(optDeltaExp(o) ?? 0);
+    // 跟 compute() 的 optExposure 用同一套規則：買方淨、賣方毛。
+    // **圓餅圖畫不出負的切片**，所以 delta 是負的買方（避險，例如買進賣權）
+    // 直接不畫，由呼叫端在圖下面標出被抵掉多少。
+    // 原本這裡一律 abs()，圖上的「總曝險」會比頭條的曝險倍數大一截，
+    // 兩個同名數字不一致比少一塊更糟。
+    const d = optDeltaExp(o) ?? 0;
+    const v = o.side === 'short' ? Math.abs(d) : d;
     if (v > 0) items.push({
       label: optLabel(o),
       sub: `選擇權・${o.side === 'short' ? '賣方' : '買方'}（delta 曝險）`,
@@ -91,8 +97,28 @@ export function compute() {
   // 選擇權
   const opts = state.options;
   const optMarket = sum(opts, optValue);                       // 權利金市值（買方正、賣方負）
-  const optExposure = opts.reduce((a, o) => a + Math.abs(optDeltaExp(o) ?? 0), 0);  // 曝險取絕對值加總
-  const optNetDelta = opts.reduce((a, o) => a + (optDeltaExp(o) ?? 0), 0);          // 淨方向部位
+  // ------------------------------------------------------------
+  // 選擇權怎麼計入總曝險：**買方淨、賣方毛**（2026-10-10 改）
+  //
+  //   原本一律 `Math.abs()`，結果買進賣權這種純避險的部位會**增加**總曝險。
+  //   實測 2026-10-09：買了 20 口價外賣權（delta 曝險 −551.6 萬），
+  //   曝險倍數從 3.36x 跳到 4.61x——**避險讓風險數字變大，方向整個反掉**，
+  //   而那個數字還餵給 max_exposure 規則，等於罰他做對的事。正確算法是 2.22x。
+  //
+  //   當初寫 abs() 是為了防「賣出買權」看起來像避險（它的 delta 曝險也是負的）。
+  //   但買賣兩邊的性質不一樣，該分開處理：
+  //     買方：最大虧損就是權利金，而權利金已經算在總資產的 optMarket 裡。
+  //           它的 delta 避險是真的、而且沒有尾部，所以**可以淨**。
+  //     賣方：delta 避險也是真的，但虧損無上限。淨掉會讓人用賣出買權
+  //           把曝險數字壓低，所以**一律取絕對值**。
+  //   （無上限的尾部另外由 optMaxLoss / optRiskUnlimited 報，不靠這一行防。）
+  // ------------------------------------------------------------
+  const optExposure = opts.reduce((a, o) => {
+    const d = optDeltaExp(o) ?? 0;
+    return a + (o.side === 'short' ? Math.abs(d) : d);
+  }, 0);
+  const optGrossExp = opts.reduce((a, o) => a + Math.abs(optDeltaExp(o) ?? 0), 0);   // 絕對值加總，單獨顯示用
+  const optNetDelta = opts.reduce((a, o) => a + (optDeltaExp(o) ?? 0), 0);           // 淨方向部位
   const optWithPl = opts.filter((o) => isNum(o.cost));
   const optProfit = optWithPl.length ? sum(optWithPl, optPl) : null;
   // **風險要按到期別整組算，不能一腳一腳加。** 手上有賣出買權不代表無上限，
@@ -138,7 +164,7 @@ export function compute() {
   return {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
-    optMarket, optExposure, optNetDelta, optProfit, optMaxLoss, optMaxGain, optPlans, optRiskUnlimited, optNoDelta,
+    optMarket, optExposure, optGrossExp, optNetDelta, optProfit, optMaxLoss, optMaxGain, optPlans, optRiskUnlimited, optNoDelta,
     warMarket, warExp, warProfit, warMaxLoss, warNoBasis, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
