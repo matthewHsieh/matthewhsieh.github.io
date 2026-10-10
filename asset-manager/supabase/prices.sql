@@ -310,17 +310,25 @@ begin
         select upper(btrim(e ->> 'Contract')) as symbol,
                coalesce(public.pm_num(e ->> 'SettlementPrice'), public.pm_num(e ->> 'Last')) as price,
                coalesce(public.pm_num(e ->> 'Volume'), 0) as volume,
+               -- 2026-10-09 補開高低：算「進場位置百分位」（規則 15）要用**期貨**的當日區間，
+               -- 不能拿現股的。2026-10-08 金居期貨是 536–549 而現股只有 533–542，
+               -- 用現股算會讓他 543 的成交變成第 111 百分位（超過 100%），
+               -- 而用期貨算是第 54 百分位——結論完全相反。
+               public.pm_num(e ->> 'Open') as o,
+               public.pm_num(e ->> 'High') as h,
+               public.pm_num(e ->> 'Low')  as l,
                to_date(regexp_replace(e ->> 'Date', '[^0-9]', '', 'g'), 'YYYYMMDD') as as_of
         from jsonb_array_elements(payload) e
         where btrim(e ->> 'TradingSession') = '一般'
       ), best as (
-        select distinct on (symbol) symbol, price, as_of from rows where price > 0
+        select distinct on (symbol) symbol, price, as_of, o, h, l from rows where price > 0
         order by symbol, volume desc, price
       )
-      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-      select 'fut', symbol, null, price, as_of, now() from best
+      insert into public.market_prices (market, symbol, name, price, as_of, open, high, low, updated_at)
+      select 'fut', symbol, null, price, as_of, o, h, l, now() from best
       on conflict (market, symbol) do update
-        set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+        set price = excluded.price, as_of = excluded.as_of,
+            open = excluded.open, high = excluded.high, low = excluded.low, updated_at = now();
       get diagnostics n = row_count;
       perform public.pm_log('taifex_fut(json)', n, true, null);
     else
@@ -336,17 +344,19 @@ begin
         select upper(btrim(a[2])) as symbol,
                coalesce(public.pm_num(a[11]), public.pm_num(a[7])) as price,
                coalesce(public.pm_num(a[10]), 0) as volume,
+               public.pm_num(a[4]) as o, public.pm_num(a[5]) as h, public.pm_num(a[6]) as l,
                to_date(regexp_replace(a[1], '[^0-9]', '', 'g'), 'YYYYMMDD') as as_of
         from parsed
         where array_length(a, 1) >= 18 and btrim(a[18]) = '一般'
       ), best as (
-        select distinct on (symbol) symbol, price, as_of from rows where price > 0
+        select distinct on (symbol) symbol, price, as_of, o, h, l from rows where price > 0
         order by symbol, volume desc, price
       )
-      insert into public.market_prices (market, symbol, name, price, as_of, updated_at)
-      select 'fut', symbol, null, price, as_of, now() from best
+      insert into public.market_prices (market, symbol, name, price, as_of, open, high, low, updated_at)
+      select 'fut', symbol, null, price, as_of, o, h, l, now() from best
       on conflict (market, symbol) do update
-        set price = excluded.price, as_of = excluded.as_of, updated_at = now();
+        set price = excluded.price, as_of = excluded.as_of,
+            open = excluded.open, high = excluded.high, low = excluded.low, updated_at = now();
       get diagnostics n = row_count;
       perform public.pm_log('taifex_fut(csv)', n, true, null);
     end if;
@@ -1061,8 +1071,14 @@ grant execute on function public.theme_members(text) to authenticated;
 -- ------------------------------------------------------------
 create or replace function public.sync_positions(p_user uuid default null)
 returns integer language plpgsql security definer set search_path = public as $$
-declare n integer := 0; c integer;
+declare
+  n integer := 0; c integer;
+  v_spot       numeric;   -- 當日加權指數（指數期貨的備援 mark）
+  v_spot_as_of date;
 begin
+  select round(k.last::numeric, 2), k.as_of into v_spot, v_spot_as_of
+    from public.risk_stats k where k.symbol = 'TAIEX';
+
   update public.stocks s
      set price = mp.price,
          name  = coalesce(nullif(btrim(s.name), ''), mp.name)
@@ -1083,22 +1099,40 @@ begin
           or (nullif(btrim(u.name), '') is null and mp.name is not null));
   get diagnostics c = row_count; n := n + c;
 
-  -- 指數期貨：期交所結算價
+  -- 指數期貨：期交所結算價，落後一天就改用當日加權指數
+  --
+  --   期交所 DailyMarketReportFut 常常在收盤後好幾個小時還是前一天的檔（見檔頭
+  --   第 292 行）。以前不管新舊都照寫進 futures.price，結果部位頁顯示昨天的結算價
+  --   卻沒有任何提示——資料層誠實記了 as_of，顯示層說謊。
+  --
+  --   落後時改用 risk_stats 的加權指數現貨：TX / MTX / TMF 都是報同一個指數點數
+  --   （只有每點金額不同），而指數期貨與現貨的價差通常在 0.3% 以內，比用昨天的
+  --   結算價準得多。**price_src 一定要記**，不然使用者分不出哪個價是抓的、哪個是推的。
   update public.futures f
-     set price = mp.price
-    from public.market_prices mp
-   where f.kind = 'index' and mp.market = 'fut' and mp.symbol = upper(btrim(f.symbol))
-     and (p_user is null or f.user_id = p_user)
-     and f.price is distinct from mp.price;
+     set price = v.px, price_src = v.src
+    from (
+      select f2.id,
+             case when v_fresh then fx.price else v_spot end as px,
+             case when v_fresh then 'taifex'  else 'spot'  end as src
+        from public.futures f2
+        left join public.market_prices fx
+               on fx.market = 'fut' and fx.symbol = upper(btrim(f2.symbol)),
+             lateral (select fx.as_of is not null
+                        and (v_spot_as_of is null or fx.as_of >= v_spot_as_of) as v_fresh) g
+       where f2.kind = 'index'
+         and (p_user is null or f2.user_id = p_user)
+    ) v
+   where f.id = v.id and v.px is not null
+     and (f.price is distinct from v.px or f.price_src is distinct from v.src);
   get diagnostics c = row_count; n := n + c;
 
-  -- 個股期貨：標的股票收盤價
+  -- 個股期貨：標的股票收盤價（證交所那份不會落後，直接用）
   update public.futures f
-     set price = mp.price
+     set price = mp.price, price_src = 'tw'
     from public.market_prices mp
    where f.kind = 'stock' and mp.market = 'tw' and mp.symbol = upper(btrim(f.symbol))
      and (p_user is null or f.user_id = p_user)
-     and f.price is distinct from mp.price;
+     and (f.price is distinct from mp.price or f.price_src is distinct from 'tw');
   get diagnostics c = row_count; n := n + c;
 
   -- 選擇權：更新權利金，並用 Black-76 反推 delta
@@ -1398,6 +1432,16 @@ begin
   perform public.refresh_warrant_prices();
   perform public.refresh_fx();
   perform public.sync_positions(null);
+  -- 2026-10-09 補上：原本 auto_snapshot() 只掛在 update_housekeeping()（UTC 22:40
+  -- = 台北隔天 06:40），那個時點最新的台股行情是前一天收盤，所以每一筆自動快照的
+  -- snap_date 是今天、price_as_of 是昨天 —— 看儀表板的人會把「今天那一列」當成今天。
+  -- 掛在這裡（台北 14:35 起共七次，都在收盤與上櫃補抓 14:20 之後）才會用當天的價格。
+  -- on conflict 只覆蓋 note='auto'，所以重複跑無害、手動快照不受影響。
+  -- 進場位置（規則 15）：把當日高低寫進那一天的交易。
+  -- 一定要在 refresh_futures_prices 之後、而且在收盤後的排程裡跑——
+  -- 盤中記錄的那一筆高低是半途的值，收盤後這支會重算蓋掉。
+  perform public.refresh_trade_range();
+  perform public.auto_snapshot();
 end $$;
 
 -- 基本面。官方每日／每月／每季公告，都很快。

@@ -1,4 +1,4 @@
-import { num, sb, state } from './core.js';
+import { isNum, num, sb, state } from './core.js';
 import { usExposureUsd, usLeverage } from './instruments.js';
 
 // ============================================================
@@ -340,21 +340,127 @@ export const futLotValue = (price, size) => num(price) * num(size || 2000);
 
 // ------------------------------------------------------------
 // 保證金距離：離追繳還有多遠
-//   原始保證金依標的風險係數而定，這裡用 13.5% 當預設，
-//   維持保證金約為原始的 75%。**畫面上要標成「約」**，
-//   實際數字每家期貨商、每檔標的都不同。
+//
+// 2026-10-09 修了兩個錯，兩個都會讓人在該減倉的時候覺得還有空間：
+//
+// 【一】保證金率不是一個固定數字。期交所分三個級距，處置股票還會個別調高：
+//         級距1 維持 10.35%、級距2 12.42%、級距3 15.53%、個別調整最高到 17.60%（金居）。
+//       原本的 `MM_RATE = 13.5% × 0.75 = 10.125%` 是級距 1 的數字，
+//       用他 2026-10-09 的部位實測：真實加權維持率 15.82%，少算 80 萬的維持保證金。
+//       現在改成查 `public.fut_margin`（見 supabase/fut_margin.sql），查不到才退回保守值。
+//
+// 【二】公式漏了分母。原本寫 `pct = (equity − mm) / notional`，
+//       但名目下跌時維持保證金會跟著下降，所以追繳條件是
+//           E − V·x < V(1−x)·m   →   x > (E/V − m) / (1 − m)
+//       少了 (1−m) 這個分母，距離會被低估約 15%。
+//       兩個錯方向相反，但第一個大得多：實測會顯示 14.2% 而真實是 10.2%，**高估安全度 39%**。
+//
+// 查不到費率時的退路用級距 3（15.53%）而不是級距 1。
+// **風險數字猜錯的方向要選「看起來更危險」那一邊**，否則這個欄位的存在反而有害。
 // ------------------------------------------------------------
-export const IM_RATE = 0.135;
-export const MM_RATE = IM_RATE * 0.75;
+export const IM_RATE = 0.2025;              // 級距 3 原始，保守預設
+export const MM_RATE = 0.1553;              // 級距 3 維持，保守預設
 
-export function marginRoom(notional, equity) {
+// 某檔的維持保證金率。個股期貨查 fut_margin；指數期貨是固定金額不是比例，
+// 這裡先用保守預設並在回傳值裡標出來（他目前沒有指數期貨部位）。
+export function mmRateOf(symbol, kind = 'stock') {
+  if (kind !== 'stock') return { rate: MM_RATE, known: false };
+  const row = (state.futMargin || []).find((m) => String(m.symbol) === String(symbol));
+  if (row && num(row.mm_rate) > 0) return { rate: num(row.mm_rate), known: true, tier: row.tier };
+  return { rate: MM_RATE, known: false };
+}
+
+// 整個期貨帳戶的保證金狀態。equity 預設取 balances 裡 kind='futures_equity' 的合計。
+export function marginState(equity) {
+  const eq = isNum(equity) ? num(equity)
+    : (state.balances || []).filter((b) => b.kind === 'futures_equity')
+        .reduce((a, b) => a + num(b.amount) * (b.currency === 'USD' ? (num(state.settings?.usd_twd) || 32) : 1), 0);
+  const legs = [];
+  let notional = 0, maint = 0, unknown = 0;
+  for (const f of state.futures || []) {
+    const v = Math.abs(num(f.lots) * num(f.price) * num(f.size));
+    if (!(v > 0)) continue;
+    const { rate, known, tier } = mmRateOf(f.symbol, f.kind);
+    if (!known) unknown += v;
+    notional += v; maint += v * rate;
+    legs.push({ symbol: f.symbol, label: f.contract || f.symbol, side: f.side === 'short' ? -1 : 1,
+                notional: v, rate, known, tier, weight: 0 });
+  }
+  for (const l of legs) l.weight = notional > 0 ? l.notional / notional : 0;
+  const m = notional > 0 ? maint / notional : 0;
+  // x > (E/V − m) / (1 − m)：名目再跌幾 % 就會被追繳
+  const pct = notional > 0 && m < 1 ? (eq / notional - m) / (1 - m) : null;
+  return { equity: eq, notional, maint, mmBlended: m, pct,
+           amount: pct == null ? null : notional * pct,       // 換成金額
+           unknownShare: notional > 0 ? unknown / notional : 0, legs };
+}
+
+// 舊簽章保留（沒有呼叫端，但留著比較不會有人誤用舊語意）。
+export function marginRoom(notional, equity, mm = MM_RATE) {
   const im = num(notional) * IM_RATE;
-  const mm = num(notional) * MM_RATE;
-  const room = num(equity) - mm;
-  return {
-    im, mm, room,
-    pct: num(notional) > 0 ? room / num(notional) : null,   // 標的跌幾 % 會被追繳
-  };
+  const mmAmt = num(notional) * mm;
+  const room = num(equity) - mmAmt;
+  return { im, mm: mmAmt, room,
+           pct: num(notional) > 0 && mm < 1 ? (num(equity) / num(notional) - mm) / (1 - mm) : null };
+}
+
+// ------------------------------------------------------------
+// N 個交易日內「被追繳至少一次」的機率
+//
+// 為什麼不能用常態近似：追繳是**首次穿越**（first passage），不是期末分布。
+// 用期末分布算會嚴重低估——路徑中途碰到就結束了，不會等到最後一天。
+// 而且他的部位波動有肥尾與相關性，常態近似在左尾最不準。
+//
+// 做法：**聯合重抽**同一個歷史日的所有持股報酬（保留相關係數），
+// 逐日累積、碰到門檻就記一次。預設抽最近 250 個交易日。
+//
+// `drift` 選項很重要：樣本期（2025-10~2026-10）的日平均報酬是 +0.48%
+// ＝年化 +237%，那是過去一年的大多頭。照抄等於假設多頭重演。
+// 預設 'none'（去掉漂移、只保留波動結構），要看樂觀版才傳 'sample'。
+// ------------------------------------------------------------
+export async function callOdds({ horizons = [3, 20, 60], sims = 20000, drift = 'none', window = 250 } = {}) {
+  const st = marginState();
+  if (!(st.notional > 0) || st.pct == null) return null;
+  const legs = st.legs;
+  // 同一檔可能有兩個 leg（大型與小型各一口），所以代號要去重再對齊，
+  // 然後把欄位對回每個 leg —— 直接 `keys.map()` 會在有重複代號時錯位。
+  const symbols = legs.map((l) => String(l.symbol));
+  const uniq = [...new Set(symbols)];
+  const series = await loadSeries(uniq);
+  const missing = uniq.filter((s) => !series.has(s));
+  if (missing.length) {
+    return { ...st, odds: null, missing: legs.filter((l) => missing.includes(String(l.symbol))).map((l) => l.label) };
+  }
+  // 用日期交集對齊，避免停牌把相關係數稀釋掉
+  const aligned = align(series, uniq);
+  if (!aligned || aligned.days.length < 60) return { ...st, odds: null, missing: [] };
+  const colOf = new Map(uniq.map((s, i) => [s, aligned.cols[i]]));
+  const legCols = legs.map((l) => colOf.get(String(l.symbol)));
+  const n = aligned.days.length;
+  const from = Math.max(0, n - window);
+  const w = legs.map((l) => l.side * l.weight);
+  const port = [];
+  for (let t = from; t < n; t++) {
+    let r = 0;
+    for (let i = 0; i < legs.length; i++) r += w[i] * num(legCols[i][t]);
+    port.push(r);
+  }
+  const mu = port.reduce((a, b) => a + b, 0) / port.length;
+  const draw = drift === 'sample' ? port : port.map((v) => v - mu);
+  const x = st.pct;
+  const odds = {};
+  for (const T of horizons) {
+    let hit = 0;
+    for (let s = 0; s < sims; s++) {
+      let lvl = 1;
+      for (let t = 0; t < T; t++) {
+        lvl *= 1 + draw[(Math.random() * draw.length) | 0];
+        if (1 - lvl >= x) { hit++; break; }
+      }
+    }
+    odds[T] = hit / sims;
+  }
+  return { ...st, odds, sampleMu: mu, sampleDays: draw.length, drift, missing: [] };
 }
 
 // 這個跌幅在該波動下是幾個標準差、一個月內走到的機率大約多少

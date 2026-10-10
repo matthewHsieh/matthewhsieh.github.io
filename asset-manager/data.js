@@ -24,6 +24,9 @@ const MARKET_QUERIES = {
   _risk:          () => sb.rpc('app_risk', {}),
   usThemeTrend:   () => sb.rpc('us_theme_trend', {}),
   usThemeMembers: () => sb.rpc('us_theme_members', {}),
+  // 股票期貨的維持保證金率（每檔不同，處置股會個別調高）。
+  // 270 檔、十個欄位，一次取完不會碰到 PostgREST 的 1,000 列上限。
+  futMargin:      () => sb.from('fut_margin').select('symbol,name,tier,mm_rate,im_rate,mm_amt,im_amt'),
   themeMeta:      () => sb.from('theme_meta').select('*'),
   themeLinks:     () => sb.from('theme_links').select('*'),
   themeDay:       () => sb.rpc('theme_day', {}),

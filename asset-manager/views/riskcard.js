@@ -2,7 +2,7 @@ import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, sb, state, toast } fro
 // 這個檔案本來就有一個區域的 refresh(el)，所以改名匯入
 import { refresh as reloadAll } from '../data.js';
 import {
-  IM_RATE, assumedMu, betaVs, dropZ, exposureRows, indexLeverage, indexSignal, loadSeries,
+  assumedMu, betaVs, dropZ, exposureRows, indexLeverage, indexSignal, loadSeries,
   marginRoom, maxSharpe, moveOdds, portVol, riskContrib, riskParity, scaleTo, sharpeOf,
   statsOf, usableKeys,
 } from '../risk.js';
@@ -276,7 +276,8 @@ function currentBlock(c) {
       風險佔比是「這一檔對組合波動的貢獻」，加起來等於 100%。
       <b>它跟曝險佔比常常差很多</b>——高波動的標的用少少的錢就能佔掉大部分風險。
       空單的曝險記成負的，所以它的風險佔比可能是<b>負數</b>，那代表它在扣掉組合的風險，不是壞事。
-      追繳距離假設原始保證金 ${fmtMax(IM_RATE * 100, 1)}%、維持保證金為它的 75%，實際依標的與期貨商而定。</p>`;
+      <b>追繳距離在「總覽」那一頁</b>，維持保證金率是逐檔查期交所的（處置股會個別調高，
+      例如 2026-10 的金居是 17.60%，而級距 1 只有 10.35%），不是用一個固定比例估的。</p>`;
 }
 
 // ---------- 下半：配置試算 ----------

@@ -1,10 +1,11 @@
 import { donutChart } from '../charts.js';
 import { ALERT_LABEL, alertBadge, heldAlerts } from '../alerts.js';
-import { $, $$, esc, fmt, fmtCompact, fmtX, isNum, norm, num, pct, plClass, signed, state, sum } from '../core.js';
+import { $, $$, esc, fmt, fmtCompact, fmtMax, fmtX, isNum, norm, num, pct, plClass, signed, state, sum } from '../core.js';
 import { saveSnapshot } from '../data.js';
 import { ackBannerHtml, ackDisclaimer, disclaimerAcked } from '../legal.js';
 import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
+import { callOdds, marginState } from '../risk.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
 
@@ -29,6 +30,7 @@ export function renderOverview(el) {
       ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), c.netAssets > 0 ? '總資產 ÷ 淨資產' : '淨資產不為正，無法計算')}
       ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), '總曝險 ÷ 總資產')}
     </div>
+    ${marginCard()}
     ${(() => {
       // 持倉裡有被交易所盯上的就要先講。等他自己去點開個股才發現就太晚了。
       const as = heldAlerts();
@@ -147,6 +149,74 @@ export function renderOverview(el) {
   const ackBtn = $('#ack-btn', el);
   if (ackBtn) ackBtn.onclick = () => { ackDisclaimer(); ackBtn.closest('.ack-card').remove(); };
   renderDropWatch($('[data-drop-watch]', el));
+  fillMarginOdds(el);
   bindListActions(el);
   bindStockOpen(el);
+}
+
+// ------------------------------------------------------------
+// 追繳距離
+//
+// 這是做部位決定時最該看、而原本畫面上完全沒有的數字。2026-10-09 之前
+// risk.js 裡的 marginRoom() / moveOdds() 寫好了但沒有任何地方呼叫，
+// 整張卡等於不存在；而那段程式用的費率（10.125%，級距 1）
+// 對持有處置股的帳戶會把安全度高估三成以上。
+//
+// 距離是同步算的（marginState），機率要抓日報酬所以非同步補上。
+// **先把距離畫出來再補機率**：距離是結論，機率是輔助，
+// 不該因為要等一個網路請求而讓最重要的數字延後出現。
+// ------------------------------------------------------------
+function marginCard() {
+  const st = marginState();
+  if (!(st.notional > 0) || st.pct == null) return '';
+  const warn = st.pct < 0.10 ? ' alert-card' : '';
+  const tiers = [...st.legs].sort((a, b) => b.notional - a.notional);
+  return `<div class="card${warn}" data-margin>
+    <div class="row-between">
+      <span class="list-title" role="heading" aria-level="2">追繳距離</span>
+      <span class="sub muted">期貨權益 ${fmt(st.equity)} ／ 名目 ${fmt(st.notional)}</span>
+    </div>
+    <div class="big ${st.pct < 0.10 ? 'loss' : ''}">${fmtMax(st.pct * 100, 1)}%</div>
+    <div class="sub muted">名目再跌這麼多就會被追繳，金額 ${fmt(st.amount)}
+      加權維持保證金率 ${fmtMax(st.mmBlended * 100, 2)}%</div>
+    <div class="rc-scroll"><table class="rc-tab"><thead><tr>
+      <th>標的</th><th>名目</th><th>權重</th><th>維持率</th><th>級距</th></tr></thead><tbody>
+      ${tiers.map((l) => `<tr><td>${esc(l.label)}</td><td>${fmt(l.notional)}</td>
+        <td>${fmt(l.weight * 100)}%</td>
+        <td${l.known ? '' : ' class="loss"'}>${fmtMax(l.rate * 100, 2)}%</td>
+        <td>${esc(l.tier || (l.known ? '個別調整' : '未知，用級距3 估'))}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div data-margin-odds class="sub muted">追繳機率計算中…</div>
+    <p class="hint">維持保證金率逐檔查自期交所（<code>fut_margin</code>，一週重抓一次就夠，
+      只在級距調整或進出處置時會變）。公式是
+      <b>x &gt; (權益／名目 − 維持率) ÷ (1 − 維持率)</b>——
+      名目下跌時維持保證金會跟著降，所以分母不能省，省掉會低估距離約 15%。
+      ${st.unknownShare > 0 ? `<b>⚠ 有 ${fmt(st.unknownShare * 100)}% 的名目查不到費率，用級距 3 估</b>，
+        實際可能更緊。` : ''}</p>
+  </div>`;
+}
+
+async function fillMarginOdds(el) {
+  const box = $('[data-margin-odds]', el);
+  if (!box) return;
+  try {
+    const r = await callOdds({ horizons: [3, 20, 60] });
+    if (!r) { box.remove(); return; }
+    if (!r.odds) {
+      box.innerHTML = r.missing?.length
+        ? `追繳機率算不出來：${r.missing.map(esc).join('、')} 還沒有日報酬資料。`
+        : '追繳機率算不出來：共同交易日不足 60 天。';
+      return;
+    }
+    const f = (p) => `<b class="${p > 0.2 ? 'loss' : ''}">${fmtMax(p * 100, 1)}%</b>`;
+    // 樣本期的漂移要講出來。這一年是大多頭，照抄漂移等於假設它重演，
+    // 所以預設用去漂移版，但把原始漂移印在旁邊讓人知道差多少。
+    const ann = (Math.pow(1 + r.sampleMu, 252) - 1) * 100;
+    box.innerHTML = `<b>追繳機率</b>（拔靴法、聯合重抽 ${r.sampleDays} 個交易日、已去除漂移）：
+      3 日 ${f(r.odds[3])}　20 日 ${f(r.odds[20])}　60 日 ${f(r.odds[60])}
+      <br>樣本期日均報酬 ${fmtMax(r.sampleMu * 100, 3)}%（年化 ${fmtMax(ann, 0)}%），
+      已從模擬中扣除——照抄它等於假設這一年的行情重演。`;
+  } catch {
+    box.textContent = '追繳機率計算失敗。';
+  }
 }

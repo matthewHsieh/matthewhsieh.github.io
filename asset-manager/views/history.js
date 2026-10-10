@@ -87,6 +87,36 @@ function crossTable(rs) {
   </table></div>`;
 }
 
+// ------------------------------------------------------------
+// 進場位置（規則 15）
+//
+//   (成交價 − 當日最低) ÷ (當日最高 − 當日最低)
+//
+// 2026-10-07 用他 9/08 以來 103 筆買進實測，這個數字把賺賠分得很乾淨：
+//   第 0–33 百分位 30 筆 → 當日收盤報酬中位 +0.89%、隔日 +2.35%、為正 53%
+//   第 66–100 百分位 24 筆 → 當日 −1.10%、隔日 −1.93%、**為正只有 13%**
+//   相關係數 −0.53。那一週所有虧損的買進都落在第 65–87 百分位。
+//
+// **買進看低、賣出看高**，所以配色要分邊。買在低檔是好的、賣在低檔是「賣飛」。
+// 高低價由 refresh_trade_range() 在收盤後寫入（期貨用期貨的區間，不是現股的）。
+const dayPos = (t) => {
+  const lo = num(t.day_low), hi = num(t.day_high);
+  if (!(hi > lo)) return null;
+  return (num(t.price) - lo) / (hi - lo);
+};
+
+function posBadge(t) {
+  const p = dayPos(t);
+  if (p === null) return '';
+  const v = Math.round(p * 100);
+  // 買進：低＝好。賣出：高＝好。只有「明顯不好」那一邊上紅字，中段不上色，
+  // 免得每一列都有顏色反而看不出重點。
+  const bad = t.side === 'buy' ? p > 0.70 : p < 0.30;
+  const good = t.side === 'buy' ? p < 0.33 : p > 0.67;
+  const cls = bad ? ' loss' : good ? ' gain' : '';
+  return `・<span class="${cls.trim()}" title="成交價在當日區間的位置。買進越低越好、賣出越高越好。">位置 ${v}%</span>`;
+}
+
 export function renderHistory(el) {
   const snaps = state.snapshots;
   const trades = state.trades.slice(0, 200);
@@ -126,6 +156,32 @@ export function renderHistory(el) {
         當沖以你記錄時勾選的為準，不做推斷。
         未實現損益請看「持倉」頁。這裡不會自動調整你的現金餘額，現金請在「資金」頁自行維護。</p>
     </div>
+    ${(() => {
+      // 規則 15 的檢查：買進的進場位置中位須低於 50%、任一筆不得高於 70%。
+      const buys = trades.filter((t) => keep(t) && t.side === 'buy' && dayPos(t) !== null);
+      if (!buys.length) return '';
+      const ps = buys.map(dayPos).sort((a, b) => a - b);
+      const med = ps.length % 2 ? ps[(ps.length - 1) / 2] : (ps[ps.length / 2 - 1] + ps[ps.length / 2]) / 2;
+      const over = buys.filter((t) => dayPos(t) > 0.70);
+      const okMed = med < 0.50;
+      return `<div class="card${okMed && !over.length ? '' : ' alert-card'}">
+        <div class="row-between">
+          <span class="list-title" role="heading" aria-level="2">進場位置（規則 15）</span>
+          <span class="sub muted">${fmt(buys.length)} 筆買進有當日高低</span>
+        </div>
+        <div class="big ${okMed ? 'gain' : 'loss'}">${fmt(med * 100)}%</div>
+        <div class="sub muted">買進位置中位數。規則 15：中位須低於 50%、任一筆不得高於 70%。</div>
+        ${over.length ? `<p class="hint warn-hint">⚠ 有 <b>${fmt(over.length)} 筆</b>高於 70%：${
+          over.slice(0, 6).map((t) => `${esc(t.name || t.symbol)} ${fmtMax(t.price, 2)}（${fmt(dayPos(t) * 100)}%）`).join('、')
+        }${over.length > 6 ? ' 等' : ''}</p>` : '<p class="hint">目前沒有任何一筆買進高於 70%。</p>'}
+        <p class="hint">2026-10-07 實測他 103 筆買進：第 0–33 百分位那 30 筆當日收盤報酬中位
+          <b>+0.89%</b>、隔日 +2.35%；第 66–100 百分位那 24 筆是 <b>−1.10%</b>、隔日 −1.93%，
+          <b>當日為正只有 13%</b>。相關係數 −0.53。<br>
+          高低價在收盤後自動寫入，<b>個股期貨用期貨自己的區間</b>——
+          2026-10-08 金居期貨是 536–549 而現股只有 533–542，用現股算會算出超過 100% 的位置。
+          盤中記錄的交易當天會先拿到半途的高低，收盤後會重算。</p>
+      </div>`;
+    })()}
     ${tradeButton()}
     <div class="card list">
       <div class="row-between">
@@ -187,6 +243,7 @@ export function renderHistory(el) {
                     ? `沖銷 ${fmtQty(t.market, matched.qty)} @ ${fmtMax(matched.openAvg, 2)} → ${fmtMax(t.price, 2)}・` : ''
                   }${TRADE_KINDS[tradeKindOf(t)]?.label || MARKET_LABEL[t.market] || ''}${
                     t.market === 'futures' && t.fut_kind === 'stock' ? `（${stockFutLabel(t.fut_size)}型）` : ''}${
+                    posBadge(t)}${
                     t.note ? '・' + esc(t.note) : ''}</span>
                 </span>
                 <span class="item-right"><span>${fmtQty(t.market, t.quantity)}</span>
