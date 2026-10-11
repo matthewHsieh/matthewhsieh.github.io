@@ -90,7 +90,78 @@ function strategyName(legs, strikes) {
   return num(long.strike) > num(short.strike) ? '賣權空頭價差' : '賣權多頭價差';
 }
 
-export function optStrategy(legs) {
+// ------------------------------------------------------------
+// 到期前還有幾個「交易日」
+//
+// optDaysLeft 是日曆天，算漲跌幅上下界要用交易日。只扣週末、不扣假日：
+// 多算的那幾天會讓區間變寬，對賣權的最大獲利偏樂觀、對賣方的最大虧損偏保守。
+// 要更準就得接交易日曆，但這個用途不需要——重點是把「指數歸零」這種
+// 到不了的上限換成一個到得了的，少數幾天的誤差是二階的。
+// ------------------------------------------------------------
+export function optTradingDaysLeft(expiry, onISO) {
+  const s = optSettleISO(expiry);
+  if (!s) return null;
+  const from = new Date((onISO || todayISO()) + 'T00:00:00Z');
+  const to = new Date(s + 'T00:00:00Z');
+  // ------------------------------------------------------------
+  // ⚠ optSettleISO 用「當月第 n 個週三／週五」算，**沒有假日調整**。
+  //   期交所遇到結算日是假日會順延到次一營業日：
+  //   2026 年 10 月的第 2 個週五是 10/09，但那天是國慶補假，
+  //   期交所公布 202610F2 的契約到期日是 **10/12**。
+  //   於是 2026-10-11（週六）去看的時候，程式算出的結算日已經過去，
+  //   這支會回 0 個交易日，上下界塌成現價、最大獲利變成「一定賠權利金」。
+  //
+  //   這裡只做一個有界的補救：**名目結算日落在最近 5 天內的過去，
+  //   就往後滾到下一個平日**（假日順延最多就是幾天）。
+  //   真正的修法是接一份台股假日曆，或把期交所報表裡的「契約到期日」存下來
+  //   ——那是另一件事，而且會一併修掉 optExpired／optExpiryLabel
+  //   目前也會把這張還活著的合約標成「已到期」的問題。
+  // ------------------------------------------------------------
+  const gapDays = (from - to) / 86400000;
+  if (gapDays > 0 && gapDays <= 5) {
+    do { to.setUTCDate(to.getUTCDate() + 1); } while (to.getUTCDay() === 0 || to.getUTCDay() === 6);
+  }
+  if (to < from) return 0;
+  let n = 0;
+  for (const d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+    const w = d.getUTCDay();
+    if (w !== 0 && w !== 6) n += 1;
+  }
+  // 今天如果本身是交易日就不算（今天的漲跌幅已經走掉一部分）。
+  // **不能無條件減一**：在週末或假日看的時候今天根本沒開盤，
+  // 減掉會少算一整天——實測 2026-10-11（週六）看 F2（週一結算）會算出 0 個交易日，
+  // 於是上下界等於現價、最大獲利變成「一定賠權利金」。
+  const fw = from.getUTCDay();
+  const todayIsTrading = fw !== 0 && fw !== 6;
+  return Math.max(n - (todayIsTrading ? 1 : 0), 0);
+}
+
+// ------------------------------------------------------------
+// 漲跌幅限制下，到期時指數到得了的上下界
+//
+//   台股個股單日 ±10%，指數是成分股的加權平均，所以指數單日也落在 ±10% 之內。
+//   n 個交易日之後的物理界線就是 現價 × 0.9^n ～ 現價 × 1.1^n。
+//   **這不是機率假設，是市場規則。**
+//
+// 為什麼需要它：`optStrategy` 原本在「指數 = 0」評估最大獲利，
+// 對買進賣權來說那會給出「履約價 × 契約乘數 × 口數」。實測 20 口 48000 賣權
+// 算出 4,794 萬——而連續三日跌停只有 1,199 萬、二十年來長假後最差的三日是 767 萬。
+// **顯示一個物理上到不了的「最大獲利」，比不顯示更糟**：它讓人以為有那麼多上檔。
+// ------------------------------------------------------------
+const LIMIT = 0.10;
+
+export function optLimitBand(legs, onISO) {
+  const list = (legs || []).filter((o) => num(o.lots) > 0 && num(o.strike) > 0);
+  if (!list.length) return null;
+  // 參考指數用各腳的遠期指數（同一個到期別應該一致），取有值的第一個
+  const ref = num(list.map((o) => num(o.forward)).find((v) => v > 0));
+  if (!(ref > 0)) return null;
+  const n = optTradingDaysLeft(list[0].expiry, onISO);
+  if (n === null) return null;
+  return { ref, days: n, floor: ref * (1 - LIMIT) ** n, ceiling: ref * (1 + LIMIT) ** n };
+}
+
+export function optStrategy(legs, onISO) {
   const list = (legs || []).filter((o) => num(o.lots) > 0 && num(o.strike) > 0);
   if (!list.length) return null;
   const strikes = [...new Set(list.map((o) => num(o.strike)))].sort((a, b) => a - b);
@@ -106,9 +177,28 @@ export function optStrategy(legs) {
 
   const upUnlimited = slopeUp > 1e-9;
   const downUnlimited = slopeUp < -1e-9;
+
+  // 漲跌幅限制下的版本：在 [floor, 各履約價, ceiling] 之間找最好與最壞。
+  // 這一版永遠有數字（物理界線是有限的），所以畫面可以拿它當主顯示，
+  // 把「理論上限 / 無上限」降級成註腳。
+  const band = optLimitBand(list, onISO);
+  let bandGain = null, bandLoss = null, bandGainAt = null, bandLossAt = null;
+  if (band) {
+    const pts = [band.floor, ...strikes.filter((k) => k > band.floor && k < band.ceiling), band.ceiling];
+    let bg = -Infinity, bl = Infinity;
+    for (const s of pts) {
+      const v = optPnlAt(list, s);
+      if (v > bg) { bg = v; bandGainAt = s; }
+      if (v < bl) { bl = v; bandLossAt = s; }
+    }
+    bandGain = bg; bandLoss = bl;
+  }
+
   return {
     legs: list.length,
     strikes,
+    band,                                           // { ref, days, floor, ceiling }
+    bandGain, bandLoss, bandGainAt, bandLossAt,     // 漲跌幅限制下，永遠有數字
     // null 代表沒有上限
     maxGain: upUnlimited ? null : best,
     maxLoss: downUnlimited ? null : worst,          // 負數
@@ -122,7 +212,7 @@ export function optStrategy(legs) {
 }
 
 // 按到期別分組，每組各算一條到期損益線
-export function optStrategies(legs) {
+export function optStrategies(legs, onISO) {
   const by = new Map();
   for (const o of legs || []) {
     const k = String(o.expiry || '');
@@ -130,7 +220,7 @@ export function optStrategies(legs) {
     by.get(k).push(o);
   }
   return [...by.entries()]
-    .map(([expiry, list]) => ({ expiry, ...optStrategy(list) }))
+    .map(([expiry, list]) => ({ expiry, ...optStrategy(list, onISO) }))
     .filter((x) => x.legs)
     .sort((a, b) => a.expiry.localeCompare(b.expiry));
 }

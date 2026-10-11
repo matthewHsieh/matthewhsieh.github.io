@@ -5,6 +5,7 @@ import { saveSnapshot } from '../data.js';
 import { ackBannerHtml, ackDisclaimer, disclaimerAcked } from '../legal.js';
 import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
+import { optPnlAt } from '../instruments.js';
 import { callOdds, marginState } from '../risk.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
@@ -105,11 +106,21 @@ export function renderOverview(el) {
     ${state.options.length ? `<div class="card list">
       <div class="list-title" role="heading" aria-level="2">選擇權風險</div>
       ${line('權利金市值（買方正、賣方負）', c.optMarket)}
-      ${line('delta 曝險（絕對值加總）', c.optExposure)}
+      ${line('delta 曝險（買方淨、賣方毛）', c.optExposure)}
       ${line('淨方向部位（多為正）', c.optNetDelta)}
+      ${c.optBandOk ? `
+      <div class="row-between line"><span><b>到期最大虧損</b>（漲跌幅限制下）</span><span class="${
+        c.optBandLoss < 0 ? 'loss' : ''}">${fmt(Math.min(0, c.optBandLoss))}</span></div>
+      <div class="row-between line"><span><b>到期最大獲利</b>（漲跌幅限制下）</span><span>${
+        fmt(Math.max(0, c.optBandGain))}</span></div>
+      <div class="row-between line sub-line"><span>　└ 理論界線（指數歸零／無限遠）</span><span class="muted">${
+        c.optRiskUnlimited ? '虧損無上限' : `虧損 ${fmt(c.optMaxLoss)}`}　${
+        c.optMaxGain === null ? '獲利無上限' : `獲利 ${fmt(c.optMaxGain)}`}</span></div>
+      ${optPayoffTable(c)}
+      ` : `
       <div class="row-between line"><span>到期最大虧損</span><span class="${c.optRiskUnlimited ? 'loss' : ''}">${
         c.optRiskUnlimited ? '無上限（賣出買權沒有被接住）' : fmt(c.optMaxLoss)}</span></div>
-      ${c.optMaxGain === null ? '' : line('到期最大獲利', c.optMaxGain)}
+      ${c.optMaxGain === null ? '' : line('到期最大獲利', c.optMaxGain)}`}
       <p class="hint">最大損益是<b>按到期別整組算的</b>，不是一腳一腳加起來——賣出買權只要有一口
         履約價更高的買進買權接住，上方就封頂了，那是買權多頭價差。<br>
         delta 曝險是線性近似，大幅波動時實際曝險會比這個數字放大（gamma），賣方尤其明顯。
@@ -170,6 +181,51 @@ export function renderOverview(el) {
   fillMarginOdds(el);
   bindListActions(el);
   bindStockOpen(el);
+}
+
+// ------------------------------------------------------------
+// 選擇權到期損益表
+//
+// 為什麼需要它：最大損益只給兩個端點，而中間長什麼樣常常跟直覺相反。
+// 實測 2026-10-09 的 20 口 48000 賣權：delta 曝險是 −552 萬，
+// 線性外推「指數跌 6.6%」應該值 36 萬，實際到期值 194 萬——**差 5.3 倍**。
+// 那個差額就是凸性，也正是買價外賣權的理由。**delta 看不到它，這張表看得到。**
+//
+// 反過來小跌的時候 delta 會高估：跌 1~2% 時線性說賺 5~11 萬，
+// 實際到期是歸零（還在價外）。所以 delta 只在很窄的一段有效，
+// 兩頭都錯而且方向相反——這是最該讓人看到的一件事。
+// ------------------------------------------------------------
+function optPayoffTable(c) {
+  const plans = c.optPlans || [];
+  const ref = num(plans.find((p) => p.band)?.band?.ref);
+  if (!(ref > 0)) return '';
+  const moves = [0.02, 0, -0.02, -0.03, -0.05, -0.07, -0.10];
+  const delta = num(c.optNetDelta);
+  return `<div class="rc-scroll"><table class="rc-tab"><thead><tr>
+      <th>到期指數</th><th>相對現在</th><th>整組到期損益</th><th>delta 線性預測</th><th>實際÷線性</th>
+    </tr></thead><tbody>
+    ${moves.map((m) => {
+      const s = ref * (1 + m);
+      const pnl = plans.reduce((a, p) => a + optPnlAt(state.options.filter((o) => String(o.expiry) === p.expiry), s), 0);
+      const lin = delta * m;                       // delta 曝險 × 指數變動率
+      // **只在兩者同號且實際為正時給倍數。** 反號的時候（例如指數小跌，
+      // delta 線性說賺但實際到期歸零）算出來是 −0.5x 這種讀不出意思的數字，
+      // 而那一格真正該傳達的是「delta 說會賺，實際不會」，用文字講比用倍數講清楚。
+      const ratio = pnl > 0 && lin > 0 ? pnl / lin : null;
+      return `<tr>
+        <td>${fmt(s)}</td>
+        <td>${m === 0 ? '不動' : `${m > 0 ? '+' : ''}${fmtMax(m * 100, 1)}%`}</td>
+        <td class="${plClass(pnl)}">${signed(pnl)}</td>
+        <td class="muted">${signed(lin)}</td>
+        <td>${ratio === null ? '–' : `${fmtMax(ratio, 1)}x`}</td></tr>`;
+    }).join('')}
+    </tbody></table></div>
+    <p class="hint"><b>「delta 線性預測」那一欄是用 delta 曝險 ${fmt(delta)} 乘上指數變動率算的，
+      拿來跟實際對照。</b>兩者差很多的地方就是凸性——買價外賣權買的正是那一段，
+      而 delta 完全看不到它。小跌時 delta 反而高估（還在價外，到期歸零），
+      所以 <b>delta 只在很窄的一段有效，兩頭都錯而且方向相反</b>。<br>
+      這也是 SEC 2020 年 Rule 18f-4 把 notional／delta 測試換成 VaR 的理由：
+      notional 與 delta 都不是風險測度。</p>`;
 }
 
 // ------------------------------------------------------------

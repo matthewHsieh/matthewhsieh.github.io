@@ -129,6 +129,22 @@ export function compute() {
     : optPlans.reduce((a, p) => a + Math.max(0, -p.maxLoss), 0);
   const optMaxGain = optPlans.some((p) => p.maxGain === null) ? null
     : optPlans.reduce((a, p) => a + p.maxGain, 0);
+  // ------------------------------------------------------------
+  // 漲跌幅限制下的最大損益（2026-10-11 加）
+  //
+  //   上面那兩個是在「指數 = 0」與「無限遠」評估的理論界線。數學上對，
+  //   但對買進賣權來說「指數歸零」給出的是履約價 × 乘數 × 口數——
+  //   實測 20 口 48000 賣權算出 4,794 萬，而連續三日跌停只有 1,199 萬、
+  //   二十年來長假後最差的三日是 767 萬。**顯示一個到不了的「最大獲利」
+  //   比不顯示更糟**，因為它讓人以為有那麼多上檔。
+  //
+  //   台股個股單日 ±10%、指數是加權平均，所以 n 個交易日後指數的物理界線
+  //   是 現價 × 0.9^n ～ 現價 × 1.1^n。這不是機率假設，是市場規則。
+  //   這一版永遠有數字（含賣出買權），所以畫面拿它當主顯示。
+  // ------------------------------------------------------------
+  const optBandOk = optPlans.length > 0 && optPlans.every((p) => p.band);
+  const optBandGain = optBandOk ? optPlans.reduce((a, p) => a + p.bandGain, 0) : null;
+  const optBandLoss = optBandOk ? optPlans.reduce((a, p) => a + p.bandLoss, 0) : null;
   const optNoDelta = opts.some((o) => !isNum(o.delta));
 
   // 權證
@@ -164,7 +180,7 @@ export function compute() {
   return {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
-    optMarket, optExposure, optGrossExp, optNetDelta, optProfit, optMaxLoss, optMaxGain, optPlans, optRiskUnlimited, optNoDelta,
+    optMarket, optExposure, optGrossExp, optNetDelta, optProfit, optMaxLoss, optMaxGain, optBandGain, optBandLoss, optBandOk, optPlans, optRiskUnlimited, optNoDelta,
     warMarket, warExp, warProfit, warMaxLoss, warNoBasis, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,
