@@ -27,6 +27,9 @@ const MARKET_QUERIES = {
   // 股票期貨的維持保證金率（每檔不同，處置股會個別調高）。
   // 270 檔、十個欄位，一次取完不會碰到 PostgREST 的 1,000 列上限。
   futMargin:      () => sb.from('fut_margin').select('symbol,name,tier,mm_rate,im_rate,mm_amt,im_amt'),
+  // 期交所公布的選擇權契約到期日。推算（第 n 個週三／週五）撞到假日會錯，
+  // 而錯的後果是把還活著的合約標成「已到期」——見 instruments.js 的 optSettleISO。
+  optSettle:      () => sb.from('opt_settle').select('expiry,settle_date'),
   themeMeta:      () => sb.from('theme_meta').select('*'),
   themeLinks:     () => sb.from('theme_links').select('*'),
   themeDay:       () => sb.rpc('theme_day', {}),

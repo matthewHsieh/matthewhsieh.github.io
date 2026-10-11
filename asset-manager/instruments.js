@@ -103,20 +103,12 @@ export function optTradingDaysLeft(expiry, onISO) {
   if (!s) return null;
   const from = new Date((onISO || todayISO()) + 'T00:00:00Z');
   const to = new Date(s + 'T00:00:00Z');
-  // ------------------------------------------------------------
-  // ⚠ optSettleISO 用「當月第 n 個週三／週五」算，**沒有假日調整**。
-  //   期交所遇到結算日是假日會順延到次一營業日：
-  //   2026 年 10 月的第 2 個週五是 10/09，但那天是國慶補假，
-  //   期交所公布 202610F2 的契約到期日是 **10/12**。
-  //   於是 2026-10-11（週六）去看的時候，程式算出的結算日已經過去，
-  //   這支會回 0 個交易日，上下界塌成現價、最大獲利變成「一定賠權利金」。
-  //
-  //   這裡只做一個有界的補救：**名目結算日落在最近 5 天內的過去，
-  //   就往後滾到下一個平日**（假日順延最多就是幾天）。
-  //   真正的修法是接一份台股假日曆，或把期交所報表裡的「契約到期日」存下來
-  //   ——那是另一件事，而且會一併修掉 optExpired／optExpiryLabel
-  //   目前也會把這張還活著的合約標成「已到期」的問題。
-  // ------------------------------------------------------------
+  // 第二道防線：optSettleISO 現在優先用期交所公布的到期日，所以正常情況下
+  // 不會拿到「已經過去」的日期。但如果 opt_settle 還沒抓、或新掛牌的到期別
+  // 還沒進表，就會退回推算值，而推算撞到假日會落在過去
+  // （2026/10 的第 2 個週五是 10/09 國慶補假，真正的到期日是 10/12）。
+  // 那時至少把它往後滾到下一個平日，不要讓上下界塌成現價、
+  // 把「最大獲利」算成「一定賠權利金」。假日順延最多就是幾天，所以限 5 天內。
   const gapDays = (from - to) / 86400000;
   if (gapDays > 0 && gapDays <= 5) {
     do { to.setUTCDate(to.getUTCDate() + 1); } while (to.getUTCDay() === 0 || to.getUTCDay() === 6);
@@ -379,8 +371,28 @@ function nthDow(y, m, dow, n) {
   return d.getMonth() === m - 1 ? d : null;
 }
 
+// ------------------------------------------------------------
+// 契約到期日
+//
+// **先查期交所公布的權威值（opt_settle），推算只是 fallback。**
+//
+// 推算規則是「當月第 n 個週三（W）／週五（F）」，但期交所遇到結算日是假日
+// 會順延到次一營業日，而推算不知道假日在哪裡：
+//   2026 年 10 月的第 2 個週五是 10/09（國慶補假），
+//   期交所公布的 202610F2 契約到期日是 **10/12**。
+// 後果不是差一天 —— optExpired() 會回 true，所以一張還活著的合約被標成
+// 「已到期」、optDaysLeft() 變負的、到期損益的漲跌幅上下界塌成現價。
+// 實測 2026-10-11 就是這個狀況（他持有的 F2 週一才結算）。
+//
+// 權威值由 scripts/fetch-opt-settle.mjs 從期交所的 HTML 日報表抓
+// （openapi 的 JSON 版沒有這一欄），一週跑一次就夠：到期別掛牌後日期不會變。
+// 查不到就退回推算 —— 大多數月份推算是對的，只有撞到假日才差。
+// ------------------------------------------------------------
 export function optSettleISO(expiry) {
-  const m = String(expiry || '').trim().toUpperCase().match(/^(\d{4})(\d{2})(?:([WF])(\d))?$/);
+  const key = String(expiry || '').trim().toUpperCase();
+  const row = (state.optSettle || []).find((x) => String(x.expiry).toUpperCase() === key);
+  if (row?.settle_date) return String(row.settle_date).slice(0, 10);
+  const m = key.match(/^(\d{4})(\d{2})(?:([WF])(\d))?$/);
   if (!m) return null;
   if (!m[3]) return futSettleISO(m[1] + m[2]);   // 月選跟期貨同一天結算
   return dateISO(nthDow(Number(m[1]), Number(m[2]), m[3] === 'F' ? 5 : 3, Number(m[4])));
