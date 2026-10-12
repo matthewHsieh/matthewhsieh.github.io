@@ -228,20 +228,65 @@ revoke all on function public.refresh_alerts() from public, anon;
 -- ------------------------------------------------------------
 -- 現在還有效的警示。處置看期間有沒有過，注意與快達門檻看最近幾天。
 -- ------------------------------------------------------------
+-- 注意：回傳型別改過，重跑這一段要先 drop。
+drop function if exists public.active_alerts(integer);
+
+-- 處置倒數：連續幾次、十個營業日內幾次、最近一次是第幾個營業日前
+--
+-- 為什麼原本的 `notices`（近 30 天次數）不夠用：處置的門檻不是「30 天內幾次」，
+-- 是**連續 N 個營業日**或**十個營業日內六次**。30 天次數跟那兩個門檻都不對齊，
+-- 看起來像個指標但推不出「還差幾次」。
+--
+-- 兩個交易所的連續門檻不同，照 2026-10 的公告原文：
+--   證交所：連續三次 → 第一次處置；連續五次 → 第二次處置
+--   櫃買　：連續5個營業日 → 處置（金居 09/01、09/17、10/07 三次都是這個理由）
+-- 所以門檻要看 src，不能寫死一個數字。
+--
+-- streak 只有在 last_rn = 1（最近一次注意就在上一個營業日）時才算活的。
+-- 連續的定義是**數到現在**，中間斷掉時鐘就重設；拿歷史上的連續次數當警告
+-- 會一直亮紅燈，然後他就不看了。
 create or replace function public.active_alerts(p_days integer default 10)
 returns table (symbol text, name text, kind text, level text,
                start_d date, end_d date, as_of date, reason text, detail text,
-               match_min integer, prepay_lots integer, notices integer)
+               match_min integer, prepay_lots integer, notices integer,
+               streak integer, win10 integer, last_rn integer, src text)
 language sql stable security definer set search_path = public as $fn$
-  with live as (
-    select a.*,
-           case a.kind when 'punish' then 3 when 'near' then 2 else 1 end as sev
+  with cal as (
+    -- 交易日曆用 risk_stats 裡 TAIEX 的 ret_days（epoch 日整數）。
+    -- **不要用 price_history**：它三年間只有 10 個不同日期（稀疏快照），
+    -- join 上去會安靜地回 streak = 0——看起來像「沒有連續」而不是「算不出來」，
+    -- 而那個方向的錯誤正好會讓人以為沒事。
+    -- 指數每個交易日都有報價，所以它就是權威的營業日清單，假日順延自然正確。
+    select d, row_number() over (order by d desc) as rn
+    from (select distinct (date '1970-01-01' + u.v)::date as d
+          from public.risk_stats r, unnest(r.ret_days) as u(v)
+          where r.symbol = 'TAIEX') z
+    where d <= current_date
+  ),
+  nd as (
+    select a.symbol, c.rn
+    from public.trade_alerts a join cal c on c.d = a.as_of
+    where a.kind = 'notice' and c.rn <= 20
+  ),
+  isl as (
+    select symbol, rn,
+           rn - row_number() over (partition by symbol order by rn) as grp,
+           min(rn) over (partition by symbol) as m
+    from nd
+  ),
+  cd as (
+    select i.symbol,
+           count(*) filter (where i.grp = i.m - 1)::int as streak,   -- 含最近一次的那一段
+           count(*) filter (where i.rn <= 10)::int      as win10,
+           min(i.m)::int                                as last_rn
+    from isl i group by i.symbol
+  ),
+  live as (
+    select a.*, case a.kind when 'punish' then 3 when 'near' then 2 else 1 end as sev
     from public.trade_alerts a
     where (a.kind = 'punish' and a.end_d >= current_date)
        or (a.kind <> 'punish' and a.as_of >= current_date - p_days)
   ),
-  -- 同一檔可能同時有處置與注意，只留最嚴重的那一筆。
-  -- 但注意的「次數」本身就是訊息（連續五次就會被處置），所以另外算近 30 天幾次。
   cnt as (
     select symbol, count(*)::int as notices
     from public.trade_alerts
@@ -250,9 +295,13 @@ language sql stable security definer set search_path = public as $fn$
   )
   select distinct on (l.symbol)
          l.symbol, l.name, l.kind, l.level, l.start_d, l.end_d, l.as_of,
-         l.reason, l.detail, l.match_min, l.prepay_lots, coalesce(c.notices, 0)
-  from live l left join cnt c on c.symbol = l.symbol
+         l.reason, l.detail, l.match_min, l.prepay_lots, coalesce(c.notices, 0),
+         coalesce(d.streak, 0), coalesce(d.win10, 0), d.last_rn, l.src
+  from live l
+  left join cnt c on c.symbol = l.symbol
+  left join cd  d on d.symbol = l.symbol
   order by l.symbol, l.sev desc, l.as_of desc;
 $fn$;
 
 grant execute on function public.active_alerts(integer) to authenticated;
+revoke all on function public.active_alerts(integer) from public, anon;

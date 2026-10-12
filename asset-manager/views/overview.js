@@ -6,7 +6,8 @@ import { ackBannerHtml, ackDisclaimer, disclaimerAcked } from '../legal.js';
 import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
 import { optPnlAt } from '../instruments.js';
-import { callOdds, marginState } from '../risk.js';
+import { alertOf } from '../alerts.js';
+import { callOdds, marginShocks, marginState, requiredRiskPct } from '../risk.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
 
@@ -243,28 +244,62 @@ function optPayoffTable(c) {
 function marginCard() {
   const st = marginState();
   if (!(st.notional > 0) || st.pct == null) return '';
-  const warn = st.pct < 0.10 ? ' alert-card' : '';
-  const tiers = [...st.legs].sort((a, b) => b.notional - a.notional);
+  const sh = marginShocks(st);
+  const req = requiredRiskPct(st, sh);
+  const short = req.pct - (st.riskPct ?? 0);                 // 差幾個百分點
+  const warn = st.pct < 0.10 || short > 0 ? ' alert-card' : '';
   return `<div class="card${warn}" data-margin>
     <div class="row-between">
-      <span class="list-title" role="heading" aria-level="2">追繳距離</span>
+      <span class="list-title" role="heading" aria-level="2">保證金</span>
       <span class="sub muted">期貨權益 ${fmt(st.equity)} ／ 名目 ${fmt(st.notional)}</span>
     </div>
-    <div class="big ${st.pct < 0.10 ? 'loss' : ''}">${fmtMax(st.pct * 100, 1)}%</div>
-    <div class="sub muted">名目再跌這麼多就會被追繳，金額 ${fmt(st.amount)}
-      加權維持保證金率 ${fmtMax(st.mmBlended * 100, 2)}%</div>
+    <div class="margin-kpi">
+      <div><div class="sub muted">風險指標</div>
+        <div class="big ${(st.riskPct ?? 1) < 1 ? 'loss' : ''}">${fmtMax((st.riskPct ?? 0) * 100, 1)}%</div>
+        <div class="sub muted">權益 ÷ 原始保證金 ${fmt(st.init)}<br>低於 100% 會收到保證金不足通知</div></div>
+      <div><div class="sub muted">必要風險指標</div>
+        <div class="big ${short > 0 ? 'loss' : ''}">${fmtMax(req.pct * 100, 1)}%</div>
+        <div class="sub muted">${req.worst
+          ? `撐過「${esc(req.worst.label)}被處置」所需${short > 0
+              ? `<br><b class="loss">差 ${fmtMax(short * 100, 1)} 個百分點</b>`
+              : `<br>目前多 ${fmtMax(-short * 100, 1)} 個百分點`}`
+          : '所有部位費率都已到頂，沒有進一步調升空間'}</div></div>
+      <div><div class="sub muted">追繳距離</div>
+        <div class="big ${st.pct < 0.10 ? 'loss' : ''}">${fmtMax(st.pct * 100, 1)}%</div>
+        <div class="sub muted">名目再跌這麼多會被追繳<br>金額 ${fmt(st.amount)}
+          ／加權維持率 ${fmtMax(st.mmBlended * 100, 2)}%</div></div>
+    </div>
+    <div class="sub" style="margin-top:.6rem"><b>如果這一檔被處置</b>
+      <span class="muted">（費率調到階梯上的 ×2 那一格；×1.5 是較溫和的先例）</span></div>
     <div class="rc-scroll"><table class="rc-tab"><thead><tr>
-      <th>標的</th><th>名目</th><th>權重</th><th>維持率</th><th>級距</th></tr></thead><tbody>
-      ${tiers.map((l) => `<tr><td>${esc(l.label)}</td><td>${fmt(l.notional)}</td>
-        <td>${fmt(l.weight * 100)}%</td>
-        <td${l.known ? '' : ' class="loss"'}>${fmtMax(l.rate * 100, 2)}%</td>
-        <td>${esc(l.tier || (l.known ? '個別調整' : '未知，用級距3 估'))}</td></tr>`).join('')}
+      <th>標的</th><th>名目</th><th>佔保證金</th><th>原始率</th>
+      <th>處置後</th><th>風險指標</th><th>等效跌幅</th></tr></thead><tbody>
+      ${sh.map((x) => {
+        const a = alertOf(x.symbol);
+        const badge = a ? ' ' + alertBadge(a) : '';
+        if (x.capped) return `<tr><td>${esc(x.label)}${badge}</td><td>${fmt(x.notional)}</td>
+          <td>${fmt(x.share * 100)}%</td><td>${fmtMax(x.imRate * 100, 2)}%</td>
+          <td colspan="3" class="muted">已達頂格（45.90%），沒有進一步調升空間</td></tr>`;
+        return `<tr><td>${esc(x.label)}${badge}</td><td>${fmt(x.notional)}</td>
+          <td>${fmt(x.share * 100)}%</td><td>${fmtMax(x.imRate * 100, 2)}%</td>
+          <td>${fmtMax(x.toRate * 100, 2)}%<span class="muted"> ／${fmtMax(x.toRateMild * 100, 2)}%</span></td>
+          <td class="${(x.riskPct ?? 1) < 1 ? 'loss' : ''}">${fmtMax((x.riskPct ?? 0) * 100, 1)}%<span class="muted"> ／${fmtMax((x.riskPctMild ?? 0) * 100, 1)}%</span></td>
+          <td>${x.equivDrop == null ? '—' : fmtMax(x.equivDrop * 100, 1) + '%'}</td></tr>`;
+      }).join('')}
     </tbody></table></div>
     <div data-margin-odds class="sub muted">追繳機率計算中…</div>
-    <p class="hint">維持保證金率逐檔查自期交所（<code>fut_margin</code>，一週重抓一次就夠，
-      只在級距調整或進出處置時會變）。公式是
-      <b>x &gt; (權益／名目 − 維持率) ÷ (1 − 維持率)</b>——
-      名目下跌時維持保證金會跟著降，所以分母不能省，省掉會低估距離約 15%。
+    <p class="hint">費率逐檔查自期交所（<code>fut_margin</code>）。保證金 =
+      <b>標的證券收盤價 × 2,000 × 適用比例</b>（<b>沒有</b>乘漲停的 1.1——下單程式顯示的是
+      券商預收，比規定數高一成，拿它當釋出額會高估減倉效果）。追繳距離
+      <b>x &gt; (權益／名目 − 維持率) ÷ (1 − 維持率)</b>，
+      名目下跌時維持保證金會跟著降，分母省掉會低估距離約 15%。
+      <br><b>必要風險指標 = 1 + 最大「還有調升空間」部位佔原始保證金比</b>，是恆等式：
+      費率調升後總額變 M+Δ，要維持 100% 就需要 E ≥ M+Δ。已在頂格的部位要排除，
+      否則會對已經發生的事重複收費。
+      <br><b>為什麼要有這張表</b>：2026-10-12 他沒有被價格打到——金居收 525、成本 525.74，
+      完全平盤——是被<b>盤後公告</b>打到的，費率 22.95% → 45.90% 讓風險指標一夜從 103% 掉到 81%，
+      等效於名目虧 6.5%（約 1.6σ）。而處置是<b>規則觸發</b>不是隨機事件：
+      連續 5 次或十日內 6 次達注意標準就處置，<code>trade_alerts</code> 裡數得出來。
       ${st.unknownShare > 0 ? `<b>⚠ 有 ${fmt(st.unknownShare * 100)}% 的名目查不到費率，用級距 3 估</b>，
         實際可能更緊。` : ''}</p>
   </div>`;

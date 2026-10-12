@@ -294,6 +294,27 @@ label input, label select { color: var(--text); }
   line-height: 1.1;
 }
 
+/* 卡片裡的主數字。**原本只有 `.hero .big` 有定義**，所以在普通 .card 裡寫
+   class="big" 等於沒有樣式——總覽的「追繳距離」與紀錄頁的「買進位置中位數」
+   這兩個結論數字一直以正文字級在顯示，看起來跟旁邊的說明文字一樣重。
+   給 .big 一個獨立定義，.hero 靠較高的選擇器權重繼續用更大的字級。 */
+.big {
+  font-size: var(--fs-xl); font-weight: 800; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; margin: var(--sp-1) 0;
+  line-height: 1.15;
+}
+
+/* 保證金卡的三個結論數字（風險指標／必要風險指標／追繳距離）。
+   **手機先單欄**：三個 .big 併排會把「撐過某檔被處置所需」那行說明擠成四五行，
+   而那行字正是整張卡的重點。寬螢幕才並排。 */
+.margin-kpi { display: grid; grid-template-columns: 1fr; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.margin-kpi > div {
+  padding: var(--sp-2); border-radius: 10px;
+  background: var(--card-2); border: 1px solid var(--border);
+}
+.margin-kpi .big { margin: var(--sp-1) 0 2px; }
+@media (min-width: 600px) { .margin-kpi { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
 /* 欄位名。**顏色不能再弱下去了**——它是「這個數字是什麼」的唯一說明。
    要跟數值分開靠的是字級與字重的落差，不是把它調到看不清楚。 */
 .label {

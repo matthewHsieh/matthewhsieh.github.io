@@ -344,7 +344,7 @@ export const futLotValue = (price, size) => num(price) * num(size || 2000);
 // 2026-10-09 修了兩個錯，兩個都會讓人在該減倉的時候覺得還有空間：
 //
 // 【一】保證金率不是一個固定數字。期交所分三個級距，處置股票還會個別調高：
-//         級距1 維持 10.35%、級距2 12.42%、級距3 15.53%、個別調整最高到 17.60%（金居）。
+//         級距1 維持 10.35%、級距2 12.42%、級距3 15.53%、個別調整最高到 35.19%（金居，2026-10-12 盤後）。
 //       原本的 `MM_RATE = 13.5% × 0.75 = 10.125%` 是級距 1 的數字，
 //       用他 2026-10-09 的部位實測：真實加權維持率 15.82%，少算 80 萬的維持保證金。
 //       現在改成查 `public.fut_margin`（見 supabase/fut_margin.sql），查不到才退回保守值。
@@ -370,21 +370,71 @@ export function mmRateOf(symbol, kind = 'stock') {
   return { rate: MM_RATE, known: false };
 }
 
+// 某檔的原始保證金率。風險指標＝權益 ÷ 原始保證金，是券商的通知線，
+// 跟維持保證金（追繳線）是兩條不同的線，不要混用。
+export function imRateOf(symbol, kind = 'stock') {
+  if (kind !== 'stock') return { rate: IM_RATE, known: false };
+  const row = (state.futMargin || []).find((m) => String(m.symbol) === String(symbol));
+  if (row && num(row.im_rate) > 0) return { rate: num(row.im_rate), known: true, tier: row.tier };
+  return { rate: IM_RATE, known: false };
+}
+
+// ------------------------------------------------------------
+// 處置造成的保證金調整，以及它的上限
+//
+// 2026-10-12 的教訓：他沒有被價格打到，是被**盤後公告**打到。
+// 金居 10/07 公告處置（10/08～10/15，五週內第三次），他 10/08 在處置第一天
+// 加買兩口，10/12 盤後期交所把費率調到 45.90%，風險指標一夜從 118% 掉到 81%。
+// 要靠價格做出同樣的傷害，名目得虧 7.7%（約 1.9σ）——**而價格一毛沒動。**
+//
+// 【階梯不是乘 2】原始的壓力情境我用「費率 ×2」，那是從金居這一次反推的，錯了。
+// 期交所的費率是一組公布的格子，結構是「結算 × 1.35 = 原始」：
+//     結算  10 / 12 / 15 / 16 / 17 / 22.5 / 34
+//     原始  13.50 / 16.20 / 20.25 / 21.60 / 22.95 / 30.38 / 45.90
+// 實際的處置調整走這個階梯，但**倍數不固定**。兩個同期觀測值：
+//     聯茂 20.25% → 30.38%（×1.50）
+//     金居 22.95% → 45.90%（×2.00）← 結算 17% → 34%，整整一倍
+// 預設用 ×2（金居那個先例），因為這個欄位的用途是「我撐不撐得住」，
+// 猜小了會讓人以為還有空間。×1.5 當溫和情境另外給。
+// 註：金居的 22.95% 本身就已經是調整過的值（級距3 的 20.25% 不在階梯的那一格），
+// 所以它實際走過 20.25% → 22.95% → 45.90% 至少兩段。
+//
+// 【45.90% 是上限】全頁 270 檔裡 45.90% 是最高，第二名只有 30.38%。
+// 風險上也站得住：維持 35.19% 蓋得住連續 4.1 根跌停、原始 45.90% 蓋得住 5.8 根，
+// 結算所沒有理由要更多。所以**已經在頂格的部位不再加壓**——
+// 重複收費會讓最該留意的那幾檔（還有調升空間的）被淹沒在雜訊裡。
+// ------------------------------------------------------------
+export const IM_LADDER = [0.135, 0.162, 0.2025, 0.216, 0.2295, 0.3038, 0.459];
+export const IM_TOP = IM_LADDER[IM_LADDER.length - 1];
+export const DISP_MULT = 2.0;        // 保守：金居 22.95% → 45.90% 實測
+export const DISP_MULT_MILD = 1.5;   // 溫和：聯茂 20.25% → 30.38% 實測
+
+// 若這檔被處置，費率會調到哪一格。已在頂格回 null（＝沒有進一步空間）。
+export function imShockRate(rate, mult = DISP_MULT) {
+  const r = num(rate);
+  if (!(r > 0) || r >= IM_TOP - 1e-9) return null;
+  return IM_LADDER.find((x) => x >= r * mult - 1e-9) ?? IM_TOP;
+}
+
 // 整個期貨帳戶的保證金狀態。equity 預設取 balances 裡 kind='futures_equity' 的合計。
 export function marginState(equity) {
   const eq = isNum(equity) ? num(equity)
     : (state.balances || []).filter((b) => b.kind === 'futures_equity')
         .reduce((a, b) => a + num(b.amount) * (b.currency === 'USD' ? (num(state.settings?.usd_twd) || 32) : 1), 0);
   const legs = [];
-  let notional = 0, maint = 0, unknown = 0;
+  let notional = 0, maint = 0, init = 0, unknown = 0;
   for (const f of state.futures || []) {
     const v = Math.abs(num(f.lots) * num(f.price) * num(f.size));
     if (!(v > 0)) continue;
     const { rate, known, tier } = mmRateOf(f.symbol, f.kind);
+    const im = imRateOf(f.symbol, f.kind);
     if (!known) unknown += v;
-    notional += v; maint += v * rate;
+    notional += v; maint += v * rate; init += v * im.rate;
     legs.push({ symbol: f.symbol, label: f.contract || f.symbol, side: f.side === 'short' ? -1 : 1,
-                notional: v, rate, known, tier, weight: 0 });
+                notional: v, rate, known, tier, weight: 0,
+                imRate: im.rate, imKnown: im.known, imAmt: v * im.rate,
+                shockRate: imShockRate(im.rate),
+                shockRateMild: imShockRate(im.rate, DISP_MULT_MILD) });
   }
   for (const l of legs) l.weight = notional > 0 ? l.notional / notional : 0;
   const m = notional > 0 ? maint / notional : 0;
@@ -392,7 +442,62 @@ export function marginState(equity) {
   const pct = notional > 0 && m < 1 ? (eq / notional - m) / (1 - m) : null;
   return { equity: eq, notional, maint, mmBlended: m, pct,
            amount: pct == null ? null : notional * pct,       // 換成金額
+           init,                                             // 原始保證金
+           imBlended: notional > 0 ? init / notional : 0,
+           riskPct: init > 0 ? eq / init : null,              // 風險指標（<100% 會收到通知）
            unknownShare: notional > 0 ? unknown / notional : 0, legs };
+}
+
+// 每一檔「如果它被處置」的保證金衝擊。
+// 同一代號可能有多列（大型＋小型），所以先按代號合併再算。
+export function marginShocks(st = marginState(), mult = DISP_MULT) {
+  const by = new Map();
+  for (const l of st.legs) {
+    const k = String(l.symbol);
+    const p = by.get(k) || { symbol: k, label: l.label, notional: 0, imAmt: 0, imRate: l.imRate };
+    p.notional += l.notional; p.imAmt += l.imAmt;
+    by.set(k, p);
+  }
+  const out = [];
+  for (const p of by.values()) {
+    const to = imShockRate(p.imRate, mult);
+    const delta = to == null ? 0 : p.notional * (to - p.imRate);
+    const toMild = imShockRate(p.imRate, DISP_MULT_MILD);
+    const deltaMild = toMild == null ? 0 : p.notional * (toMild - p.imRate);
+    const init2 = st.init + delta;
+    out.push({ ...p,
+      share: st.init > 0 ? p.imAmt / st.init : 0,
+      toRate: to,                                            // null = 已在頂格
+      capped: to == null,
+      delta,
+      toRateMild: toMild,
+      riskPctMild: st.init + deltaMild > 0 ? st.equity / (st.init + deltaMild) : null,
+      riskPct: init2 > 0 ? st.equity / init2 : null,
+      // 把制度風險換成價格刻度：要靠價格造成同樣的風險指標下降，名目得跌幾 %。
+      // 不能只寫 Δ·E/(M·V)——價格下跌時**保證金需求也跟著下降**（M = V × 費率），
+      // 所以價格造成的傷害比較輕，要跌更多才等效。解 (E−Vf)/(M(1−f)) = E/(M+Δ)：
+      //     f = E·Δ / (V·(M+Δ) − E·M)
+      // 漏掉那一項會低估約兩成（金居那次：7.7% vs 真值 9.3%），而低估是錯的方向。
+      equivDrop: (() => {
+        const den = st.notional * (st.init + delta) - st.equity * st.init;
+        return delta > 0 && den > 0 ? (st.equity * delta) / den : null;
+      })(),
+    });
+  }
+  return out.sort((a, b) => (a.riskPct ?? 9) - (b.riskPct ?? 9));
+}
+
+// 必要風險指標 = 1 + 最大「還有調升空間」部位佔原始保證金的比重。
+//
+// 推導：部位 i 的保證金 m、總額 M，費率調升後新總額 M + Δ。
+// 要讓調升後風險指標仍 ≥ 100%，需要 E ≥ M + Δ，即 E/M ≥ 1 + Δ/M。這是恆等式不是估計。
+// **已經在頂格的部位要排除**，否則會對已經發生過的事件重複收費。
+export function requiredRiskPct(st = marginState(), shocks = null) {
+  const sh = shocks || marginShocks(st);   // 預設保守（×2）
+  const live = sh.filter((x) => !x.capped);
+  if (!live.length || !(st.init > 0)) return { pct: 1, worst: null };
+  const worst = live.reduce((a, b) => (b.delta > a.delta ? b : a));
+  return { pct: 1 + worst.delta / st.init, worst };
 }
 
 // 舊簽章保留（沒有呼叫端，但留著比較不會有人誤用舊語意）。
