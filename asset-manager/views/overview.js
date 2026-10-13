@@ -7,6 +7,7 @@ import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
 import { optPnlAt } from '../instruments.js';
 import { alertOf } from '../alerts.js';
+import { activeRule } from '../rules.js';
 import { callOdds, marginShocks, marginState, requiredRiskPct } from '../risk.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
@@ -241,6 +242,31 @@ function optPayoffTable(c) {
 // **先把距離畫出來再補機率**：距離是結論，機率是輔助，
 // 不該因為要等一個網路請求而讓最重要的數字延後出現。
 // ------------------------------------------------------------
+// 名目 vs 上限。**標題要是絕對金額，不是倍數。**
+// 倍數是比率，賺錢的時候分母會長，所以同一個倍數對應的名目一直在變大——
+// 2026-09-23 到 10-05 他把名目從 506 萬加到 1,055 萬（兩倍），
+// 倍數只從 2.15x 走到 3.01x，看起來完全沒動。他事後的描述是
+// 「我印象之前都還維持在 2-3 多，怎麼昨天突然變成 3.7」。
+// 倍數沒騙他，是倍數量的不是加倉的規模。
+function notionalCapLine(st) {
+  const levRule = activeRule('fut_lev_cap');
+  const absRule = activeRule('fut_notional_cap');
+  if (!levRule && !absRule) return '';
+  const caps = [];
+  if (levRule && isNum(levRule.amount) && num(st.equity) > 0)
+    caps.push({ v: num(st.equity) * num(levRule.amount), why: `權益 × ${fmtMax(levRule.amount, 2)} 倍` });
+  if (absRule && isNum(absRule.amount)) caps.push({ v: num(absRule.amount), why: '絕對上限' });
+  if (!caps.length) return '';
+  const tight = caps.reduce((a, b) => (b.v < a.v ? b : a));
+  const over = st.notional - tight.v;
+  return `<div class="row-between line${over > 0 ? ' loss' : ''}" style="margin-top:.6rem">
+    <span>期貨名目 ／ 上限</span>
+    <span><b>${fmt(st.notional)}</b> ／ ${fmt(tight.v)}
+      <span class="muted">（${esc(tight.why)}）</span>
+      ${over > 0 ? `<b class="loss">超出 ${fmt(over)}</b>` : `<span class="muted">還有 ${fmt(-over)}</span>`}</span>
+  </div>`;
+}
+
 function marginCard() {
   const st = marginState();
   if (!(st.notional > 0) || st.pct == null) return '';
@@ -269,6 +295,7 @@ function marginCard() {
         <div class="sub muted">名目再跌這麼多會被追繳<br>金額 ${fmt(st.amount)}
           ／加權維持率 ${fmtMax(st.mmBlended * 100, 2)}%</div></div>
     </div>
+    ${notionalCapLine(st)}
     <div class="sub" style="margin-top:.6rem"><b>如果這一檔被處置</b>
       <span class="muted">（費率調到階梯上的 ×2 那一格；×1.5 是較溫和的先例）</span></div>
     <div class="rc-scroll"><table class="rc-tab"><thead><tr>

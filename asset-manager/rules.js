@@ -1,7 +1,7 @@
 import { fmt, fmtMax, isNum, norm, num, state } from './core.js';
 import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usLeverage } from './instruments.js';
 import { compute } from './portfolio.js';
-import { exposureRows } from './risk.js';
+import { exposureRows, marginState } from './risk.js';
 import { TW_STOCKS, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js';
 
 // ------------------------------------------------------------
@@ -11,7 +11,7 @@ import { TW_STOCKS, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js
 //   **刻意不阻止存檔**——那是他的錢、他的帳；但違規會被記下來，
 //   而且每天在心得頁攤開來。手癢發生在下單那一刻，不是寫日誌的時候。
 // ------------------------------------------------------------
-const activeRule = (kind) => state.rules.find((r) => r.kind === kind && r.active) || null;
+export const activeRule = (kind) => state.rules.find((r) => r.kind === kind && r.active) || null;
 
 // 今天各標的的當沖淨部位。歸零才算「沖完」。
 export function dayNet(dateISO, market, extra) {
@@ -407,6 +407,67 @@ function gateBreaks(t) {
   return out;
 }
 
+// ------------------------------------------------------------
+// 期貨名目上限
+//
+// 2026-10-13 回測出來的分界線。資料：16 檔（他的持股＋CCL／半導體同族群）、
+// 2024-11～2026-10、6,975 個交易日，其中 36 天是「全市場恐慌日」
+// （當天半數以上個股跳空 ≤−2%，平均每 2.9 週一次）。
+// 把每個恐慌日當天所有個股的等權組合報酬當成他的組合，看各槓桿水準會不會被追繳：
+//
+//   名目/權益   追繳距離   單一恐慌日觸及   三個月內
+//     2.50x      21.9%          0%            0%
+//     3.00x      13.2%          0%            0%
+//     3.25x       9.9%        2.8%         11.4%
+//     3.50x       7.0%       27.8%         75.3%     ← 懸崖
+//     4.00x       2.3%      100.0%        100.0%     ← 36 個恐慌日 36 次全中
+//
+// **他 2026-10-12 在 4.06 倍，恐慌日在隔一個交易日到。那不是運氣。**
+// 懸崖在 3.0 → 3.5 倍之間：半倍的差距把三個月的追繳機率從 0% 推到 75%。
+// 而 0/36 不等於 0%——三倍法則的上界約 8%／恐慌日（三個月約 30%），
+// 所以上限訂在 **2.5 倍**才有真正的餘裕。
+//
+// 【為什麼要同時查絕對金額】倍數是比率，賺錢的時候分母會長，所以同一個倍數
+// 對應的名目一直在變大——而「正在賺錢」剛好是他最容易加倉的時候。實測：
+// 他 2026-09-23 到 10-05 把名目從 506 萬加到 1,055 萬（兩倍），
+// 倍數只從 2.15x 走到 3.01x，因為獲利把權益養大了 57%。
+// **倍數在最需要警告他的那一刻，最不會警告他。** 他自己的歷史也指到同一條線：
+// 名目 >1,000 萬的 11 個樣本，之後 5 天淨資產 **0/11 為正**，平均 −51 萬；
+// <600 萬的 5 個樣本 **5/5 為正**，平均 +52 萬。
+//
+// 平倉不擋——這條管的是加倉。
+// ------------------------------------------------------------
+function futNotionalBreaks(t) {
+  const out = [];
+  if (t.market !== 'futures') return out;
+  const levRule = activeRule('fut_lev_cap');
+  const absRule = activeRule('fut_notional_cap');
+  if (!levRule && !absRule) return out;
+  const add = tradeNotional(t) * (t.side === 'buy' ? 1 : -1);
+  if (!(add > 0)) return out;
+  const st = marginState();
+  const after = num(st.notional) + add;
+  const caps = [];
+  if (levRule && isNum(levRule.amount) && num(st.equity) > 0)
+    caps.push({ v: num(st.equity) * num(levRule.amount), kind: 'fut_lev_cap',
+                why: `期貨權益 ${fmt(st.equity)} × ${fmtMax(levRule.amount, 2)} 倍` });
+  if (absRule && isNum(absRule.amount))
+    caps.push({ v: num(absRule.amount), kind: 'fut_notional_cap', why: '絕對上限' });
+  if (!caps.length) return out;
+  const tight = caps.reduce((a, b) => (b.v < a.v ? b : a));
+  if (after > tight.v + 1e-9) {
+    out.push({
+      kind: tight.kind,
+      // **不要只寫倍數。** 1,010 萬 / 1,000 萬四捨五入是「1.0 倍」，看起來像沒超過。
+      text: `這筆之後期貨名目 ${fmt(after)} 元，超過上限 ${fmt(tight.v)} 元（${tight.why}），超出 ${fmt(after - tight.v)} 元`,
+      why: '回測 36 個全市場恐慌日：名目/權益 3.0 倍時 36 次都沒被追繳，3.5 倍是 27.8%（三個月 75%），'
+         + '4.0 倍是 36/36 全部被追繳。你 10/12 在 4.06 倍，恐慌日隔一個交易日就到——在那個位置沒有「剛好」這回事。'
+         + '恐慌日平均每 2.9 週一次，所以這不是看得準不準的問題，是時間問題。',
+    });
+  }
+  return out;
+}
+
 function sizeBreaks(t) {
   const out = [];
   const cap = activeRule('max_position_pct');
@@ -454,6 +515,8 @@ export function checkRules(t) {
 
   // 部位大小排最前面：這是 2026-09-24 之後最要緊的一條
   out.push(...sizeBreaks(t));
+  // 期貨名目上限：2026-10-13 的恐慌日回測，懸崖在 3.0 → 3.5 倍
+  out.push(...futNotionalBreaks(t));
   // 時間閘門：2026-09-29 之後，這兩條攔的是「連環決定」
   out.push(...gateBreaks(t));
 
