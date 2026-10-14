@@ -80,7 +80,13 @@ on conflict (symbol) do update set
   codes = excluded.codes, name = excluded.name, tier = excluded.tier,
   settle_rate = excluded.settle_rate, mm_rate = excluded.mm_rate, im_rate = excluded.im_rate,
   settle_amt = excluded.settle_amt, mm_amt = excluded.mm_amt, im_amt = excluded.im_amt,
-  as_of = excluded.as_of, src = excluded.src, updated_at = now();
+  as_of = excluded.as_of, src = excluded.src, updated_at = now()
+-- **手動填的費率不要被蓋回去。** 處置造成的保證金調整通常是另外公告、隔日生效，
+-- 而 stockMargining 那一頁當下還顯示舊費率：2026-10-12 盤後金居調到 44.5%，
+-- 但頁面仍是 22.95%。如果這支照抄回去，風險指標會從 83% 變回 119%，
+-- **而那個方向的錯誤正好會讓人以為不必減倉**。
+-- 要讓它恢復自動更新，把那一列的 src 從 'manual%' 改掉就好。
+where public.fut_margin.src is null or public.fut_margin.src not like 'manual%';
 `;
 const out = path.join(os.tmpdir(), 'fut-margin.sql');
 fs.writeFileSync(out, sql, 'utf8');
