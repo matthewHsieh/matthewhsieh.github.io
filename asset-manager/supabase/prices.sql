@@ -1068,6 +1068,13 @@ grant execute on function public.theme_members(text) to authenticated;
 -- 把行情寫回持倉
 --   只在價格真的不同時才 UPDATE：不會新增、不會刪除任何項目
 --   個股期貨用標的股票的收盤價（曝險 = 口數 × 等同股數 × 股價）
+--
+--   2026-10-27：**報價比部位還舊就不寫**（mp.updated_at >= 部位.created_at）。
+--   美股與盤中報價只抓「當下有持有的代號」，賣光之後 market_prices 那一列就停住不動。
+--   之後重新買回，這裡會拿停住的舊價蓋掉剛記的成交價——實測一檔 2 倍 ETF 被套上
+--   一個月前的價格（高了七成），曝險與淨資產一起算錯。
+--   擋下之後部位先保留成交價，下一次抓到新報價（updated_at 晚於建立時間）才接手。
+--   部位分批加減時 upsert 不改 created_at，所以長期持有的部位不受影響。
 -- ------------------------------------------------------------
 create or replace function public.sync_positions(p_user uuid default null)
 returns integer language plpgsql security definer set search_path = public as $$
@@ -1085,6 +1092,7 @@ begin
     from public.market_prices mp
    where mp.market = 'tw' and mp.symbol = upper(btrim(s.symbol))
      and (p_user is null or s.user_id = p_user)
+     and mp.updated_at >= s.created_at   -- 比部位還舊的報價不蓋掉成交價
      and (s.price is distinct from mp.price
           or (nullif(btrim(s.name), '') is null and mp.name is not null));
   get diagnostics c = row_count; n := n + c;
@@ -1095,6 +1103,7 @@ begin
     from public.market_prices mp
    where mp.market = 'us' and mp.symbol = upper(btrim(u.symbol))
      and (p_user is null or u.user_id = p_user)
+     and mp.updated_at >= u.created_at   -- 比部位還舊的報價不蓋掉成交價
      and (u.price_usd is distinct from mp.price
           or (nullif(btrim(u.name), '') is null and mp.name is not null));
   get diagnostics c = row_count; n := n + c;
@@ -1132,6 +1141,7 @@ begin
     from public.market_prices mp
    where f.kind = 'stock' and mp.market = 'tw' and mp.symbol = upper(btrim(f.symbol))
      and (p_user is null or f.user_id = p_user)
+     and mp.updated_at >= f.created_at   -- 比部位還舊的報價不蓋掉成交價
      and (f.price is distinct from mp.price or f.price_src is distinct from 'tw');
   get diagnostics c = row_count; n := n + c;
 

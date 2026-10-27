@@ -362,6 +362,104 @@ function dayPain(dateISO) {
   return { realized, drop };
 }
 
+// ------------------------------------------------------------
+// 當週停損（2026-10-27）
+//   一天的停損擋得住一天，擋不住「隔天想贏回來」：連續幾天、一天比一天大。
+//   當週（台北時間週一起算）已實現累計虧到門檻的那一筆，從它的時間起算 48 小時
+//   不開新倉。**週末不算進 48 小時**——週五下午觸發，要停到下週二下午。
+//   只看已實現，理由跟 breaksOn 的時間閘門一樣：事後算不出當時的帳面損益。
+//   規則開始日之前的交易不算，不然一啟用就被上週的虧損鎖住。
+// ------------------------------------------------------------
+const TPE = 8 * 3600e3;
+
+function weekStartISO(dateISO) {
+  const d = new Date(`${dateISO}T00:00:00Z`);
+  const dow = (d.getUTCDay() + 6) % 7;            // 週一 = 0
+  return new Date(d.getTime() - dow * 864e5).toISOString().slice(0, 10);
+}
+
+// 從 ms 起算加 h 個平日小時（台北時間的週六、週日跳過）
+function addWeekdayHours(ms, h) {
+  let t = ms, left = h * 3600e3;
+  while (left > 0) {
+    const local = new Date(t + TPE);
+    const nextDay = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1) - TPE;
+    const dow = local.getUTCDay();
+    if (dow === 0 || dow === 6) { t = nextDay; continue; }
+    const step = Math.min(left, nextDay - t);
+    t += step; left -= step;
+  }
+  return t;
+}
+
+const fmtTpe = (ms) => {
+  const d = new Date(ms + TPE);
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+};
+
+// atMs 那一刻有沒有在停止期裡。有的話回傳 { from, until, week, acc }
+function weekPause(atMs) {
+  const rule = activeRule('week_loss_pause');
+  if (!rule || !(num(rule.amount) > 0)) return null;
+  const floor = -Math.abs(num(rule.amount));
+  const rate = num(state.settings.usd_twd);
+  const byWeek = new Map();
+  for (const x of state.trades) {
+    if (!isNum(x.realized_pl) || !x.created_at) continue;
+    if (rule.started_on && x.trade_date < rule.started_on) continue;
+    const w = weekStartISO(x.trade_date);
+    if (!byWeek.has(w)) byWeek.set(w, []);
+    byWeek.get(w).push(x);
+  }
+  let hit = null;
+  for (const [week, list] of byWeek) {
+    list.sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1));
+    let acc = 0;
+    for (const x of list) {
+      acc += num(x.realized_pl) * (x.realized_ccy === 'USD' ? rate : 1);
+      if (acc > floor + 1e-6) continue;
+      const from = Date.parse(x.created_at);
+      const until = addWeekdayHours(from, 48);
+      if (atMs >= from && atMs < until && (!hit || from > hit.from)) hit = { from, until, week, acc };
+      break;                                      // 一週只從第一次觸及門檻起算
+    }
+  }
+  return hit;
+}
+
+function weekPauseBreak(t, atMs) {
+  if (!isOpening(t)) return null;
+  const p = weekPause(atMs);
+  if (!p) return null;
+  return {
+    kind: 'week_loss_pause',
+    text: `這週（${p.week} 起）已實現 ${fmt(p.acc)}，停止期到 ${fmtTpe(p.until)}，這筆是開新倉或加碼`,
+    why: '一天的停損擋得住一天，擋不住隔天想贏回來。停止期只能減碼、平倉，週末不算進 48 小時。',
+  };
+}
+
+// ------------------------------------------------------------
+// 選擇權只准買 put（2026-10-27）
+//   opt_only_hedge 還留著 sell call 與兩種買 call 的例外，這條把它們全部關掉。
+//   兩個月的選擇權紀錄裡，一天的結算就能抵掉其他所有交易的獲利；唯一用對的一次
+//   是保護既有部位的保險 put。平倉（買回賣出的、賣掉買進的）一樣不擋。
+// ------------------------------------------------------------
+const isBuyPut = (t) => t.market === 'option' && t.side === 'buy' && t.opt_cp === 'put';
+const optAction = (t) => `${t.side === 'buy' ? '買進' : '賣出'}${cpLabel(t.opt_cp)}`;
+
+function putOnlyBreak(t) {
+  if (!activeRule('opt_put_only') || t.market !== 'option') return null;
+  const opening = openingLots(t);
+  if (opening <= 1e-9 || isBuyPut(t)) return null;
+  const part = opening < num(t.quantity) ? `（${fmtMax(num(t.quantity) - opening, 2)} 口是平倉，不算）` : '';
+  return {
+    kind: 'opt_put_only',
+    text: `${optAction(t)}違反「選擇權只能買 put 當保險」${part}`,
+    reason: `${optAction(t)}沒有例外`,
+    why: '買 put 是保險：保護手上的部位，最多就賠權利金。其他的選擇權都是賭注，一天的結算就能抵掉其他所有交易的獲利。',
+  };
+}
+
 function gateBreaks(t) {
   const out = [];
   const lossDay = activeRule('no_open_after_loss');
@@ -519,6 +617,8 @@ export function checkRules(t) {
   out.push(...futNotionalBreaks(t));
   // 時間閘門：2026-09-29 之後，這兩條攔的是「連環決定」
   out.push(...gateBreaks(t));
+  const wp = weekPauseBreak(t, Date.now());
+  if (wp) out.push(wp);
 
   // 排第一個：這是 2026-09-23 之後最要緊的一條
   const hold = activeRule('no_day_trade');
@@ -546,6 +646,8 @@ export function checkRules(t) {
       if (v) { v.text += part; out.push(v); }
     }
   }
+  const po = putOnlyBreak(t);
+  if (po) out.push(po);
 
   const cap = activeRule('day_max_amount');
   if (cap && t.is_day_trade && t.market === 'tw' && isNum(cap.amount)) {
@@ -689,6 +791,27 @@ export function breaksOn(dateISO) {
     if (hit.size) {
       out.push({ kind: 'day_one_at_a_time',
         text: `同時開了不只一檔當沖 ${hit.size} 次`, detail: [...hit].join('、') });
+    }
+  }
+  const putOnly = activeRule('opt_put_only');
+  if (putOnly && dateISO >= putOnly.started_on) {
+    const bad = day.filter((t) => t.market === 'option' && openingLots(t) > 1e-9 && !isBuyPut(t));
+    if (bad.length) {
+      out.push({ kind: 'opt_put_only',
+        text: `不是買 put 的選擇權 ${bad.length} 筆，權利金合計 ${fmt(bad.reduce((a, t) => a + optPremium(t), 0))} 元`,
+        detail: bad.map((t) => `${optAction(t)} ${fmt(t.quantity)} 口 @ ${fmtMax(t.price, 2)}`).join('、') });
+    }
+  }
+  if (activeRule('week_loss_pause')) {
+    // 用每一筆自己的時間去問「那一刻是不是在停止期」。
+    // **有實現損益的就是平倉**：事後回頭看，部位已經不在了，isOpening 會把平倉誤認成開新倉
+    //（觸發停損的那一筆本身就會被抓進來）。
+    const bad = day.filter((t) => t.created_at && !isNum(t.realized_pl) && isOpening(t)
+      && weekPause(Date.parse(t.created_at)));
+    if (bad.length) {
+      out.push({ kind: 'week_loss_pause',
+        text: `當週停損的停止期內開新倉 ${bad.length} 筆`,
+        detail: bad.map(tradeLabel).join('、') });
     }
   }
   return out;
