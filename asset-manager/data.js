@@ -53,6 +53,8 @@ const personalQueries = (uid) => ({
   _fwds:       () => sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
   valuation:   () => sb.rpc('my_valuation', {}),
   rules:       () => sb.from('rules').select('*').eq('active', true).order('sort'),
+  cashItems:   () => sb.from('cash_items').select('*').order('sort').order('created_at'),
+  cashMonths:  () => sb.from('cash_months').select('*').order('month', { ascending: false }).limit(60),
   journalDays: () => sb.rpc('journal_days', { p_limit: 120 }),
   priceStatus: () => sb.from('price_status').select('market,as_of,updated_at,symbols'),
 });

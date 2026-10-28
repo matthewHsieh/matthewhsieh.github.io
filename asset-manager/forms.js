@@ -47,6 +47,33 @@ const ENTITIES = {
     ],
     defaults: { kind: 'cash', currency: 'TWD' },
   },
+  cashitem: {
+    table: 'cash_items', key: 'cashItems', title: '金流項目',
+    fields: [
+      { key: 'kind', label: '類型', type: 'select', options: [
+        ['income', '每月收入（實拿）'], ['expense', '每月支出'], ['debt', '固定還款（信貸）'],
+        ['invest', '每月投入（定期定額）'], ['bonus', '獎金'], ['goal', '存錢目標（一年內要花的錢）']] },
+      { key: 'name', label: '名稱', required: true, placeholder: '吃飯 / Spotify / 年終 / 蜜月' },
+      { key: 'amount', label: '金額（目標：要存到多少）', type: 'number', required: true },
+      { key: 'currency', label: '幣別', type: 'select', options: [['TWD', 'TWD'], ['USD', 'USD']] },
+      { key: 'per', label: '頻率（年繳的訂閱選「每年」，會自動除以 12）', type: 'select', options: [['month', '每月'], ['year', '每年']] },
+      { key: 'month', label: '獎金：發放月份（1～12）', type: 'number' },
+      { key: 'due_date', label: '目標：要用的日子（例如 2027-12-01）', placeholder: 'YYYY-MM-DD' },
+      { key: 'saved', label: '目標：已經存了多少', type: 'number' },
+      { key: 'rate', label: '固定還款：年利率 %（填了才算得出利息）', type: 'number' },
+      { key: 'note', label: '備註' },
+    ],
+    defaults: { kind: 'expense', currency: 'TWD', per: 'month' },
+  },
+  cashmonth: {
+    table: 'cash_months', key: 'cashMonths', title: '每月記帳',
+    fields: [
+      { key: 'month', label: '月份（每月 1 號）', required: true, placeholder: 'YYYY-MM-01' },
+      { key: 'net_assets', label: '淨資產（自動帶入現在的數字）', type: 'number' },
+      { key: 'overspend', label: '這個月超支多少（沒有就填 0）', type: 'number' },
+      { key: 'note', label: '這個月的一句話（花在哪、守住了什麼）' },
+    ],
+  },
 };
 
 export async function editItem(kind, id, extraDefaults = {}) {
@@ -69,7 +96,8 @@ export async function editItem(kind, id, extraDefaults = {}) {
       if (id) payload.id = id;
       const { error } = await sb.from(ent.table).upsert(payload);
       if (error) throw error;
-      if (ent.table !== 'balances') await applyCachedPrices();
+      // 金流與資金項目沒有報價可以套
+      if (!['balances', 'cash_items', 'cash_months'].includes(ent.table)) await applyCachedPrices();
       await refresh('已儲存');
     }
   } catch (e) {
