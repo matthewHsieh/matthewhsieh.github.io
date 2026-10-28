@@ -56,7 +56,7 @@ const ENTITIES = {
       { key: 'name', label: '名稱', required: true, placeholder: '吃飯 / Spotify / 年終 / 蜜月' },
       { key: 'amount', label: '金額（目標：要存到多少）', type: 'number', required: true },
       { key: 'currency', label: '幣別', type: 'select', options: [['TWD', 'TWD'], ['USD', 'USD']] },
-      { key: 'per', label: '頻率（年繳的訂閱選「每年」，會自動除以 12）', type: 'select', options: [['month', '每月'], ['year', '每年']] },
+      { key: 'per', label: '頻率（年繳的訂閱選「每年」會除以 12；存錢目標選「每年」＝每年同一個月重複）', type: 'select', options: [['month', '每月'], ['year', '每年']] },
       { key: 'month', label: '獎金：發放月份（1～12）', type: 'number' },
       { key: 'due_date', label: '目標：要用的日子（例如 2027-12-01）', placeholder: 'YYYY-MM-DD' },
       { key: 'saved', label: '目標：已經存了多少', type: 'number' },

@@ -7,13 +7,15 @@ import { bindListActions, itemRow, section, stat } from '../widgets.js';
 //   淨資產回到 0 靠的是薪水加時間，不是交易。所以這一頁最上面放的是
 //   「照現在的收支，哪一天回到 0」，而不是今天賺賠多少。
 //
-//   算法是逐月模擬，不是一條公式，因為獎金集中在 1～2 月、端午、中秋，
+//   算法是逐月模擬，不是一條公式，因為獎金集中在 1 月、端午、中秋，
 //   旅遊目標在某個月一次花掉，平均攤提會把「什麼時候」算錯：
-//     資產 ← 資產 ×（1 + 年報酬/12）＋ 收入 − 支出 − 還款 ＋ 當月獎金 − 當月到期的目標
+//     投資 ← 投資 ×（1 + 年報酬/12）＋ 定期定額
+//     現金 ← 現金 ＋ 收入 − 支出 − 還款 − 定期定額 ＋ 當月獎金 − 當月到期的目標
 //     信貸餘額 ← 餘額 −（月付 − 利息）
-//     淨資產 = 資產 − 負債
-//   定期定額只是把現金搬到股票，淨資產不變，所以不扣。
-//   目標（蜜月）是消費，到期那個月整筆扣掉。
+//     淨資產 = 投資 ＋ 現金 − 負債
+//   **報酬只算在投資部位上**（現股、複委託、期貨權益、選擇權、權證），現金不生報酬。
+//   第一版把報酬乘在全部資產上、旅遊只扣一次，算出 2.3 年——太樂觀，使用者一眼就看出來。
+//   目標（旅遊）是消費，到期那個月整筆扣掉；per = 'year' 的目標從到期日起每年同一個月再扣一次。
 // ------------------------------------------------------------
 const toTwd = (it, rate) => num(it.amount) * (it.currency === 'USD' ? rate : 1);
 const monthly = (it, rate) => toTwd(it, rate) / (it.per === 'year' ? 12 : 1);
@@ -27,6 +29,14 @@ function debtState(it) {
   return { balance, interest };
 }
 
+// 目標在這個月要不要扣：到期那個月；per = 'year' 的之後每年同一個月再扣
+function goalHits(g, d) {
+  const due = String(g.due_date).slice(0, 7);
+  const cur = ym(d);
+  if (g.per === 'year') return cur >= due && cur.slice(5) === due.slice(5);
+  return cur === due;
+}
+
 function project(c, items, annual) {
   const rate = c.rate;
   const by = (k) => items.filter((i) => i.kind === k);
@@ -36,23 +46,25 @@ function project(c, items, annual) {
   const bonus = by('bonus');
   const goals = by('goal').filter((g) => g.due_date);
 
-  let assets = num(c.totalAssets);
+  const invest = by('invest').reduce((a, i) => a + monthly(i, rate), 0);
+  let inv = num(c.stockValue) + num(c.usValue) + num(c.futEquity) + num(c.optMarket) + num(c.warMarket);
+  let cash = num(c.cash);
   let other = num(c.liabilities) - debts.reduce((a, d) => a + num(d.balance), 0);   // 不會動的負債（家人借款）
   const bal = debts.map((d) => num(d.balance));
   const start = new Date(`${todayISO().slice(0, 7)}-01T00:00:00Z`);
   for (let m = 1; m <= 360; m++) {
     const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + m, 1));
-    assets *= 1 + annual / 12;
-    assets += income - spend;
+    inv = inv * (1 + annual / 12) + invest;
+    cash += income - spend - invest;
     debts.forEach((x, k) => {
       if (bal[k] <= 0) return;
       const intr = isNum(x.interest) && x.balance > 0 ? bal[k] * (x.interest / x.balance) : 0;
       const pay = Math.min(x.pay, bal[k] + intr);
-      assets -= pay; bal[k] -= pay - intr;
+      cash -= pay; bal[k] -= pay - intr;
     });
-    for (const b of bonus) if (num(b.month) === d.getUTCMonth() + 1) assets += toTwd(b, rate);
-    for (const g of goals) if (String(g.due_date).slice(0, 7) === ym(d)) assets -= toTwd(g, rate);
-    if (assets - other - bal.reduce((a, x) => a + Math.max(0, x), 0) >= 0) return { months: m, at: ym(d) };
+    for (const b of bonus) if (num(b.month) === d.getUTCMonth() + 1) cash += toTwd(b, rate);
+    for (const g of goals) if (goalHits(g, d)) cash -= toTwd(g, rate);
+    if (inv + cash - other - bal.reduce((a, x) => a + Math.max(0, x), 0) >= 0) return { months: m, at: ym(d) };
   }
   return null;
 }
@@ -102,7 +114,7 @@ function goalCard(c) {
     const months = due ? Math.max(1, Math.round((Date.parse(due) - Date.parse(today)) / (30.44 * 864e5))) : null;
     const p = target > 0 ? Math.min(1, saved / target) : 0;
     return itemRow('cashitem', g.id, esc(g.name),
-      `${due ? `${esc(due)}・還有 ${fmt(months)} 個月` : '沒有日期'}${left > 0 && months ? `・每月要存 ${fmt(left / months)}` : ''}
+      `${due ? `${esc(due)}${g.per === 'year' ? '起每年' : ''}・還有 ${fmt(months)} 個月` : '沒有日期'}${left > 0 && months ? `・每月要存 ${fmt(left / months)}` : ''}
        <div class="bar" style="margin-top:6px"><div class="bar-fill" style="width:${(p * 100).toFixed(1)}%"></div></div>`,
       `${fmt(saved)} / ${fmt(target)}`, `${(p * 100).toFixed(0)}%`);
   });
@@ -117,7 +129,7 @@ function zeroCard(c) {
   if (!items.some((i) => i.kind === 'income')) {
     return `<div class="card"><div class="list-title">淨資產回到 0</div><p class="muted">先在下面「每月金流」登記收入與支出，這裡才算得出來。</p></div>`;
   }
-  const cases = [[0, '不算投資報酬'], [0.15, '年報酬 15%'], [0.25, '年報酬 25%']].map(([r, label]) => {
+  const cases = [[0, '不算投資報酬'], [0.08, '投資年報酬 8%'], [0.15, '投資年報酬 15%']].map(([r, label]) => {
     const p = project(c, items, r);
     return `<div class="row-between line"><span>${label}</span><span>${
       p ? `<b>${esc(p.at)}</b>　<span class="muted">約 ${(p.months / 12).toFixed(1)} 年</span>` : '30 年內到不了'}</span></div>`;
@@ -131,8 +143,10 @@ function zeroCard(c) {
     <div class="row-between"><span class="value loss" style="font-size:var(--fs-xl, 1.6em);font-weight:700">${fmt(nw)}</span>
       ${since !== null ? `<span class="${plClass(since)}">比 ${esc(String(last.month).slice(0, 7))} ${signed(since)}</span>` : ''}</div>
     ${cases}
-    <p class="hint">逐月模擬：薪水、獎金在發放的月份入帳，旅遊目標在到期那個月整筆花掉，信貸照月付還本金。
-      家人借款不計利息、也不假設會還（還了只是資產負債一起減，淨資產不變）。</p>
+    <p class="hint">逐月模擬：薪水、獎金在發放的月份入帳，旅遊目標在到期那個月整筆花掉（設成每年的會每年扣），
+      信貸照月付還本金（填了年利率才扣利息）。報酬只算在投資部位，現金不生報酬。
+      家人借款不計利息、也不假設會還（還了只是資產負債一起減，淨資產不變）。
+      沒有列進「每月金流」的花費（紅包、保險、稅、醫療）都不在裡面，所以這是偏樂觀的上限。</p>
   </div>`;
 }
 
