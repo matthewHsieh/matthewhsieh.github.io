@@ -42,7 +42,13 @@ function fieldHtml(f, v) {
       .join('')}</select></label>`;
   }
   if (f.type === 'number') {
-    return `<label>${esc(f.label)}<input name="${f.key}" type="number" step="any" inputmode="decimal" value="${esc(val)}" ${req} ${ph}></label>`;
+    // 手機的 decimal 鍵盤（iPhone 尤其）沒有負號，負數打不進去。
+    // 可以是負數的欄位（應付交割款、淨資產）旁邊放一顆 ± 把正負號翻過來。
+    const input = `<input name="${f.key}" type="number" step="any" inputmode="decimal" value="${esc(val)}" ${req} ${ph}>`;
+    if (f.signed) {
+      return `<label>${esc(f.label)}<span class="signed-input">${input}<button type="button" class="small" data-flip="${f.key}" aria-label="切換正負號">±</button></span></label>`;
+    }
+    return `<label>${esc(f.label)}${input}</label>`;
   }
   return `<label>${esc(f.label)}<input name="${f.key}" type="text" value="${esc(val)}" ${req} ${ph} ${lookup} autocomplete="off"></label>`;
 }
@@ -52,6 +58,11 @@ export function openForm({ title, fields, values = {}, allowDelete = false }) {
     title, allowDelete,
     html: fields.map((f) => fieldHtml(f, values[f.key])).join(''),
     onMount: (form) => {
+      $$('[data-flip]', form).forEach((b) => (b.onclick = () => {
+        const input = form.elements[b.dataset.flip];
+        if (input && input.value !== '' && Number(input.value) !== 0) input.value = String(-Number(input.value));
+        input?.focus();
+      }));
       $$('input[data-lookup]', form).forEach((input) => {
         attachLookup(input, input.dataset.lookup, (m) => { if (form.name) form.name.value = m.name; });
       });

@@ -42,7 +42,7 @@ const ENTITIES = {
       { key: 'kind', label: '類型', type: 'select', options: BALANCE_KINDS },
       { key: 'name', label: '名稱', required: true, placeholder: '銀行活存 / 元大期貨 / 信貸' },
       { key: 'currency', label: '幣別', type: 'select', options: [['TWD', 'TWD'], ['USD', 'USD']] },
-      { key: 'amount', label: '金額', type: 'number', required: true },
+      { key: 'amount', label: '金額（應付交割款：打數字後按 ± 變負數）', type: 'number', required: true, signed: true },
       { key: 'note', label: '備註' },
     ],
     defaults: { kind: 'cash', currency: 'TWD' },
@@ -69,7 +69,7 @@ const ENTITIES = {
     table: 'cash_months', key: 'cashMonths', title: '每月記帳',
     fields: [
       { key: 'month', label: '月份（每月 1 號）', required: true, placeholder: 'YYYY-MM-01' },
-      { key: 'net_assets', label: '淨資產（自動帶入現在的數字）', type: 'number' },
+      { key: 'net_assets', label: '淨資產（自動帶入現在的數字）', type: 'number', signed: true },
       { key: 'overspend', label: '這個月超支多少（沒有就填 0）', type: 'number' },
       { key: 'note', label: '這個月的一句話（花在哪、守住了什麼）' },
     ],
