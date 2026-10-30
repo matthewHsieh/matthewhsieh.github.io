@@ -72,6 +72,8 @@ export function openForm({ title, fields, values = {}, allowDelete = false }) {
       for (const f of fields) {
         const raw = fd.get(f.key);
         if (f.type === 'number') out[f.key] = raw === '' || raw === null ? null : Number(raw);
+        // 是非題的下拉選單：選項值是 'true' / 'false'，存進資料庫要是真的布林
+        else if (f.bool) out[f.key] = raw === 'true';
         else out[f.key] = typeof raw === 'string' ? raw.trim() || null : raw;
       }
       if (out.symbol) {

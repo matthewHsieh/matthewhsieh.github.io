@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS = { target_amount: 0, usd_twd: 32 };
 // 用途只有一個：使用者說「還是舊的」時，兩邊能對出他跑的到底是哪一版。
 // 2026-09-23 修 σ 算反的 bug，推上去之後他重新整理看到的仍是舊值，
 // 當時沒有任何地方能證明他跑的是哪一版，只能猜。
-export const BUILD = '2026-10-28';
+export const BUILD = '2026-10-30';
 
 export const state = {
   user: null,
@@ -72,6 +72,7 @@ export const state = {
   rules: [],       // 自己定的紀律
   cashItems: [],   // 金流：每月預算、獎金、存錢目標（資金頁）
   cashMonths: [],  // 每月 5 號的記帳，由新到舊
+  rotationList: [], // 換股法每一期的正式名單（period, symbol）
   journalDays: [], // 每日心得＋戰績
   openTheme: null,
   snapshots: [], // 依日期由新到舊

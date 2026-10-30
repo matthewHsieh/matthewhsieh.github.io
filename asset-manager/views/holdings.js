@@ -1,7 +1,7 @@
 import { alertBadge, alertOf } from '../alerts.js';
 import { $, $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
-import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warValue } from '../instruments.js';
+import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warPx, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
@@ -128,7 +128,7 @@ export function renderHoldings(el) {
       `${warLabel(w)}<span class="badge">${w.cp === 'put' ? '認售' : '認購'}</span>${
         warModelOk(w) ? '' : '<span class="badge warn-badge">模型不適用</span>'}${
         ivCut ? '<span class="badge warn-badge">隱波被調降</span>' : ''}`,
-      `${fmtMax(w.lots, 2)} 張 × ${fmtMax(w.price, 2)} 元${isNum(w.cost) ? `　成本 ${fmtMax(w.cost, 2)}` : ''}` +
+      `${fmtMax(w.lots, 2)} 張 × ${fmtMax(warPx(w), 2)} 元${liveTag(w.code)}${isNum(w.cost) ? `　成本 ${fmtMax(w.cost, 2)}` : ''}` +
       `${isNum(w.iv) ? `　隱波 ${(num(w.iv) * 100).toFixed(1)}%` : ''}` +
       `${isNum(w.gearing) ? `　槓桿 ${fmtMax(w.gearing, 1)}x` : ''}` +
       `${days !== null ? `　剩 ${fmt(days)} 天` : ''}`,

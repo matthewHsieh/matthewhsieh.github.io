@@ -53,6 +53,9 @@ const personalQueries = (uid) => ({
   _fwds:       () => sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
   valuation:   () => sb.rpc('my_valuation', {}),
   rules:       () => sb.from('rules').select('*').eq('active', true).order('sort'),
+  // 換股法每一期的正式名單（rebalance.mjs 跑出來、他確認過的那份）。
+  // 「名單外」的部位上限與記分板都看最新一期。表不存在時（42P01）runQueries 會放過。
+  rotationList: () => sb.from('rotation_list').select('period,symbol,name,note').order('period', { ascending: false }),
   cashItems:   () => sb.from('cash_items').select('*').order('sort').order('created_at'),
   cashMonths:  () => sb.from('cash_months').select('*').order('month', { ascending: false }).limit(60),
   journalDays: () => sb.rpc('journal_days', { p_limit: 120 }),

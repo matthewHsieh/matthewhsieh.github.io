@@ -1,4 +1,5 @@
 import { esc, fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
+import { livePx } from './live.js';
 import { TW_STOCKS, indexProduct } from './symbols.js';
 
 // 台指選擇權：每點 50 元
@@ -237,17 +238,23 @@ export const warLabel = (w) => `${esc(w.code)} ${esc(w.name || '')}`.trim();
 
 export const warDelta = (w) => (isNum(w.delta_override) ? num(w.delta_override) : isNum(w.delta) ? num(w.delta) : null);
 
-// 市值：權證只能做買方，一定是正的
-export const warValue = (w) => num(w.lots) * WAR_UNITS * num(w.price);
+// 權證的價格：盤中有新鮮的 MIS 報價就用它（2026-10-30 起 refresh_live 每 5 分鐘會抓），
+// 否則用存下來的價。**沒有這一層，盤中權證整天停在前一次按 ↻ 的價格**——
+// 標的跌停的那種日子，App 上的權證市值會一整天多算兩成。
+export const warPx = (w) => livePx(w.code)?.price ?? num(w.price);
 
-// delta 曝險 = 張數 × 1000 × 行使比例 × delta × 標的股價
+// 市值：權證只能做買方，一定是正的
+export const warValue = (w) => num(w.lots) * WAR_UNITS * warPx(w);
+
+// delta 曝險 = 張數 × 1000 × 行使比例 × delta × 標的股價（標的也用盤中價）
 export const warExposure = (w) => {
   const d = warDelta(w);
-  return d === null || !isNum(w.ratio) || !isNum(w.underlying_price)
-    ? null : num(w.lots) * WAR_UNITS * num(w.ratio) * d * num(w.underlying_price);
+  const ul = livePx(w.underlying)?.price ?? (isNum(w.underlying_price) ? num(w.underlying_price) : null);
+  return d === null || !isNum(w.ratio) || ul === null
+    ? null : num(w.lots) * WAR_UNITS * num(w.ratio) * d * ul;
 };
 
-export const warPl = (w) => (isNum(w.cost) ? (num(w.price) - num(w.cost)) * num(w.lots) * WAR_UNITS : null);
+export const warPl = (w) => (isNum(w.cost) ? (warPx(w) - num(w.cost)) * num(w.lots) * WAR_UNITS : null);
 
 // 買方最大損失就是付出的權利金。
 // **算不出來要回 null，不能回 0。** 成本沒填、權證價又還沒抓進來的時候

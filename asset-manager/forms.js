@@ -23,6 +23,13 @@ const ENTITIES = {
       { key: 'shares', label: '股數（1 張 = 1000 股）', type: 'number', required: true, placeholder: '1000' },
       { key: 'price', label: '現價（每日自動更新）', type: 'number', required: true },
       { key: 'cost', label: '平均成本（選填）', type: 'number' },
+      // 家人把錢放在他帳戶裡、只准買指定的現股。那是獨立的 1 倍部位：
+      // 算進總資產與淨資產，但**不算進槓桿與「名單外」的分母分子**，
+      // 否則借來的錢會讓槓桿看起來變低、讓 App 說還能再加。
+      { key: 'sleeve', label: '這是誰的部位', type: 'select', bool: true, options: [
+        ['false', '我自己的'],
+        ['true', '家人委託（獨立的 1 倍部位，不算進槓桿）'],
+      ] },
     ],
   },
   us: {
@@ -1040,6 +1047,8 @@ export async function editRule(existing) {
         ['max_position_pct', '單檔曝險上限（金額填總資產的 %，指數不算）'],
         ['max_exposure', '總曝險上限（金額填總資產的倍數，例如 1）'],
         ['no_day_trade', '不當沖：勾了當沖，或同一天同一檔一買一賣'],
+        ['opt_crash_call', '選擇權：put 隨時可買；call 只在大跌日、一筆權利金 ≤ 金額、一天 2 筆、當天虧滿金額就停；不做賣方'],
+        ['off_list_cap', '換股名單外的部位上限（金額填總曝險的 %，例如 20；指數與家人委託不算）'],
         ['opt_put_only', '選擇權只准 buy put（賣 put、賣 call、買 call 都擋）'],
         ['opt_only_hedge', '選擇權只准 buy put / sell call'],
         ['week_loss_pause', '當週已實現虧到門檻，停 48 小時不開新倉（金額 = 門檻，週末不算）'],
@@ -1049,7 +1058,7 @@ export async function editRule(existing) {
         ['fut_notional_cap', '期貨名目絕對上限（金額，例如 10000000）'],
         ['scale_in', '一律分批（提醒）'],
       ] },
-      { key: 'amount', label: '金額上限（當沖：單檔上限；選擇權：買 call 每日權利金額度；單檔曝險：總資產的 %；總曝險／期貨名目倍數：倍數；期貨名目絕對上限：元）', type: 'number' },
+      { key: 'amount', label: '金額上限（當沖：單檔上限；選擇權：一筆權利金上限；單檔曝險／名單外：%；總曝險／期貨名目倍數：倍數；期貨名目絕對上限：元）', type: 'number' },
     ],
     values: v,
     allowDelete: !!existing,

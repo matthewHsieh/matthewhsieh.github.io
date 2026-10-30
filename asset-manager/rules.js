@@ -1,5 +1,6 @@
-import { fmt, fmtMax, isNum, norm, num, state } from './core.js';
-import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usLeverage } from './instruments.js';
+import { fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
+import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usExposureUsd, usLeverage, warExposure, warValue } from './instruments.js';
+import { futPx, pxOf } from './live.js';
 import { compute } from './portfolio.js';
 import { exposureRows, marginState } from './risk.js';
 import { TW_STOCKS, indexProduct, resolveTwSymbol, tradeKey } from './symbols.js';
@@ -121,8 +122,14 @@ function sameDayReverse(t, before) {
     && !isRoll(x) && earlier(x, before) && tradeKey(x) === key);
 }
 
+// 選擇權有自己的規則（opt_crash_call）時，不當沖這條不管選擇權。
+//   那條允許「大跌日買 call、當天 13:00 前出場」，這本來就是當沖；
+//   兩條一起算的話，照規矩做也會被記成違規，規則就失去意義了。
+const optOwnRule = (t) => t.market === 'option' && !!activeRule('opt_crash_call');
+
 // 回傳 null 代表這筆沒問題
 function dayTradeBreak(t, before) {
+  if (optOwnRule(t)) return null;
   if (t.is_day_trade) {
     return {
       kind: 'no_day_trade',
@@ -460,6 +467,306 @@ function putOnlyBreak(t) {
   };
 }
 
+// ------------------------------------------------------------
+// 選擇權：大跌日才准買 call，而且用額度關住（2026-10-30）
+//
+//   取代「只准買 put」。一次全市場恐慌的盤中，他在斷頭賣壓裡買了三次 call，
+//   三次都分批出場、在結算前出完——**執行是好的，問題是大小與次數**：
+//   三筆的權利金分別是額度的好幾倍。同樣的動作在失控的狀態下會把獲利吐回去，
+//   而過去最大的一天虧損就是一次結算。所以這條不禁止判斷，只規定判斷能用多少錢、用幾次：
+//     • put 隨時可以買（保險）；不做賣方。
+//     • call 只在大跌日：加權當天盤中最低比昨收跌超過 2%。
+//     • 一筆權利金不超過規則列的 amount（預設 2 萬）。5 分鐘內連續下的單算同一筆——
+//       10 口分三列記也是同一個決定。
+//     • 一天最多 2 筆；選擇權當天已實現虧到 amount 就停。
+//     • 事後檢討再看兩件事：當天到期的有沒有在 13:00 前出場、權利金跌一半有沒有出場。
+//   **平倉永遠放行**，跟其他規則一樣。
+//   大跌日要看盤中的加權指數（refresh_live_extra 寫進 market_live 的 idx / TAIEX）。
+//   抓不到就不判定：不算違規也不算通過，畫面上說清楚。
+// ------------------------------------------------------------
+export const OPT_CRASH_PCT = 0.02;
+export const OPT_CRASH_BUDGET = 20000;
+export const OPT_CRASH_MAX = 2;
+const OPT_CRASH_EXIT_MIN = 13 * 60;               // 13:00（台北）
+const OPT_CLUSTER_MS = 5 * 60e3;
+const pct1 = (x) => `${(x * 100).toFixed(1)}%`;
+const byCreated = (a, b) => (String(a.created_at) < String(b.created_at) ? -1 : 1);
+const tpeMinutes = (iso) => { const d = new Date(Date.parse(iso) + TPE); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+
+// 加權指數在 dateISO 那天：盤中最低與最新，相對昨收。不是那一天的報價就回 null。
+export function idxDay(dateISO) {
+  const r = (state.marketLive || []).find((x) => x.market === 'idx' && norm(x.symbol) === 'TAIEX');
+  if (!r || !isNum(r.price) || !isNum(r.chg)) return null;
+  const at = Date.parse(r.at);
+  if (!Number.isFinite(at) || new Date(at + TPE).toISOString().slice(0, 10) !== dateISO) return null;
+  const prev = num(r.price) - num(r.chg);
+  if (!(prev > 0)) return null;
+  const low = isNum(r.low) && num(r.low) > 0 ? Math.min(num(r.low), num(r.price)) : num(r.price);
+  return { low: low / prev - 1, now: num(r.price) / prev - 1 };
+}
+
+// 同一天的選擇權依時間重播：每一列標出開倉幾口、平倉幾口。
+//   **事後檢討不能用 openingLots()**：它看 prev_shares 或「現在手上的部位」，
+//   當天來回的單部位早就不在了，平倉的那一腳會被當成開新倉（做賣方）。
+//   當天以前留下來的部位用 prev_shares 補；沒有就當作 0。
+function optReplay(list) {
+  const net = new Map();
+  return list.map((t) => {
+    const k = tradeKey(t);
+    if (!net.has(k)) net.set(k, isNum(t.prev_shares) ? num(t.prev_shares) : 0);
+    const before = net.get(k), q = num(t.quantity), dir = t.side === 'buy' ? 1 : -1;
+    const close = Math.sign(before) === -dir ? Math.min(q, Math.abs(before)) : 0;
+    net.set(k, before + dir * q);
+    return { t, open: q - close, close };
+  });
+}
+
+// 開倉的買 call 分成「筆」：跟前一列相隔 5 分鐘以內算同一筆
+function callClusters(replayed) {
+  const out = [];
+  for (const r of replayed) {
+    if (!isBuyCall(r.t) || r.open <= 1e-9 || !r.t.created_at) continue;
+    const at = Date.parse(r.t.created_at);
+    const last = out[out.length - 1];
+    const prem = optPremium(r.t, r.open);
+    if (last && at - last.end <= OPT_CLUSTER_MS) { last.rows.push(r.t); last.end = at; last.prem += prem; }
+    else out.push({ start: at, end: at, rows: [r.t], prem });
+  }
+  return out;
+}
+
+// 選擇權在 before 之前已經實現的損益（當天）
+function optRealizedBefore(dateISO, before) {
+  return state.trades.filter((x) => x.trade_date === dateISO && x.market === 'option'
+    && isNum(x.realized_pl) && earlier(x, before)).reduce((a, x) => a + num(x.realized_pl), 0);
+}
+
+const crashCap = (rule) => (isNum(rule?.amount) && num(rule.amount) > 0 ? num(rule.amount) : OPT_CRASH_BUDGET);
+
+// 記錄當下的檢查（t 可以是還沒存檔的）
+function crashCallBreaks(t) {
+  const rule = activeRule('opt_crash_call');
+  if (!rule || t.market !== 'option') return [];
+  const open = openingLots(t);
+  if (open <= 1e-9) return [];                     // 純平倉
+  const cap = crashCap(rule);
+  const why = '判斷可以用，但要有上限：大跌日才買 call、一筆不超過額度、一天兩筆、虧滿額度就停。'
+    + '做對的那幾次，問題也不在方向，而在權利金是額度的好幾倍；同樣的動作在失控的時候會把獲利吐回去。';
+  if (t.side === 'sell') {
+    return [{ kind: 'opt_crash_call', text: `賣出${cpLabel(t.opt_cp)}＝做賣方`,
+      why: '賣方的虧損沒有上限，一天的結算就能抵掉其他所有交易的獲利。這條沒有例外。' }];
+  }
+  if (!isBuyCall(t)) return [];                    // 買 put：保險，隨時可以
+  const out = [];
+  const d = idxDay(t.trade_date);
+  if (d && d.low > -OPT_CRASH_PCT) {
+    out.push({ kind: 'opt_crash_call', why,
+      text: `今天加權盤中最低只跌 ${pct1(-d.low)}，不是大跌日（要跌超過 ${pct1(OPT_CRASH_PCT)}）` });
+  }
+  const today = optReplay(state.trades.filter((x) => x.trade_date === t.trade_date && x.market === 'option').sort(byCreated));
+  const cl = callClusters(today);
+  const last = cl[cl.length - 1];
+  const joins = !!last && Date.now() - last.end <= OPT_CLUSTER_MS;
+  const prem = optPremium(t, open) + (joins ? last.prem : 0);
+  const count = cl.length + (joins ? 0 : 1);
+  if (prem > cap + 1e-6) {
+    out.push({ kind: 'opt_crash_call', why,
+      text: `這一筆權利金 ${fmt(prem)} 元，超過一筆上限 ${fmt(cap)} 元（超出 ${fmt(prem - cap)} 元）` });
+  }
+  if (count > OPT_CRASH_MAX) {
+    out.push({ kind: 'opt_crash_call', why, text: `今天第 ${fmt(count)} 筆買 call，一天最多 ${fmt(OPT_CRASH_MAX)} 筆` });
+  }
+  const lost = optRealizedBefore(t.trade_date, null);
+  if (lost <= -cap) {
+    out.push({ kind: 'opt_crash_call', why, text: `選擇權今天已實現 ${fmt(lost)}，虧滿 ${fmt(cap)} 就停` });
+  }
+  return out;
+}
+
+// 事後檢討：依時間重播當天所有選擇權
+function crashCallAudit(day, dateISO, rule) {
+  const cap = crashCap(rule);
+  const rep = optReplay(day.filter((t) => t.market === 'option').sort(byCreated));
+  if (!rep.length) return [];
+  const out = [];
+  const shorts = rep.filter((r) => r.t.side === 'sell' && r.open > 1e-9);
+  if (shorts.length) {
+    out.push({ kind: 'opt_crash_call', text: `做了選擇權賣方 ${shorts.length} 筆`,
+      detail: shorts.map((r) => `${tradeLabel(r.t)} ${fmt(r.open)} 口`).join('、') });
+  }
+  const cl = callClusters(rep);
+  if (cl.length) {
+    const d = idxDay(dateISO);
+    const bad = [];
+    cl.forEach((c, i) => {
+      const why = [];
+      if (d && d.low > -OPT_CRASH_PCT) why.push(`加權最低只跌 ${pct1(-d.low)}`);
+      if (c.prem > cap + 1e-6) why.push(`權利金 ${fmt(c.prem)}，上限 ${fmt(cap)}`);
+      if (i >= OPT_CRASH_MAX) why.push(`第 ${i + 1} 筆，一天最多 ${OPT_CRASH_MAX} 筆`);
+      const lost = state.trades.filter((x) => x.trade_date === dateISO && x.market === 'option'
+        && isNum(x.realized_pl) && x.created_at && Date.parse(x.created_at) < c.start)
+        .reduce((a, x) => a + num(x.realized_pl), 0);
+      if (lost <= -cap) why.push(`之前選擇權已實現 ${fmt(lost)}`);
+      if (why.length) bad.push(`${new Date(c.start + TPE).toISOString().slice(11, 16)} ${
+        [...new Set(c.rows.map(tradeLabel))].join('＋')}（${why.join('；')}）`);
+    });
+    if (bad.length) out.push({ kind: 'opt_crash_call', text: `買 call 超出額度或次數 ${bad.length} 筆`, detail: bad.join('、') });
+  }
+  // 當天到期的：13:00 之後才出場、或抱到結算
+  const late = [], held = new Map(), names = new Map();
+  for (const r of rep) {
+    if (optSettleISO(r.t.opt_expiry) !== dateISO) continue;
+    const k = tradeKey(r.t);
+    names.set(k, tradeLabel(r.t));
+    held.set(k, num(held.get(k)) + (r.t.side === 'buy' ? 1 : -1) * num(r.t.quantity));
+    if (r.close > 1e-9 && r.t.created_at && tpeMinutes(r.t.created_at) > OPT_CRASH_EXIT_MIN) {
+      late.push(`${tradeLabel(r.t)} ${fmt(r.close)} 口`);
+    }
+  }
+  const toSettle = [...held].filter(([, v]) => v > 1e-9);
+  if (late.length || toSettle.length) {
+    out.push({ kind: 'opt_crash_call', text: '當天到期的沒有在 13:00 前出場',
+      detail: [...late, ...toSettle.map(([k, v]) => `${names.get(k)} 還有 ${fmt(v)} 口抱到結算`)].join('、') });
+  }
+  // 權利金跌一半沒出場：平倉的那一腳虧超過買進權利金的一半
+  const cost = new Map();
+  const stop = [];
+  for (const r of rep) {
+    const k = tradeKey(r.t);
+    if (r.t.side === 'buy' && r.open > 1e-9) {
+      const c = cost.get(k) || { q: 0, amt: 0 };
+      c.q += r.open; c.amt += r.open * num(r.t.price); cost.set(k, c);
+    } else if (r.t.side === 'sell' && r.close > 1e-9 && cost.get(k)?.q > 0) {
+      const avg = cost.get(k).amt / cost.get(k).q;
+      if (num(r.t.price) < avg * 0.5 - 1e-9) stop.push(`${tradeLabel(r.t)} 買 ${fmtMax(avg, 1)}、賣 ${fmtMax(r.t.price, 1)}`);
+    }
+  }
+  if (stop.length) out.push({ kind: 'opt_crash_call', text: `權利金跌超過一半才出場 ${stop.length} 筆`, detail: stop.join('、') });
+  return out;
+}
+
+// ------------------------------------------------------------
+// 換股名單外的部位上限（2026-10-30）
+//
+//   一次大跌日收盤後清點：名單外的曝險比名單內還多——**一半以上的部位不是換股法選的**。
+//   那天虧最多的一檔也是名單外，而且是前一天賣掉又追回來的。
+//   換股法的回測講的是名單內的那些，名單外的是他的判斷。
+//   判斷可以有，但要有額度，而且要記分（記分板在心得頁）。
+//
+//   分母是總曝險（名目，跟總覽同一套：期貨名目、現股市值、美股 × 倍數、權證 delta 曝險）。
+//   **指數（指數期貨、0050 這類）算「補位」**：那是換股法塞不下時補的，不算名單外。
+//   **家人委託的現股（stocks.sleeve）兩邊都不算**：那是獨立的 1 倍部位。
+//   美股一律算名單外；權證看標的在不在名單。名單是 rotation_list 裡最新一期。
+// ------------------------------------------------------------
+export function rotationNow(dateISO) {
+  const rows = (state.rotationList || []).filter((r) => !dateISO || String(r.period) <= dateISO);
+  if (!rows.length) return null;
+  const period = rows.reduce((a, r) => (String(r.period) > a ? String(r.period) : a), '');
+  return { period, set: new Set(rows.filter((r) => String(r.period) === period).map((r) => resolveTwSymbol(r.symbol))) };
+}
+
+// 權證的曝險：算得出 delta 就用 delta 曝險，否則用市值 × 實質槓桿（都沒有就只算市值，標成估計）
+function warExp(w) {
+  const e = warExposure(w);
+  if (e !== null) return { v: Math.abs(e), est: false };
+  return { v: warValue(w) * (isNum(w.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1), est: true };
+}
+
+export function listExposure(dateISO = todayISO()) {
+  const rot = rotationNow(dateISO);
+  if (!rot) return null;
+  const rows = [];
+  const where = (key) => (rot.set.has(key) ? 'in' : 'off');
+  for (const f of state.futures || []) {
+    const v = num(f.lots) * futPx(f) * num(f.size);
+    if (!(v > 0)) continue;
+    if (f.kind === 'stock') { const k = resolveTwSymbol(f.symbol); rows.push({ key: k, label: `${k} ${TW_STOCKS[k] || ''}`.trim(), v, where: where(k) }); }
+    else rows.push({ key: `IDX:${f.symbol}`, label: f.contract || f.symbol, v, where: 'fill' });
+  }
+  for (const s of state.stocks || []) {
+    if (s.sleeve) continue;
+    const k = resolveTwSymbol(s.symbol);
+    const v = num(s.shares) * pxOf(s, s.symbol);
+    if (v > 0) rows.push({ key: k, label: `${k} ${s.name || TW_STOCKS[k] || ''}`.trim(), v, where: INDEX_ETFS.has(k) ? 'fill' : where(k) });
+  }
+  const rate = num(state.settings?.usd_twd) || 32;
+  for (const u of state.us || []) {
+    const v = usExposureUsd(u) * rate;
+    if (v > 0) rows.push({ key: norm(u.symbol), label: norm(u.symbol), v, where: 'off' });
+  }
+  for (const w of state.warrants || []) {
+    const { v, est } = warExp(w);
+    if (!(v > 0)) continue;
+    const k = w.underlying ? resolveTwSymbol(w.underlying) : null;
+    rows.push({ key: `WAR:${norm(w.code)}`, label: `${w.code} ${w.name || '權證'}`, v, est, where: k ? where(k) : 'off' });
+  }
+  const total = rows.reduce((a, r) => a + r.v, 0);
+  const off = rows.filter((r) => r.where === 'off').reduce((a, r) => a + r.v, 0);
+  return { rot, rows, total, off, share: total > 0 ? off / total : 0 };
+}
+
+const offCap = (rule) => (isNum(rule?.amount) && num(rule.amount) > 0 ? num(rule.amount) / 100 : 0.2);
+export const offListCap = () => { const r = activeRule('off_list_cap'); return r ? offCap(r) : null; };
+
+// 記分板用：規則開始那天起，名單外、而且有留過夜的買進。
+//   當天就賣掉的不算（那是當沖，不是「挑股票」的判斷），家人委託的不算，
+//   權證看標的（標的不知道就跳過），美股沒有可比的基準，也跳過。
+//   名單用**那一天**有效的那一期，不是現在的。
+export function offListPicks() {
+  const rule = activeRule('off_list_cap');
+  if (!rule) return [];
+  const since = String(rule.started_on || '');
+  const sleeve = new Set((state.stocks || []).filter((s) => s.sleeve).map((s) => resolveTwSymbol(s.symbol)));
+  const out = [];
+  for (const t of state.trades) {
+    if (t.trade_date < since || t.side !== 'buy' || isRoll(t) || t.is_day_trade) continue;
+    if (!['tw', 'futures', 'warrant'].includes(t.market) || isIndexTrade(t)) continue;
+    if (t.market === 'futures' && t.fut_kind !== 'stock') continue;
+    if (isNum(t.prev_shares) && num(t.prev_shares) < 0) continue;        // 回補空單
+    let key = resolveTwSymbol(t.symbol);
+    if (t.market === 'warrant') {
+      const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
+      if (!w?.underlying) continue;
+      key = resolveTwSymbol(w.underlying);
+    }
+    if (t.market === 'tw' && sleeve.has(key)) continue;
+    const rot = rotationNow(t.trade_date);
+    if (!rot || rot.set.has(key)) continue;
+    // 同一天、排在後面的反向單＝當天就出掉了
+    const tk = tradeKey(t);
+    const outSameDay = state.trades.some((x) => x.trade_date === t.trade_date && x.side === 'sell'
+      && tradeKey(x) === tk && String(x.created_at) > String(t.created_at));
+    if (outSameDay) continue;
+    out.push({ t, key, date: t.trade_date, label: tradeLabel(t) });
+  }
+  return out.sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+function offListBreak(t) {
+  const rule = activeRule('off_list_cap');
+  if (!rule || t.market === 'option' || isIndexTrade(t) || !isOpening(t)) return null;
+  const le = listExposure(t.trade_date);
+  if (!le) return null;
+  let key = null, mult = 1;
+  if (t.market === 'warrant') {
+    const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
+    key = w?.underlying ? resolveTwSymbol(w.underlying) : null;
+    mult = isNum(w?.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1;
+  } else if (t.market !== 'us') key = resolveTwSymbol(t.symbol);
+  if (key && le.rot.set.has(key)) return null;
+  const add = tradeNotional(t) * mult;
+  if (!(add > 0)) return null;
+  const share = (le.off + add) / (le.total + add);
+  const cap = offCap(rule);
+  if (share <= cap + 1e-9) return null;
+  return {
+    kind: 'off_list_cap',
+    text: `${tradeLabel(t)} 不在 ${le.rot.period} 那一期的名單裡，這筆之後名單外佔總曝險 ${pct1(share)}（上限 ${pct1(cap)}）`,
+    why: '換股法的回測講的是名單內的股票；名單外的是你的判斷。判斷可以用，但要有額度，'
+      + '而且心得頁的記分板會算它 20 個交易日後有沒有贏大盤。',
+  };
+}
+
 function gateBreaks(t) {
   const out = [];
   const lossDay = activeRule('no_open_after_loss');
@@ -648,6 +955,9 @@ export function checkRules(t) {
   }
   const po = putOnlyBreak(t);
   if (po) out.push(po);
+  out.push(...crashCallBreaks(t));
+  const ol = offListBreak(t);
+  if (ol) out.push(ol);
 
   const cap = activeRule('day_max_amount');
   if (cap && t.is_day_trade && t.market === 'tw' && isNum(cap.amount)) {
@@ -724,10 +1034,10 @@ export function breaksOn(dateISO) {
 
   if (hold && dateISO >= hold.started_on) {
     // 勾了當沖的直接算；沒勾的看同一檔當天有沒有一買一賣（轉倉不算）
-    const flagged = day.filter((t) => t.is_day_trade);
+    const flagged = day.filter((t) => t.is_day_trade && !optOwnRule(t));
     const byKey = new Map();
     for (const t of day) {
-      if (t.is_day_trade || isRoll(t)) continue;
+      if (t.is_day_trade || isRoll(t) || optOwnRule(t)) continue;
       const k = tradeKey(t);
       const e = byKey.get(k) || { t, buy: 0, sell: 0 };
       if (t.side === 'buy') e.buy += num(t.quantity); else e.sell += num(t.quantity);
@@ -802,6 +1112,22 @@ export function breaksOn(dateISO) {
         detail: bad.map((t) => `${optAction(t)} ${fmt(t.quantity)} 口 @ ${fmtMax(t.price, 2)}`).join('、') });
     }
   }
+  const crash = activeRule('opt_crash_call');
+  if (crash && dateISO >= crash.started_on) out.push(...crashCallAudit(day, dateISO, crash));
+
+  // 名單外：只檢討今天。過去那幾天的部位已經變了，拿現在的部位去算當時的佔比是錯的。
+  const offRule = activeRule('off_list_cap');
+  if (offRule && dateISO >= offRule.started_on && dateISO === todayISO()) {
+    const le = listExposure(dateISO);
+    const cap = offCap(offRule);
+    if (le && le.share > cap + 1e-9) {
+      const offs = le.rows.filter((r) => r.where === 'off').sort((a, b) => b.v - a.v);
+      out.push({ kind: 'off_list_cap',
+        text: `名單外部位佔總曝險 ${pct1(le.share)}，上限 ${pct1(cap)}（${le.rot.period} 那一期的名單）`,
+        detail: offs.map((r) => `${r.label} ${fmt(r.v)}${r.est ? '（估計）' : ''}`).join('、') });
+    }
+  }
+
   if (activeRule('week_loss_pause')) {
     // 用每一筆自己的時間去問「那一刻是不是在停止期」。
     // **有實現損益的就是平倉**：事後回頭看，部位已經不在了，isOpening 會把平倉誤認成開新倉
