@@ -155,3 +155,37 @@ begin
   return n;
 end $function$
 ;
+
+-- update_quotes()：在 refresh_warrant_prices() 之後補 refresh_warrant_held()（上櫃權證不在全檔裡，收盤價原本只有按 ↻ 才會更新）。套用後的完整定義：
+CREATE OR REPLACE FUNCTION public.update_quotes()
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  perform public.refresh_tw_prices();
+  perform public.refresh_futures_prices();
+  perform public.refresh_option_prices();
+  perform public.refresh_warrant_prices();
+  -- 2026-10-30：上櫃權證不在證交所的全檔裡，收盤價只有按 ↻ 時才會更新。
+  -- 持有的那幾檔再用 MIS 補一次（失敗不影響其他來源）。
+  begin
+    perform public.refresh_warrant_held();
+  exception when others then
+    perform public.pm_log('mis_war', 0, false, sqlerrm);
+  end;
+  perform public.refresh_fx();
+  perform public.sync_positions(null);
+  -- 2026-10-09 補上：原本 auto_snapshot() 只掛在 update_housekeeping()（UTC 22:40
+  -- = 台北隔天 06:40），那個時點最新的台股行情是前一天收盤，所以每一筆自動快照的
+  -- snap_date 是今天、price_as_of 是昨天 —— 看儀表板的人會把「今天那一列」當成今天。
+  -- 掛在這裡（台北 14:35 起共七次，都在收盤與上櫃補抓 14:20 之後）才會用當天的價格。
+  -- on conflict 只覆蓋 note='auto'，所以重複跑無害、手動快照不受影響。
+  -- 進場位置（規則 15）：把當日高低寫進那一天的交易。
+  -- 一定要在 refresh_futures_prices 之後、而且在收盤後的排程裡跑——
+  -- 盤中記錄的那一筆高低是半途的值，收盤後這支會重算蓋掉。
+  perform public.refresh_trade_range();
+  perform public.auto_snapshot();
+end $function$
+;
