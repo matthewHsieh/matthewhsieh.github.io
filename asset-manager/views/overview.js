@@ -8,9 +8,45 @@ import { compute, exposureSlices } from '../portfolio.js';
 import { optPnlAt } from '../instruments.js';
 import { alertOf } from '../alerts.js';
 import { activeRule } from '../rules.js';
+import { LEV_BAND, LEV_CAP, idxLevNow } from '../leverage.js';
 import { callOdds, marginShocks, marginState, requiredRiskPct } from '../risk.js';
 import { bindStockOpen } from './stock.js';
 import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } from '../widgets.js';
+
+// ------------------------------------------------------------
+// 大盤等效槓桿對公式目標（2026-10-30）
+//   換股法的槓桿公式講的是大盤等效：名目 × beta、不含家人委託。
+//   這張卡把「現在幾倍」「公式要幾倍」「要不要動」放在同一個地方，
+//   週五收盤後的檢查就看這一張。公式用的是最近一次收盤，不是盤中。
+// ------------------------------------------------------------
+function idxLevCard() {
+  const L = idxLevNow();
+  if (!(L.equity > 0) || !Number.isFinite(L.lev)) return '';
+  const cap = num(activeRule('idx_lev_cap')?.amount) || LEV_CAP;
+  const t = L.target;
+  let verdict = '公式目標算不出來（加權指數的報酬資料還沒載入）', cls = '';
+  if (t !== null) {
+    const gap = L.lev - t;
+    if (L.lev > cap + 1e-9) { verdict = `超過上限 ${fmtX(cap)}，下一個交易日開盤前就要減`; cls = 'loss'; }
+    else if (gap > LEV_BAND) { verdict = `比目標高 ${fmtX(gap)}，週五收盤後決定減多少、週一開盤前掛單`; cls = 'loss'; }
+    else if (gap < -LEV_BAND) { verdict = `比目標低 ${fmtX(-gap)}，週五收盤後可以用微台補`; }
+    else verdict = `在目標 ±${fmtX(LEV_BAND)} 以內，不用動`;
+  }
+  const s = L.sig;
+  return `<div class="card">
+    <div class="list-title" role="heading" aria-level="2">大盤等效槓桿</div>
+    <div class="grid3">
+      <div class="stat"><div class="label">現在</div><div class="value">${fmtX(L.lev)}</div></div>
+      <div class="stat"><div class="label">大跌時</div><div class="value">${fmtX(L.levDown)}</div></div>
+      <div class="stat"><div class="label">公式目標</div><div class="value">${t === null ? '–' : fmtX(t)}</div></div>
+    </div>
+    <p class="sub ${cls}">${esc(verdict)}</p>
+    <p class="hint">名目 × 每一檔對加權的 beta（最近 250 個交易日），分母是總資產扣掉家人委託的部位${
+      L.sleeve > 0 ? `（${fmt(L.sleeve)}）` : ''}。「大跌時」用只拿大盤下跌日估的 beta：這類股票大盤跌的時候跌得比平常的 beta 還多。
+      ${s ? `公式：加權${s.above ? '在' : '跌破'} 200 日線${s.above ? '之上 → 2 倍' : ' → 0 倍'}，離 52 週高點 ${pct(s.dd)} → 加 ${fmtX(s.add)}，上限 ${fmtX(LEV_CAP)}。` : ''}
+      ${L.est ? '有部位算不出 beta 或 delta，用 1.5 倍或市值估計。' : ''}</p>
+  </div>`;
+}
 
 export function renderOverview(el) {
   const c = compute();
@@ -33,6 +69,7 @@ export function renderOverview(el) {
       ${stat('槓桿① 資產槓桿', fmtX(c.leverageAsset), c.netAssets > 0 ? '總資產 ÷ 淨資產' : '淨資產不為正，無法計算')}
       ${stat('槓桿② 曝險槓桿', fmtX(c.leverageExposure), '總曝險 ÷ 總資產')}
     </div>
+    ${idxLevCard()}
     ${marginCard()}
     ${(() => {
       // 持倉裡有被交易所盯上的就要先講。等他自己去點開個股才發現就太晚了。

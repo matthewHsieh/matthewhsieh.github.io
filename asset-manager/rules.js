@@ -1,5 +1,6 @@
 import { fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
 import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usExposureUsd, usLeverage, warExposure, warValue } from './instruments.js';
+import { LEV_CAP, idxLevNow } from './leverage.js';
 import { futPx, pxOf } from './live.js';
 import { compute } from './portfolio.js';
 import { exposureRows, marginState } from './risk.js';
@@ -767,6 +768,36 @@ function offListBreak(t) {
   };
 }
 
+// ------------------------------------------------------------
+// 大盤等效槓桿上限（2026-10-30，取代名目的 max_exposure）
+//   公式的天花板是 2.5 倍「大盤等效」。這條不是用來調到目標的（那是週五檢查的事），
+//   是在他盤中越下越大的時候攔住——虧損之後下一筆是之前的 2.6 倍，那個動作。
+//   名目的 1.3 倍上限在他實際的 2～3 倍之間每一筆都會跳，警告變成噪音，等於沒有。
+//   選擇權不在這條（有自己的額度）；平倉、減碼永遠放行。
+// ------------------------------------------------------------
+function idxLevBreak(t) {
+  const rule = activeRule('idx_lev_cap');
+  // 只看買進：新開的空單會讓淨多方曝險變小，不會超過上限
+  if (!rule || t.market === 'option' || t.side !== 'buy' || !isOpening(t)) return null;
+  const cap = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) : LEV_CAP;
+  let sym = null, mult = 1;
+  if (t.market === 'warrant') {
+    const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
+    sym = w?.underlying || null;
+    mult = isNum(w?.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1;
+  } else if (!isIndexTrade(t) && t.market !== 'us') sym = t.symbol;
+  const v = tradeNotional(t) * mult;
+  if (!(v > 0)) return null;
+  const L = idxLevNow({ exposure: v, sym });
+  if (!(L.equity > 0) || !(L.lev > cap + 1e-9)) return null;
+  return {
+    kind: 'idx_lev_cap',
+    text: `這筆之後大盤等效槓桿 ${fmtMax(L.lev, 2)} 倍（大跌時 ${fmtMax(L.levDown, 2)} 倍），超過上限 ${fmtMax(cap, 2)} 倍`,
+    why: '上限是公式的天花板，不是目標。名目 × beta 才是大盤跌 1% 你會跌幾 %；'
+      + '這類股票大盤大跌的時候跌得比 beta 還多，所以另外列「大跌時」。減碼與平倉不受這條限制。',
+  };
+}
+
 function gateBreaks(t) {
   const out = [];
   const lossDay = activeRule('no_open_after_loss');
@@ -887,7 +918,11 @@ function sizeBreaks(t) {
     // 單檔上限的分母是「總曝險上限」，不是總資產：他要的是「這檔佔整個部位的幾 %」。
     // 冷靜期上限 1 倍，兩者相同；上限放到 1.3 倍時單檔跟著變 19.5% 的總資產。
     // **用上限不用實際曝險**：用實際曝險的話，曝險開越大單檔上限跟著越寬，規則會自己失效。
-    const base = assets * (tot && isNum(tot.amount) && num(tot.amount) > 0 ? num(tot.amount) : 1);
+    // 2026-10-30 起總曝險上限改成大盤等效（idx_lev_cap），單檔的分母跟著用它的倍數。
+    const idxCap = activeRule('idx_lev_cap');
+    const mult = idxCap && isNum(idxCap.amount) && num(idxCap.amount) > 0 ? num(idxCap.amount)
+      : tot && isNum(tot.amount) && num(tot.amount) > 0 ? num(tot.amount) : 1;
+    const base = assets * mult;
     const after = symbolExposure(t) + add;
     const pct = after / base;
     if (pct > num(cap.amount) / 100 + 1e-9) {
@@ -919,6 +954,8 @@ export function checkRules(t) {
   if (!t || !state.rules.length) return out;
 
   // 部位大小排最前面：這是 2026-09-24 之後最要緊的一條
+  const il = idxLevBreak(t);
+  if (il) out.push(il);
   out.push(...sizeBreaks(t));
   // 期貨名目上限：2026-10-13 的恐慌日回測，懸崖在 3.0 → 3.5 倍
   out.push(...futNotionalBreaks(t));

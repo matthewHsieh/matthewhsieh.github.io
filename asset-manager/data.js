@@ -1,5 +1,6 @@
 import { $, DEFAULT_SETTINGS, esc, fail, num, round2, sb, state, toast, todayISO } from './core.js';
 import { ivSince } from './instruments.js';
+import { ensureLevSeries } from './leverage.js';
 import { compute } from './portfolio.js';
 import { render } from './render.js';
 
@@ -97,6 +98,8 @@ export async function loadAll() {
 
   const d = await runQueries({ ...MARKET_QUERIES, ...personalQueries(state.user.id) });
   assignState(d);
+  // 大盤等效槓桿要持有標的的日報酬（算 beta）。跟配置頁共用快取，換過部位才會多抓。
+  await ensureLevSeries();
   state.settings = d._settings ? { ...DEFAULT_SETTINGS, ...d._settings } : { ...DEFAULT_SETTINGS };
   state.optExpiries = (d._fwds ?? [])
     .map((r) => ({ expiry: String(r.symbol).split('|')[1], forward: num(r.price), as_of: r.as_of }))
