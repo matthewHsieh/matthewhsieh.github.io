@@ -1053,6 +1053,7 @@ export async function editRule(existing) {
         ['opt_put_only', '選擇權只准 buy put（賣 put、賣 call、買 call 都擋）'],
         ['opt_only_hedge', '選擇權只准 buy put / sell call'],
         ['week_loss_pause', '當週已實現虧到門檻，停 48 小時不開新倉（金額 = 門檻，週末不算）'],
+        ['no_add_losing', '賠錢不加碼：成交價比目前均價差就擋（金額 = 容忍 %，留空 = 0）'],
         ['day_one_at_a_time', '個股當沖一次一檔'],
         ['day_max_amount', '個股當沖單檔金額上限'],
         ['fut_lev_cap', '期貨名目上限（倍數，分母是期貨帳戶權益數，例如 2.5）'],

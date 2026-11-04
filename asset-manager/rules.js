@@ -1,4 +1,4 @@
-import { fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
+import { btrimEq, fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
 import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usExposureUsd, usLeverage, warExposure, warValue } from './instruments.js';
 import { LEV_CAP, idxLevNow } from './leverage.js';
 import { futPx, pxOf } from './live.js';
@@ -948,6 +948,93 @@ function sizeBreaks(t) {
   return out;
 }
 
+// ------------------------------------------------------------
+// 賠錢不加碼
+//
+//   2026-11-04 從一篇期貨當沖的分享文裡抄過來的。原文只有一句：
+//   「但是有一點一定要做到，賠錢的時候，絕對不能做加碼的動作。」
+//
+//   值得抄是因為 46000 買權那一組部位把代價算得很清楚：
+//     10/30 買 5 口 @182
+//     11/2  買 5 口 @72.2 → 均價 127.1   （第一次賠錢加碼）
+//     11/2  買 10 口 @80  → 均價 103.55  （第二次）
+//     11/2  買 10 口 @78  → 均價 90.775  （第三次）
+//     11/3  20 口 @7.5 出場 → −83,275
+//   三次加碼的理由都是「現在更便宜」。沒有這三次，這組部位賠到歸零
+//   也只是 5 口 × 182 × 50 = 45,500。加碼把 4.5 萬的錯變成 8.3 萬。
+//
+//   全樣本（9/8–11/4，用交易自己存的 prev_cost 判斷）：
+//     曾經被往壞的方向加碼的 13 個標的，合計 −218.6 萬（平均 −16.8 萬）
+//     沒有被這樣加碼的 59 個標的，合計 −109.0 萬（平均 −1.9 萬）
+//   **這個對比有反向因果**：會讓人想攤平的標的，本來就是走勢不利的標的。
+//   所以它不是「攤平造成 9 倍虧損」的證據。真正站得住的是機制本身——
+//   攤平在「已經做錯」的那一刻把部位放大，而部位大小是他唯一真正的死因。
+//   （同一天試過「一天最多開 N 檔」，證據只在「當天碰過的標的數」上成立，
+//    改成只算開新倉就完全消失——那是崩盤日要出場的標的多，不是開倉多。沒有採用。）
+//
+//   **用成交價跟目前均價比，不用即時報價。** 你願意用這個價錢買，
+//   它就是你此刻對這個部位的估值；而且事後重播時 prev_cost 就在那裡。
+//   **只擋加碼，平倉與減碼永遠放行**，跟其他規則一致。
+// ------------------------------------------------------------
+
+// 手上這一檔的均價與方向（1 多、−1 空）。沒有部位、或沒有均價，回 null。
+function posCostOf(t) {
+  const of = (row, cost, dir) => {
+    if (!row || !isNum(cost)) return null;
+    return { cost: num(cost), dir };
+  };
+  if (t.market === 'option') {
+    const o = (state.options || []).find((x) => btrimEq(x.expiry, t.opt_expiry)
+      && num(x.strike) === num(t.opt_strike) && x.cp === t.opt_cp);
+    return of(o, o?.cost ?? o?.price, o?.side === 'short' ? -1 : 1);
+  }
+  if (t.market === 'futures') {
+    const key = t.fut_kind === 'stock' ? resolveTwSymbol(t.symbol) : norm(t.symbol);
+    const f = (state.futures || []).find((x) =>
+      (x.kind === 'stock' ? resolveTwSymbol(x.symbol) : norm(x.symbol)) === key);
+    return of(f, f?.cost ?? f?.price, f?.side === 'short' ? -1 : 1);
+  }
+  if (t.market === 'us') {
+    const u = (state.us || []).find((x) => norm(x.symbol) === norm(t.symbol));
+    return of(u, u?.cost_usd ?? u?.price_usd, 1);
+  }
+  if (t.market === 'warrant') {
+    const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
+    return of(w, w?.cost ?? w?.price, 1);
+  }
+  const s = (state.stocks || []).find((x) => resolveTwSymbol(x.symbol) === resolveTwSymbol(t.symbol));
+  return of(s, s?.cost ?? s?.price, 1);
+}
+
+// 這一筆是不是「往壞的方向加碼」。回傳退了多少 %，不是的話回 null。
+function addLosingPct(t, cost, dir) {
+  if (!(num(cost) > 0)) return null;
+  const px = num(t.price);
+  const worse = dir > 0 ? px < num(cost) - 1e-9 : px > num(cost) + 1e-9;
+  if (!worse) return null;
+  return Math.abs(px - num(cost)) / num(cost);
+}
+
+function addLosingBreak(t) {
+  const rule = activeRule('no_add_losing');
+  if (!rule || !isOpening(t) || isRoll(t)) return null;
+  const p = posCostOf(t);
+  if (!p) return null;
+  if ((t.side === 'buy' ? 1 : -1) !== p.dir) return null;   // 反向＝減碼
+  const down = addLosingPct(t, p.cost, p.dir);
+  if (down === null) return null;
+  // 規則列的 amount 當容忍度（%）：留空就是一毛錢都不准
+  const tol = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) / 100 : 0;
+  if (down <= tol + 1e-9) return null;
+  const unit = t.market === 'option' ? '權利金' : '價格';
+  return {
+    kind: 'no_add_losing',
+    text: `${tradeLabel(t)} 目前均價 ${fmtMax(p.cost, 2)}，這筆 ${fmtMax(t.price, 2)} 是${
+      p.dir > 0 ? '往下' : '往上'}加碼（${unit}已經差 ${fmt(down * 100)}%）`,
+    why: '46000 買權攤了三次，把 4.5 萬的錯變成 8.3 萬。加碼的理由永遠是「現在更便宜」，但更便宜正是市場在說方向錯了。要加碼只能加在賺錢的部位上。',
+  };
+}
+
 // 一筆交易（可以是還沒存檔的）違反了哪些規則
 export function checkRules(t) {
   const out = [];
@@ -963,6 +1050,9 @@ export function checkRules(t) {
   out.push(...gateBreaks(t));
   const wp = weekPauseBreak(t, Date.now());
   if (wp) out.push(wp);
+  // 2026-11-04：賠錢不加碼
+  const al = addLosingBreak(t);
+  if (al) out.push(al);
 
   // 排第一個：這是 2026-09-23 之後最要緊的一條
   const hold = activeRule('no_day_trade');
@@ -1177,5 +1267,28 @@ export function breaksOn(dateISO) {
         detail: bad.map(tradeLabel).join('、') });
     }
   }
+
+  // 賠錢加碼：事後重播用交易自己存下來的 prev_cost，是當時的真實均價，
+  // 不受現在的部位影響（部位可能早就平掉了）。
+  const addLose = activeRule('no_add_losing');
+  if (addLose && dateISO >= addLose.started_on) {
+    const tol = isNum(addLose.amount) && num(addLose.amount) > 0 ? num(addLose.amount) / 100 : 0;
+    const bad = [];
+    for (const x of day) {
+      if (isRoll(x) || !isNum(x.prev_cost) || !isNum(x.prev_shares)) continue;
+      const dir = num(x.prev_shares) > 0 ? 1 : num(x.prev_shares) < 0 ? -1 : 0;
+      if (!dir || (x.side === 'buy' ? 1 : -1) !== dir) continue;
+      const down = addLosingPct(x, x.prev_cost, dir);
+      if (down === null || down <= tol + 1e-9) continue;
+      bad.push({ x, down });
+    }
+    if (bad.length) {
+      out.push({ kind: 'no_add_losing',
+        text: `賠錢加碼 ${bad.length} 筆`,
+        detail: bad.map(({ x, down }) => `${tradeLabel(x)} 均價 ${fmtMax(x.prev_cost, 2)} → 加碼 ${
+          fmt(x.quantity)} @ ${fmtMax(x.price, 2)}（差 ${fmt(down * 100)}%）`).join('、') });
+    }
+  }
+
   return out;
 }
