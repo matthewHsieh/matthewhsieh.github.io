@@ -47,7 +47,8 @@ function project(c, items, annual) {
   const goals = by('goal').filter((g) => g.due_date);
 
   const invest = by('invest').reduce((a, i) => a + monthly(i, rate), 0);
-  let inv = num(c.stockValue) + num(c.usValue) + num(c.futEquity) + num(c.optMarket) + num(c.warMarket);
+  // 選擇權不另外加：部位在期貨帳戶裡，futEquity 已經含了它的浮動損益（2026-11-04）
+  let inv = num(c.stockValue) + num(c.usValue) + num(c.futEquity) + num(c.warMarket);
   let cash = num(c.cash);
   let other = num(c.liabilities) - debts.reduce((a, d) => a + num(d.balance), 0);   // 不會動的負債（家人借款）
   const bal = debts.map((d) => num(d.balance));

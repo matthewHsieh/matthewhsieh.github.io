@@ -107,7 +107,8 @@ export function compute() {
   //
   //   當初寫 abs() 是為了防「賣出買權」看起來像避險（它的 delta 曝險也是負的）。
   //   但買賣兩邊的性質不一樣，該分開處理：
-  //     買方：最大虧損就是權利金，而權利金已經算在總資產的 optMarket 裡。
+  //     買方：最大虧損就是權利金，而權利金已經反映在期貨帳戶的權益數裡
+  //           （2026-11-04 起總資產不另外加 optMarket，見下面 totalAssets）。
   //           它的 delta 避險是真的、而且沒有尾部，所以**可以淨**。
   //     賣方：delta 避險也是真的，但虧損無上限。淨掉會讓人用賣出買權
   //           把曝險數字壓低，所以**一律取絕對值**。
@@ -166,7 +167,15 @@ export function compute() {
   const futEquity = sum(balances.filter((b) => b.kind === 'futures_equity'), toTwd);
   const liabilities = sum(balances.filter((b) => b.kind === 'liability'), toTwd);
 
-  const totalAssets = stockValue + usValue + futEquity + cash + optMarket + warMarket;
+  // ------------------------------------------------------------
+  // **選擇權不加進總資產。** 2026-11-04 使用者指出來的：選擇權部位在期貨帳戶裡，
+  // 券商回報的「權益數」本來就含了未沖銷部位的浮動損益，再加一次 optMarket
+  // 就是同一筆錢算兩遍。實例：11/4 早上的快照把 10 口留倉買權多算了一次，
+  // 總資產硬生生多出一截，當天的「資產增減」整個反過來。
+  // 期貨部位一直都沒有加（只進曝險），選擇權現在跟它一致。
+  // optMarket 仍然算出來、仍然顯示在選擇權那一區，只是不進總資產。
+  // ------------------------------------------------------------
+  const totalAssets = stockValue + usValue + futEquity + cash + warMarket;
   const netAssets = totalAssets - liabilities;
   const exposure = stockValue + usExposure + futGross + optExposure + warExp;
 
