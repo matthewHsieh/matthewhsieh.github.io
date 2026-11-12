@@ -459,7 +459,7 @@ export function futDisplayName(kind, symbol, size) {
 
 export function fmtQty(market, q) {
   q = num(q);
-  if (market === 'futures' || market === 'option') return `${fmtMax(q, 2)} 口`;
+  if (market === 'futures' || market === 'option' || market === 'usopt') return `${fmtMax(q, 2)} 口`;
   if (market === 'warrant') return `${fmtMax(q, 2)} 張`;
   if (market === 'tw') return q !== 0 && q % 1000 === 0 ? `${fmt(q / 1000)} 張` : `${fmt(q)} 股`;
   return `${fmtMax(q, 4)} 股`;
@@ -514,3 +514,106 @@ export const usLevLabel = (u) => {
   const x = usLeverage(u);
   return Math.abs(x) === 1 && x > 0 ? '' : `${x < 0 ? '-' : ''}${Math.abs(x)}X`;
 };
+
+// ============================================================
+// 美股個股選擇權（複委託，2026-11-12）
+//
+//   跟台指選擇權分開一張表（us_options），計價是 USD、每口 100 股、到期日是日期。
+//   **市值要進總資產**：權利金是從複委託現金付出去的，不像台指選擇權那樣
+//   已經含在期貨帳戶權益數裡。曝險用 delta × 標的價 × 100 × 口數。
+// ============================================================
+export const USOPT_SIZE = 100;
+
+const usOptSign = (o) => (o.side === 'short' ? -1 : 1);
+
+// 11/20 這種寫法；跨年才帶年份
+export const usOptExpiryText = (d) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ''));
+  if (!m) return String(d || '');
+  const thisYear = String(todayISO()).slice(0, 4);
+  return `${m[1] !== thisYear ? m[1] + '/' : ''}${Number(m[2])}/${Number(m[3])}`;
+};
+
+export const usOptLabel = (o) =>
+  `${esc(norm(o.symbol))} ${esc(usOptExpiryText(o.expiry))} ${strikeText(o.strike)} ${o.cp === 'put' ? 'Put' : 'Call'}`;
+
+// 市值（USD）：買方正、賣方負
+export const usOptValueUsd = (o) => usOptSign(o) * num(o.lots) * num(o.price_usd) * num(o.size ?? USOPT_SIZE);
+
+export const usOptPlUsd = (o) =>
+  isNum(o.cost_usd)
+    ? usOptSign(o) * (num(o.price_usd) - num(o.cost_usd)) * num(o.lots) * num(o.size ?? USOPT_SIZE)
+    : null;
+
+// delta 曝險（USD，帶方向）。delta 或標的價還沒算出來就回 null，**不要用 0 補**
+export const usOptExpUsd = (o) =>
+  isNum(o.delta) && isNum(o.underlying_px) && num(o.underlying_px) > 0
+    ? usOptSign(o) * num(o.lots) * num(o.delta) * num(o.underlying_px) * num(o.size ?? USOPT_SIZE)
+    : null;
+
+// 計入總曝險的那個數：買方淨、賣方毛（跟台指選擇權同一套，理由見 portfolio.js）
+export const usOptExpCounted = (o) => {
+  const d = usOptExpUsd(o) ?? 0;
+  return o.side === 'short' ? Math.abs(d) : d;
+};
+
+// 到期剩幾個日曆天（到期日當天算 0）
+export const usOptDaysLeft = (o) => {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(o.expiry || ''));
+  if (!m) return null;
+  return Math.round((new Date(m[1] + 'T00:00:00Z') - new Date(todayISO() + 'T00:00:00Z')) / 86400000);
+};
+
+// 到期最大虧損（USD，正數）。買方就是權利金；賣出買權無上限回 null；賣出賣權是履約價 − 權利金
+export const usOptMaxLossUsd = (o) => {
+  const q = num(o.lots) * num(o.size ?? USOPT_SIZE);
+  const basis = isNum(o.cost_usd) ? num(o.cost_usd) : num(o.price_usd);
+  if (o.side !== 'short') return q * basis;
+  if (o.cp === 'call') return null;
+  return q * Math.max(0, num(o.strike) - basis);
+};
+
+// 損益兩平（到期時標的價）
+export const usOptBreakEven = (o) => {
+  const basis = isNum(o.cost_usd) ? num(o.cost_usd) : num(o.price_usd);
+  return o.cp === 'put' ? num(o.strike) - basis : num(o.strike) + basis;
+};
+
+// ------------------------------------------------------------
+// 從權利金反推 delta（Black-76，標的價當遠期價，忽略利率與股利）
+//   跟伺服器的 pm_solve_x / pm_delta 同一套，所以記交易當下算的跟隔天排程算的對得起來。
+//   用途：記交易時有填「標的價」，當場就能算出這一筆的曝險，不必等報價排程。
+// ------------------------------------------------------------
+const ncdf = (x) => {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp(-x * x / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
+};
+const bs76 = (f, k, x, call) => {
+  if (!(x > 0)) return Math.max(0, call ? f - k : k - f);
+  const d1 = (Math.log(f / k) + x * x / 2) / x, d2 = d1 - x;
+  return call ? f * ncdf(d1) - k * ncdf(d2) : k * ncdf(-d2) - f * ncdf(-d1);
+};
+export function usOptDeltaFrom(s, k, premium, cp) {
+  s = num(s); k = num(k); premium = num(premium);
+  if (!(s > 0) || !(k > 0) || !(premium > 0)) return null;
+  const call = cp !== 'put';
+  const intrinsic = Math.max(0, call ? s - k : k - s);
+  let x;
+  if (premium <= intrinsic + 1e-9) x = 0;
+  else {
+    let lo = 1e-6, hi = 5;
+    if (bs76(s, k, hi, call) < premium) x = hi;
+    else {
+      for (let i = 0; i < 80; i += 1) {
+        const mid = (lo + hi) / 2;
+        if (bs76(s, k, mid, call) < premium) lo = mid; else hi = mid;
+      }
+      x = (lo + hi) / 2;
+    }
+  }
+  if (!(x > 0)) return call ? (s > k ? 1 : 0) : (s < k ? -1 : 0);
+  const d1 = (Math.log(s / k) + x * x / 2) / x;
+  return call ? ncdf(d1) : ncdf(d1) - 1;
+}

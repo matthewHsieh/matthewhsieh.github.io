@@ -146,6 +146,8 @@ grant execute on function public.journal_days(integer)     to authenticated;
 grant execute on function public.refresh_market(text)      to authenticated;
 grant execute on function public.refresh_prices(boolean)   to authenticated;
 grant execute on function public.sync_my_positions()       to authenticated;
+-- 美股選擇權報價（us_options.sql）。從 App 呼叫時函式內部會把 p_user 鎖成 auth.uid()。
+grant execute on function public.refresh_us_options(uuid)  to authenticated;
 -- 新帳號第一次登入時 app.js 會叫這一支補上預設規則。
 -- **原本漏了**，只是靠「預設全開」才沒出事；收緊 authenticated 之後
 -- 沒補上的話，新使用者會完全沒有紀律規則，而且只有新帳號會踩到。
@@ -207,7 +209,7 @@ begin
                           'eps_resolved', 'stock_detail', 'screen_stocks', 'app_risk',
                           'stock_stories', 'etf_board', 'theme_etf',
                           'my_valuation', 'journal_days', 'bootstrap_me', 'delete_me',
-                          'refresh_market', 'refresh_prices', 'sync_my_positions',
+                          'refresh_market', 'refresh_prices', 'sync_my_positions', 'refresh_us_options',
                           -- 配置頁：選股排行、位階掃描、產業分類（screen_filters.sql
                           -- 與 dd_rank.sql 授權給 authenticated，guest_alloc.sql 再開給 anon）
                           'top_ratio', 'drop_hits', 'pm_industry_of');
@@ -231,7 +233,7 @@ begin
   select string_agg(c.relname || ' (RLS 沒開)', ', ') into bad
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
-    and c.relname in ('stocks', 'futures', 'us_stocks', 'warrants', 'options',
+    and c.relname in ('stocks', 'futures', 'us_stocks', 'warrants', 'options', 'us_options',
                       'balances', 'trades', 'snapshots', 'settings',
                       'journal', 'rules', 'rule_breaks', 'eps_override');
   if bad is not null then raise exception '個人資料表沒開 RLS：%', bad; end if;
@@ -241,7 +243,7 @@ begin
   join pg_class c on c.oid = p.polrelid
   join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public'
-    and c.relname in ('stocks', 'futures', 'us_stocks', 'warrants', 'options',
+    and c.relname in ('stocks', 'futures', 'us_stocks', 'warrants', 'options', 'us_options',
                       'balances', 'trades', 'snapshots', 'settings',
                       'journal', 'rules', 'rule_breaks', 'eps_override')
     and (p.polroles = '{0}'::oid[]    -- 0 = PUBLIC，等於所有角色

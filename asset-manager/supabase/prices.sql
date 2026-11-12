@@ -1293,6 +1293,8 @@ end $fn$;
 --   複委託：資產用市值，**曝險用市值 × |槓桿倍數|**（2X ETF 賣掉只拿得回市值，
 --   但承受的是標的兩倍的波動，跟期貨「權益 vs 名目」是同一回事）
 -- ------------------------------------------------------------
+-- **2026-11-12 起線上版本以 us_options.sql 為準**（加了美股選擇權，也含 11/4 把台指選擇權拿出總資產）。
+-- 這一份是舊版，不要單獨重跑這一段。
 create or replace function public.auto_snapshot()
 returns integer language plpgsql security definer set search_path = public as $$
 declare n integer;

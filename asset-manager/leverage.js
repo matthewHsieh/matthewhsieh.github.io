@@ -1,5 +1,5 @@
 import { isNum, norm, num, state } from './core.js';
-import { usExposureUsd, warExposure, warValue } from './instruments.js';
+import { usExposureUsd, usOptExpCounted, usOptLabel, warExposure, warValue } from './instruments.js';
 import { futPx, pxOf } from './live.js';
 import { compute } from './portfolio.js';
 import { indexSignal, loadSeries } from './risk.js';
@@ -109,6 +109,8 @@ export function idxLevNow(extra = null) {
   const rate = num(state.settings?.usd_twd) || 32;
   // 美股對加權的 beta 沒有意義（不同市場），照公式的作法當 1 倍
   for (const u of state.us || []) { const v = usExposureUsd(u) * rate; if (v > 0) add(norm(u.symbol), v, one, 'us'); }
+  // 美股選擇權：delta 曝險，beta 跟美股一樣當 1
+  for (const o of state.usOpts || []) { const v = usOptExpCounted(o) * rate; if (v) add(usOptLabel(o), v, one, 'us'); }
   for (const w of state.warrants || []) {
     const e = warExposure(w);
     const v = e !== null ? Math.abs(e) : warValue(w) * (isNum(w.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1);

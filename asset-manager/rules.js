@@ -1,5 +1,5 @@
 import { btrimEq, fmt, fmtMax, isNum, norm, num, state, todayISO } from './core.js';
-import { OPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usExposureUsd, usLeverage, warExposure, warValue } from './instruments.js';
+import { OPT_SIZE, USOPT_SIZE, cpLabel, optForwardInfo, optSettleISO, usExposureUsd, usLeverage, usOptDeltaFrom, warExposure, warValue } from './instruments.js';
 import { LEV_CAP, idxLevNow } from './leverage.js';
 import { futPx, pxOf } from './live.js';
 import { compute } from './portfolio.js';
@@ -108,6 +108,7 @@ const isRoll = (t) => String(t.note || '').startsWith('轉倉');
 // 給違規訊息用的標的名稱
 function tradeLabel(t) {
   if (t.market === 'option') return `${t.opt_expiry ?? ''} ${fmt(t.opt_strike)} ${cpLabel(t.opt_cp)}`.trim();
+  if (t.market === 'usopt') return `${norm(t.symbol)} ${t.opt_expiry ?? ''} ${fmt(t.opt_strike)} ${t.opt_cp === 'put' ? 'Put' : 'Call'}`;
   if (t.market === 'tw' || t.fut_kind === 'stock') {
     const k = resolveTwSymbol(t.symbol);
     return `${k} ${TW_STOCKS[k] || ''}${t.market === 'futures' ? ' 個股期' : ''}`.trim();
@@ -287,12 +288,33 @@ function tradeNotional(t) {
     return q * p * (num(state.settings?.usd_twd) || 32) * (lev || 1);
   }
   if (t.market === 'option') return 0;          // 選擇權用 delta 曝險，不在這條的範圍
+  if (t.market === 'usopt') return usOptTradeExposure(t);
   return q * p;                                 // 台股、權證
+}
+
+// ------------------------------------------------------------
+// 美股選擇權這一筆的曝險（台幣）：|delta| × 標的價 × 100 × 口數
+//   標的價優先用表單上填的（成交當下），沒填就用手上同一口部位存的，再沒有就用同一檔現股的價。
+//   **都沒有的話退回「權利金 × 口數 × 100」**——那會低估（delta 曝險通常是權利金的好幾倍），
+//   但比回 0 讓曝險規則整個跳過好。
+// ------------------------------------------------------------
+function usOptTradeExposure(t) {
+  const rate = num(state.settings?.usd_twd) || 32;
+  const q = num(t.quantity) * USOPT_SIZE;
+  const pos = (state.usOpts || []).find((o) => norm(o.symbol) === norm(t.symbol)
+    && btrimEq(o.expiry, t.opt_expiry) && num(o.strike) === num(t.opt_strike) && o.cp === t.opt_cp);
+  const held = (state.us || []).find((u) => norm(u.symbol) === norm(t.symbol));
+  const s = isNum(t.opt_fwd) && num(t.opt_fwd) > 0 ? num(t.opt_fwd)
+    : num(pos?.underlying_px) > 0 ? num(pos.underlying_px)
+      : num(held?.price_usd) > 0 ? num(held.price_usd) : null;
+  const d = s ? usOptDeltaFrom(s, t.opt_strike, t.price, t.opt_cp) : null;
+  if (s && isNum(d)) return Math.abs(d) * s * q * rate;
+  return num(t.price) * q * rate;
 }
 
 // 同一檔現在的曝險。個股期貨跟現股算同一檔（key 都是代號）。
 function symbolExposure(t) {
-  const key = t.market === 'us' ? norm(t.symbol) : resolveTwSymbol(t.symbol);
+  const key = t.market === 'us' || t.market === 'usopt' ? norm(t.symbol) : resolveTwSymbol(t.symbol);
   return exposureRows().filter((r) => r.key === key).reduce((a, r) => a + r.exposure, 0);
 }
 
@@ -325,6 +347,11 @@ function heldDirection(t) {
   }
   if (t.market === 'us') return (state.us || []).some((u) => norm(u.symbol) === norm(t.symbol)) ? 1 : 0;
   if (t.market === 'warrant') return (state.warrants || []).some((w) => norm(w.code) === norm(t.symbol)) ? 1 : 0;
+  if (t.market === 'usopt') {
+    const o = (state.usOpts || []).find((x) => norm(x.symbol) === norm(t.symbol)
+      && btrimEq(x.expiry, t.opt_expiry) && num(x.strike) === num(t.opt_strike) && x.cp === t.opt_cp);
+    return !o ? 0 : o.side === 'short' ? -1 : 1;
+  }
   return (state.stocks || []).some((s) => resolveTwSymbol(s.symbol) === resolveTwSymbol(t.symbol)) ? 1 : 0;
 }
 
@@ -753,7 +780,7 @@ function offListBreak(t) {
     const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
     key = w?.underlying ? resolveTwSymbol(w.underlying) : null;
     mult = isNum(w?.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1;
-  } else if (t.market !== 'us') key = resolveTwSymbol(t.symbol);
+  } else if (t.market !== 'us' && t.market !== 'usopt') key = resolveTwSymbol(t.symbol);
   if (key && le.rot.set.has(key)) return null;
   const add = tradeNotional(t) * mult;
   if (!(add > 0)) return null;
@@ -785,7 +812,7 @@ function idxLevBreak(t) {
     const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
     sym = w?.underlying || null;
     mult = isNum(w?.gearing) && num(w.gearing) > 0 ? num(w.gearing) : 1;
-  } else if (!isIndexTrade(t) && t.market !== 'us') sym = t.symbol;
+  } else if (!isIndexTrade(t) && t.market !== 'us' && t.market !== 'usopt') sym = t.symbol;
   const v = tradeNotional(t) * mult;
   if (!(v > 0)) return null;
   const L = idxLevNow({ exposure: v, sym });
@@ -926,7 +953,7 @@ function sizeBreaks(t) {
     const after = symbolExposure(t) + add;
     const pct = after / base;
     if (pct > num(cap.amount) / 100 + 1e-9) {
-      const label = t.market === 'us' ? norm(t.symbol) : `${resolveTwSymbol(t.symbol)} ${TW_STOCKS[resolveTwSymbol(t.symbol)] || ''}`.trim();
+      const label = t.market === 'us' || t.market === 'usopt' ? norm(t.symbol) : `${resolveTwSymbol(t.symbol)} ${TW_STOCKS[resolveTwSymbol(t.symbol)] || ''}`.trim();
       out.push({
         kind: 'max_position_pct',
         text: `${label} 這筆之後曝險 ${fmt(after)} 元，佔總曝險上限的 ${fmt(pct * 100)}%，超過單檔上限 ${fmt(cap.amount)}%（上限約 ${fmt(base * num(cap.amount) / 100)} 元）`,
@@ -998,6 +1025,11 @@ function posCostOf(t) {
     const u = (state.us || []).find((x) => norm(x.symbol) === norm(t.symbol));
     return of(u, u?.cost_usd ?? u?.price_usd, 1);
   }
+  if (t.market === 'usopt') {
+    const o = (state.usOpts || []).find((x) => norm(x.symbol) === norm(t.symbol)
+      && btrimEq(x.expiry, t.opt_expiry) && num(x.strike) === num(t.opt_strike) && x.cp === t.opt_cp);
+    return of(o, o?.cost_usd ?? o?.price_usd, o?.side === 'short' ? -1 : 1);
+  }
   if (t.market === 'warrant') {
     const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
     return of(w, w?.cost ?? w?.price, 1);
@@ -1026,7 +1058,7 @@ function addLosingBreak(t) {
   // 規則列的 amount 當容忍度（%）：留空就是一毛錢都不准
   const tol = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) / 100 : 0;
   if (down <= tol + 1e-9) return null;
-  const unit = t.market === 'option' ? '權利金' : '價格';
+  const unit = t.market === 'option' || t.market === 'usopt' ? '權利金' : '價格';
   return {
     kind: 'no_add_losing',
     text: `${tradeLabel(t)} 目前均價 ${fmtMax(p.cost, 2)}，這筆 ${fmtMax(t.price, 2)} 是${

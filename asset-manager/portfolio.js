@@ -1,5 +1,5 @@
 import { fmt, fmtMax, isNum, norm, num, state, sum } from './core.js';
-import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optPl, optStrategies, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
+import { WAR_UNITS, futDisplayName, optDeltaExp, optLabel, optPl, optStrategies, optValue, stockFutLabel, usExposureUsd, usLevLabel, usOptExpCounted, usOptExpUsd, usOptLabel, usOptMaxLossUsd, usOptPlUsd, usOptValueUsd, warDelta, warExposure, warLabel, warMaxRisk, warPl, warValue } from './instruments.js';
 import { futNotional, futPl, pxOf } from './live.js';
 
 // 曝險明細：每一檔股票、每一筆期貨、每一檔美股各算一塊
@@ -55,6 +55,14 @@ export function exposureSlices() {
     if (v > 0) items.push({
       label: optLabel(o),
       sub: `選擇權・${o.side === 'short' ? '賣方' : '買方'}（delta 曝險）`,
+      value: v,
+    });
+  }
+  for (const o of state.usOpts || []) {
+    const v = usOptExpCounted(o) * rate;
+    if (v > 0) items.push({
+      label: usOptLabel(o),
+      sub: `美股選擇權・${o.side === 'short' ? '賣方' : '買方'}（delta 曝險）`,
       value: v,
     });
   }
@@ -148,6 +156,19 @@ export function compute() {
   const optBandLoss = optBandOk ? optPlans.reduce((a, p) => a + p.bandLoss, 0) : null;
   const optNoDelta = opts.some((o) => !isNum(o.delta));
 
+  // 美股個股選擇權（2026-11-12）
+  //   **市值進總資產**：權利金是從複委託現金付出去的，跟台指選擇權（已含在期貨權益數）不同。
+  //   曝險：delta × 標的價 × 100，買方淨、賣方毛。delta 還沒算出來的那幾口另外標，不用 0 假裝沒事。
+  const uos = state.usOpts || [];
+  const usOptValueUsdSum = sum(uos, usOptValueUsd);
+  const usOptValue = usOptValueUsdSum * rate;
+  const usOptExposure = sum(uos, usOptExpCounted) * rate;
+  const usOptWithPl = uos.filter((o) => usOptPlUsd(o) !== null);
+  const usOptProfitUsd = usOptWithPl.length ? sum(usOptWithPl, usOptPlUsd) : null;
+  const usOptUnlimited = uos.some((o) => usOptMaxLossUsd(o) === null);
+  const usOptMaxLossUsdSum = usOptUnlimited ? null : sum(uos, usOptMaxLossUsd);
+  const usOptNoDelta = uos.filter((o) => usOptExpUsd(o) === null).length;
+
   // 權證
   const wars = state.warrants;
   const warMarket = sum(wars, warValue);
@@ -175,9 +196,9 @@ export function compute() {
   // 期貨部位一直都沒有加（只進曝險），選擇權現在跟它一致。
   // optMarket 仍然算出來、仍然顯示在選擇權那一區，只是不進總資產。
   // ------------------------------------------------------------
-  const totalAssets = stockValue + usValue + futEquity + cash + warMarket;
+  const totalAssets = stockValue + usValue + usOptValue + futEquity + cash + warMarket;
   const netAssets = totalAssets - liabilities;
-  const exposure = stockValue + usExposure + futGross + optExposure + warExp;
+  const exposure = stockValue + usExposure + usOptExposure + futGross + optExposure + warExp;
 
   const leverageAsset = netAssets > 0 ? totalAssets / netAssets : NaN;
   // 曝險槓桿以「總資產」為分母：淨資產為負時仍算得出來
@@ -190,6 +211,7 @@ export function compute() {
     rate, stockValue, stockCost, usValueUsd, usCostUsd, usValue, usExposure, usLevExtra,
     futEquity, futLong, futShort, futGross, futNet, futIndex, futStock, futProfit,
     optMarket, optExposure, optGrossExp, optNetDelta, optProfit, optMaxLoss, optMaxGain, optBandGain, optBandLoss, optBandOk, optPlans, optRiskUnlimited, optNoDelta,
+    usOptValueUsd: usOptValueUsdSum, usOptValue, usOptExposure, usOptProfitUsd, usOptMaxLossUsd: usOptMaxLossUsdSum, usOptUnlimited, usOptNoDelta,
     warMarket, warExp, warProfit, warMaxLoss, warNoBasis, warTheta, warNoDelta,
     cash, liabilities, totalAssets, netAssets, exposure,
     leverageAsset, leverageExposure, target, progress,

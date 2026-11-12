@@ -1,7 +1,7 @@
 import { alertBadge, alertOf } from '../alerts.js';
 import { $, $$, esc, fmt, fmtMax, isNum, norm, num, plClass, signed, state } from '../core.js';
 import { editEps } from '../forms.js';
-import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warPx, warValue } from '../instruments.js';
+import { fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futSettleISO, ivChange, optDeltaExp, optExpiryLabel, optLabel, optPl, optValue, stockFutLabel, usExposureUsd, usLevLabel, usOptBreakEven, usOptDaysLeft, usOptExpUsd, usOptLabel, usOptPlUsd, usOptValueUsd, warDaysLeft, warExposure, warLabel, warModelOk, warPl, warPx, warValue } from '../instruments.js';
 import { futNotional, futPl, futPx, livePx, liveTag, pxOf } from '../live.js';
 import { compute } from '../portfolio.js';
 import { autoPriceOk, twKnown } from '../symbols.js';
@@ -118,6 +118,29 @@ export function renderHoldings(el) {
       pl === null ? `≈ ${fmt(v * c.rate)}` : `<span class="${plClass(pl)}">${signed(pl, 2)}</span> ≈ ${fmt(v * c.rate)}`,
       `us:${norm(s.symbol)}`);
   });
+  // 美股選擇權。報價時間要寫出來：Yahoo 的最後成交可能是好幾個小時前的（冷門合約更久）
+  const usOptRows = (state.usOpts || []).map((o) => {
+    const v = usOptValueUsd(o);
+    const pl = usOptPlUsd(o);
+    const de = usOptExpUsd(o);
+    const days = usOptDaysLeft(o);
+    const at = o.quote_at ? new Date(o.quote_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+    return itemRow('usopt', o.id,
+      `${usOptLabel(o)}<span class="badge">${o.side === 'short' ? '賣方' : '買方'}</span>${
+        days !== null && days <= 3 ? `<span class="badge warn-badge">${days <= 0 ? '今天到期' : `剩 ${days} 天`}</span>` : ''}`,
+      `${fmtMax(o.lots, 2)} 口 × ${fmtMax(o.price_usd, 2)} × 100${isNum(o.cost_usd) ? `　成本 ${fmtMax(o.cost_usd, 2)}` : ''}` +
+      `${isNum(o.underlying_px) ? `　標的 ${fmtMax(o.underlying_px, 2)}` : ''}` +
+      `${isNum(o.delta) ? `　delta ${fmtMax(o.delta, 2)}` : '　<span class="muted">delta 計算中</span>'}` +
+      `${isNum(o.iv) ? `　隱波 ${(num(o.iv) * 100).toFixed(0)}%` : ''}` +
+      `　兩平 ${fmtMax(usOptBreakEven(o), 2)}` +
+      `${days !== null && days > 3 ? `　剩 ${fmt(days)} 天` : ''}` +
+      `${at ? `　<span class="muted">報價 ${esc(at)}</span>` : ''}`,
+      `US$ ${fmt(v, 0)}`,
+      pl === null
+        ? (de === null ? '曝險待算' : `曝險 ${fmt(Math.abs(de) * c.rate)}`)
+        : `<span class="${plClass(pl)}">${signed(pl, 0)}</span> ≈ ${fmt(v * c.rate)}`,
+      `us:${norm(o.symbol)}`);
+  });
   const warRows = state.warrants.map((w) => {
     const de = warExposure(w);
     const pl = warPl(w);
@@ -187,6 +210,12 @@ export function renderHoldings(el) {
     section('期貨帳戶權益數', 'balance', equityRows, `合計 ${fmt(c.futEquity)}`, { kind: 'futures_equity', name: '期貨帳戶' }) +
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +
+    section('美股選擇權 (USD)', 'usopt', usOptRows,
+      `市值 US$ ${fmt(c.usOptValueUsd, 0)}（≈ ${fmt(c.usOptValue)}，計入總資產）　delta 曝險 ${fmt(c.usOptExposure)}　${
+        c.usOptUnlimited ? '<span class="loss">最大虧損無上限</span>'
+        : `到期最大虧損 US$ ${fmt(c.usOptMaxLossUsd, 0)}`}${
+        c.usOptProfitUsd === null ? '' : `　<span class="${plClass(c.usOptProfitUsd)}">${signed(c.usOptProfitUsd, 0)}</span>`}${
+        c.usOptNoDelta ? `<br><span class="muted">${fmt(c.usOptNoDelta)} 口 delta 還沒算出來，曝險暫時沒計入；報價每 30 分鐘更新一次（美股盤中）</span>` : ''}`) +
     valuationCard() +
     `<p class="hint">「記一筆交易」會自動加減部位、重算均價；部位沒變動就不會動資料，賣光才移除。
       期貨的<b>權益數</b>計入總資產，<b>名目金額</b>計入曝險。個股期貨以標的股價計價：大型 = 2 張（2,000 股）、小型 = 100 股。

@@ -1,5 +1,5 @@
-import { isNum, num, sb, state } from './core.js';
-import { usExposureUsd, usLeverage } from './instruments.js';
+import { isNum, norm, num, sb, state } from './core.js';
+import { usExposureUsd, usLeverage, usOptExpUsd } from './instruments.js';
 
 // ============================================================
 // 組合風險
@@ -658,6 +658,12 @@ export function exposureRows() {
     const v = usExposureUsd(u) * rate;
     if (v > 0) rows.push({ key: String(u.symbol), label: `${u.symbol}`, exposure: v,
                            kind: 'us', side: usLeverage(u) < 0 ? -1 : 1 });
+  }
+  // 美股選擇權：key 用標的代號，跟同一檔現股合在一起算單檔曝險
+  for (const o of state.usOpts || []) {
+    const d = usOptExpUsd(o);
+    if (d) rows.push({ key: norm(o.symbol), label: `${norm(o.symbol)} 選擇權`, exposure: Math.abs(d) * rate,
+                       kind: 'usopt', side: d < 0 ? -1 : 1 });
   }
   return rows;
 }

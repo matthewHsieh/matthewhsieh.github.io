@@ -1,6 +1,6 @@
 import { btrimEq, fail, fmtMax, isNum, norm, num, round2, sameSymbol, sb, state, sum, toast, todayISO } from './core.js';
-import { refresh } from './data.js';
-import { OPT_SIZE, WAR_UNITS, fmtQty, futDisplayName } from './instruments.js';
+import { refresh, refreshUsOptions } from './data.js';
+import { OPT_SIZE, USOPT_SIZE, WAR_UNITS, fmtQty, futDisplayName, usOptDeltaFrom } from './instruments.js';
 import { checkRules, dayNet } from './rules.js';
 import { TW_STOCKS, indexProduct, tradeKey } from './symbols.js';
 
@@ -34,6 +34,7 @@ export const DEFAULT_FEES = {
   fee_fut_per_lot: 30,   // 期貨每口，買賣各收一次
   fee_opt_per_lot: 25,   // 選擇權每口，買賣各收一次
   fee_us_rate: 0.001, fee_us_min: 0,   // 複委託買賣各 0.1%
+  fee_usopt_per_lot: 5,                // 美股選擇權每口（USD），買賣各收一次；2 口共 10 元是 11/11 那筆的實際數字
 };
 
 export const feeCfg = (k) => {
@@ -72,6 +73,10 @@ export function tradeCost(t, isDay) {
     const tax = premium * TAX.option;            // 買賣各課一次
     return { fee, tax, total: fee + tax, ccy: 'TWD' };
   }
+  if (t.market === 'usopt') {
+    const fee = qty * feeCfg('fee_usopt_per_lot');
+    return { fee, tax: 0, total: fee, ccy: 'USD' };
+  }
   if (t.market === 'us') {
     const amount = qty * px;
     const rate = feeCfg('fee_us_rate');
@@ -98,6 +103,7 @@ const realizedTwd = (t) =>
 const dayMult = (t) =>
   t.market === 'futures' ? num(t.fut_size)
   : t.market === 'option' ? OPT_SIZE
+  : t.market === 'usopt' ? USOPT_SIZE
   : t.market === 'warrant' ? WAR_UNITS : 1;
 
 function matchDayTrades(trades, extra) {
@@ -138,7 +144,7 @@ function matchDayTrades(trades, extra) {
       if (matched > 0) {
         perTrade.set(t.id ?? '__new__', {
           pl, qty: matched, openAvg: basis / matched,
-          ccy: t.market === 'us' ? 'USD' : 'TWD',
+          ccy: t.market === 'us' || t.market === 'usopt' ? 'USD' : 'TWD',
         });
       }
       if (left > 1e-9) queue.push({ side: t.side, qty: left, price: num(t.price) });
@@ -153,6 +159,8 @@ function matchDayTrades(trades, extra) {
         market: first.market,
         label: first.market === 'option'
           ? `TXO ${first.opt_expiry} ${num(first.opt_strike)} ${first.opt_cp === 'put' ? '賣權' : '買權'}`
+          : first.market === 'usopt'
+          ? `${norm(first.symbol)} ${first.opt_expiry} ${num(first.opt_strike)} ${first.opt_cp === 'put' ? 'Put' : 'Call'}`
           : `${norm(first.symbol)}${first.name ? ' ' + first.name : ''}${
               first.market === 'futures' ? `（${first.fut_kind === 'stock' ? '個股期' : '指數期'}）` : ''}`,
         side: queue[0].side,
@@ -252,7 +260,7 @@ export const CAT_ORDER = ['day', 'overnight', 'swing', 'roll'];
 //   期貨、選擇權、權證各自獨立——它們的槓桿、稅率、結算方式都不一樣，
 //   混在一起看「衍生品損益」沒有可行動的意義。
 // ------------------------------------------------------------
-export const MKT_GROUP = { tw: 'cash', us: 'cash', futures: 'fut', option: 'opt', warrant: 'war' };
+export const MKT_GROUP = { tw: 'cash', us: 'cash', futures: 'fut', option: 'opt', usopt: 'opt', warrant: 'war' };
 
 export const GRP_LABEL = { cash: '現貨', fut: '期貨', opt: '選擇權', war: '權證' };
 
@@ -379,6 +387,7 @@ export const TRADE_KINDS = {
   option:    { label: '台指選擇權', market: 'option' },
   warrant:   { label: '權證',       market: 'warrant' },
   us:        { label: '複委託',   market: 'us' },
+  usopt:     { label: '美股選擇權', market: 'usopt' },
 };
 
 export const tradeKindOf = (t) =>
@@ -392,13 +401,25 @@ function findPosition(t) {
   }
   if (t.market === 'tw') return state.stocks.find((s) => sameSymbol(s.symbol, t.symbol));
   if (t.market === 'us') return state.us.find((s) => sameSymbol(s.symbol, t.symbol));
+  if (t.market === 'usopt') return (state.usOpts || []).find((o) => usOptMatch(o, t));
   const kind = t.fut_kind || 'index';
   return state.futures.find(
     (f) => (f.kind || 'index') === kind && sameSymbol(f.symbol, t.symbol) &&
            (kind === 'index' || num(f.size) === num(t.fut_size)));
 }
 
+// 美股選擇權：標的＋到期日＋履約價＋買賣權 決定一個部位
+const usOptMatch = (o, t) => sameSymbol(o.symbol, t.symbol) && btrimEq(o.expiry, t.opt_expiry)
+  && num(o.strike) === num(t.opt_strike) && o.cp === t.opt_cp;
+
 function newPositionRow(t) {
+  if (t.market === 'usopt') {
+    // 有填標的價就當場算 delta，曝險不必等報價排程
+    const s = isNum(t.opt_fwd) && num(t.opt_fwd) > 0 ? num(t.opt_fwd) : null;
+    return { symbol: norm(t.symbol), expiry: String(t.opt_expiry).trim(), strike: num(t.opt_strike),
+             cp: t.opt_cp, size: USOPT_SIZE, price_usd: num(t.price), underlying_px: s,
+             delta: s ? usOptDeltaFrom(s, t.opt_strike, t.price, t.opt_cp) : null };
+  }
   if (t.market === 'warrant') return { code: norm(t.symbol), name: t.name || null, price: num(t.price) };
   if (t.market === 'option') {
     return { contract: 'TXO', expiry: String(t.opt_expiry).trim(), strike: num(t.opt_strike),
@@ -432,7 +453,7 @@ function projectDayTrade(t) {
     openAvg: m ? m.openAvg : null,
     openQty: openLeft.get(tradeKey(t)) ?? 0,
     realized: m ? m.pl : null,
-    realizedCcy: t.market === 'us' ? 'USD' : 'TWD',
+    realizedCcy: t.market === 'us' || t.market === 'usopt' ? 'USD' : 'TWD',
   };
 }
 
@@ -445,41 +466,54 @@ export function projectTrade(t, opts = {}) {
     if (!String(t.opt_expiry ?? '').trim() || !(num(t.opt_strike) > 0)) {
       return { error: '請選擇到期與履約價' };
     }
+  } else if (t.market === 'usopt') {
+    if (!String(t.symbol ?? '').trim()) return { error: '請輸入標的代號' };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(t.opt_expiry ?? '').trim()) || !(num(t.opt_strike) > 0)) {
+      return { error: '請填到期日與履約價' };
+    }
   } else if (!String(t.symbol ?? '').trim()) {
     return { error: '請輸入代號或商品' };
   }
   const dir = t.side === 'buy' ? 1 : -1;
   const pos = findPosition(t);
 
-  if (t.market === 'option') {
+  if (t.market === 'option' || t.market === 'usopt') {
+    const isUsOpt = t.market === 'usopt';
+    const ck = isUsOpt ? 'cost_usd' : 'cost', pk = isUsOpt ? 'price_usd' : 'price';
+    const mult = isUsOpt ? USOPT_SIZE : OPT_SIZE;
     const prevNet = pos ? (pos.side === 'short' ? -num(pos.lots) : num(pos.lots)) : 0;
     const net = prevNet + dir * qty;
     const base = pos || newPositionRow(t);
-    const prevCost = pos && isNum(pos.cost) ? num(pos.cost) : null;
+    const prevCost = pos && isNum(pos[ck]) ? num(pos[ck]) : null;
 
     let newCost = prevCost;
     if (!opts.reverse && net !== 0) {
       if (prevNet === 0 || Math.sign(net) !== Math.sign(prevNet)) newCost = num(t.price);
       else if (Math.abs(net) > Math.abs(prevNet)) {
-        const basis = prevCost ?? num(base.price);
+        const basis = prevCost ?? num(base[pk]);
         newCost = (Math.abs(prevNet) * basis + qty * num(t.price)) / Math.abs(net);
       }
     }
     const after = net === 0
       ? null
       : { ...base, side: net > 0 ? 'long' : 'short', lots: Math.abs(net),
-          price: opts.reverse ? num(base.price) : num(t.price),
-          cost: opts.reverse ? prevCost : newCost };
+          [pk]: opts.reverse ? num(base[pk]) : num(t.price),
+          [ck]: opts.reverse ? prevCost : newCost };
+    // 美股選擇權：這一筆有填標的價，就順便把部位上的標的價與 delta 更新成成交當下的
+    if (after && isUsOpt && !opts.reverse && isNum(t.opt_fwd) && num(t.opt_fwd) > 0) {
+      after.underlying_px = num(t.opt_fwd);
+      after.delta = usOptDeltaFrom(t.opt_fwd, after.strike, t.price, after.cp);
+    }
 
-    // 已實現：平掉的口數 ×（權利金價差）× 50，賣方方向相反
+    // 已實現：平掉的口數 ×（權利金價差）× 每口乘數（台指 50 元、美股 100 股），賣方方向相反
     let realized = null;
     if (!opts.reverse && prevNet !== 0 && Math.sign(dir) !== Math.sign(prevNet) && isNum(prevCost)) {
       const closed = Math.min(qty, Math.abs(prevNet));
       const perUnit = prevNet > 0 ? num(t.price) - prevCost : prevCost - num(t.price);
-      realized = perUnit * closed * OPT_SIZE;
+      realized = perUnit * closed * mult;
     }
-    return { table: 'options', pos, prevShares: prevNet, prevCost, after, prevNet, net,
-             newCost: net === 0 ? null : newCost, realized, realizedCcy: 'TWD' };
+    return { table: isUsOpt ? 'us_options' : 'options', pos, prevShares: prevNet, prevCost, after, prevNet, net,
+             newCost: net === 0 ? null : newCost, realized, realizedCcy: isUsOpt ? 'USD' : 'TWD' };
   }
 
   if (t.market === 'futures') {
@@ -551,12 +585,12 @@ export function projectTrade(t, opts = {}) {
 function restoreProjection(t) {
   const pos = findPosition(t);
   const prev = num(t.prev_shares);
-  if (t.market === 'option') {
+  if (t.market === 'option' || t.market === 'usopt') {
     const after = prev === 0
       ? null
       : { ...(pos || newPositionRow(t)), side: prev > 0 ? 'long' : 'short', lots: Math.abs(prev),
-          cost: isNum(t.prev_cost) ? num(t.prev_cost) : null };
-    return { table: 'options', pos, after };
+          [t.market === 'usopt' ? 'cost_usd' : 'cost']: isNum(t.prev_cost) ? num(t.prev_cost) : null };
+    return { table: t.market === 'usopt' ? 'us_options' : 'options', pos, after };
   }
   if (t.market === 'futures') {
     const after = prev === 0
@@ -642,6 +676,8 @@ export async function saveTrade(v) {
         user_id: state.user.id, break_date: v.trade_date, kind: x.kind, detail: x.text,
       })));
     }
+    // 美股選擇權：記完順便去抓一次報價與 delta（比部位舊的報價不會蓋掉成交價）
+    if (v.market === 'usopt') await refreshUsOptions();
     await refresh(breaks.length ? '已記錄，但違反了 ' + breaks.length + ' 條規則' : '交易已記錄，部位已更新');
   } catch (e) {
     fail(e);
@@ -664,6 +700,10 @@ export async function deleteTrade(id) {
     if (x.market !== t.market) return false;
     if (t.market === 'option') {
       return btrimEq(x.opt_expiry, t.opt_expiry) && num(x.opt_strike) === num(t.opt_strike) && x.opt_cp === t.opt_cp;
+    }
+    if (t.market === 'usopt') {
+      return sameSymbol(x.symbol, t.symbol) && btrimEq(x.opt_expiry, t.opt_expiry)
+        && num(x.opt_strike) === num(t.opt_strike) && x.opt_cp === t.opt_cp;
     }
     if (!sameSymbol(x.symbol, t.symbol)) return false;
     return t.market !== 'futures' || (x.fut_kind === t.fut_kind && num(x.fut_size) === num(t.fut_size));

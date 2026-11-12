@@ -1,7 +1,7 @@
 import { $, $$, esc, fail, fmt, fmtMax, isNum, norm, num, plClass, sb, signed, state, toast, todayISO } from './core.js';
-import { applyCachedPrices, refresh } from './data.js';
+import { applyCachedPrices, refresh, refreshUsOptions } from './data.js';
 import { openDialog, openForm } from './dialog.js';
-import { OPT_SIZE, STOCK_FUT_SIZES, cpLabel, fmtNet, fmtQty, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optExpired, optExpiryLabel, optForwardInfo, optPl, optStrategy, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
+import { OPT_SIZE, STOCK_FUT_SIZES, USOPT_SIZE, cpLabel, fmtNet, fmtQty, usOptDeltaFrom, futDaysLeft, futDisplayName, futMonthLabel, futMonths, futSettleISO, optDeltaExp, optExpired, optExpiryLabel, optForwardInfo, optPl, optStrategy, optValue, strikeText, warDelta, warExposure, warMaxRisk, warPl, warValue, ymAdd } from './instruments.js';
 import { futPl } from './live.js';
 import { FWD_YEARS, valOf } from './portfolio.js';
 import { breaksOn, checkRules, optCallNote } from './rules.js';
@@ -41,6 +41,21 @@ const ENTITIES = {
       { key: 'price_usd', label: '現價 (USD，每日自動更新)', type: 'number', required: true },
       { key: 'cost_usd', label: '平均成本 (USD，選填)', type: 'number' },
       { key: 'leverage', label: '槓桿倍數（選填，留空會從名稱判斷；反向填負數）', type: 'number' },
+    ],
+  },
+  // 美股個股選擇權（2026-11-12）。權利金、標的價、delta 存檔後去 Yahoo 抓，盤中每 30 分鐘更新。
+  usopt: {
+    table: 'us_options', key: 'usOpts', title: '美股選擇權',
+    defaults: { side: 'long', cp: 'call', lots: 1 },
+    fields: [
+      { key: 'symbol', label: '標的代號', required: true, placeholder: 'NVDA' },
+      { key: 'expiry', label: '到期日（美東）', required: true, placeholder: 'YYYY-MM-DD，例如 2026-11-20' },
+      { key: 'strike', label: '履約價 (USD)', type: 'number', required: true, placeholder: '155' },
+      { key: 'cp', label: '買權 / 賣權', type: 'select', options: [['call', '買權 Call'], ['put', '賣權 Put']] },
+      { key: 'side', label: '買方 / 賣方', type: 'select', options: [['long', '買方'], ['short', '賣方']] },
+      { key: 'lots', label: '口數（1 口 = 100 股）', type: 'number', required: true },
+      { key: 'price_usd', label: '目前權利金（每股 USD，存檔後自動更新）', type: 'number', required: true },
+      { key: 'cost_usd', label: '平均成本（每股 USD，選填）', type: 'number' },
     ],
   },
   balance: {
@@ -103,8 +118,9 @@ export async function editItem(kind, id, extraDefaults = {}) {
       if (id) payload.id = id;
       const { error } = await sb.from(ent.table).upsert(payload);
       if (error) throw error;
-      // 金流與資金項目沒有報價可以套
-      if (!['balances', 'cash_items', 'cash_months'].includes(ent.table)) await applyCachedPrices();
+      // 金流與資金項目沒有報價可以套；美股選擇權沒有共用快取，直接去抓
+      if (ent.table === 'us_options') await refreshUsOptions();
+      else if (!['balances', 'cash_items', 'cash_months'].includes(ent.table)) await applyCachedPrices();
       await refresh('已儲存');
     }
   } catch (e) {
@@ -509,6 +525,26 @@ function readTradeForm(fd) {
   if (tk === 'tw' && fd.get('unit') === 'lot') quantity *= 1000;
 
   const isDayTrade = fd.get('is_day_trade') === 'on';
+  if (tk === 'usopt') {
+    const symbol = norm(fd.get('symbol'));
+    const expiry = String(fd.get('uo_expiry') || '').trim();
+    const strike = num(fd.get('uo_strike'));
+    const cp = fd.get('uo_cp') === 'put' ? 'put' : 'call';
+    const spot = fd.get('uo_spot');
+    return {
+      kindKey: tk, market: 'usopt', fut_kind: null, fut_size: null, is_day_trade: isDayTrade,
+      opt_expiry: expiry, opt_strike: strike, opt_cp: cp,
+      // opt_fwd 這一欄借來存「成交當下的標的價」，跟台指選擇權存「當時的指數」同一個意思
+      opt_fwd: spot === '' || spot === null ? null : num(spot),
+      side: fd.get('side') || 'buy',
+      trade_date: fd.get('trade_date') || todayISO(),
+      symbol,
+      name: `${symbol} ${expiry} ${strikeText(strike)} ${cp === 'put' ? 'Put' : 'Call'}`,
+      quantity,
+      price: num(fd.get('price')),
+      note: String(fd.get('note') || '').trim() || null,
+    };
+  }
   if (tk === 'option') {
     const expiry = String(fd.get('opt_expiry') || '').trim();
     const strike = num(fd.get('opt_strike'));
@@ -571,6 +607,15 @@ function openTradeForm(defaults = {}) {
       <label>當時的指數（判斷價內用，<b>夜盤下的單一定要填</b>）
         <input name="opt_fwd" type="number" step="any" inputmode="decimal" placeholder="不填就用最近一次日盤結算的遠期價"></label>
     </div>
+    <div data-row="usopt" hidden>
+      <label>到期日（美東）<input name="uo_expiry" type="date"></label>
+      <label>履約價 (USD)<input name="uo_strike" type="number" step="any" inputmode="decimal" placeholder="155"></label>
+      <label>買權 / 賣權<select name="uo_cp">
+        <option value="call">買權 Call</option><option value="put">賣權 Put</option>
+      </select></label>
+      <label>成交當下的標的價（USD，選填；填了當場就算得出 delta 曝險）
+        <input name="uo_spot" type="number" step="any" inputmode="decimal" placeholder="不填就等報價排程"></label>
+    </div>
     <label data-row="futsize">個股期貨規格<select name="fut_size">${STOCK_FUT_SIZES
       .map((s) => `<option value="${s.size}" ${num(defaults.fut_size) === s.size ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
     <div class="qty-row">
@@ -611,8 +656,25 @@ function openTradeForm(defaults = {}) {
         }
         const label = v.market === 'option'
           ? `TXO ${v.opt_expiry} ${strikeText(v.opt_strike)} ${cpLabel(v.opt_cp)}`
+          : v.market === 'usopt' ? v.name
           : `${v.symbol}${v.name ? ' ' + v.name : ''}`;
-        if (v.market === 'option') {
+        if (v.market === 'usopt') {
+          const prem = v.quantity * v.price * USOPT_SIZE;
+          const rate = num(state.settings.usd_twd) || 32;
+          const lines = [
+            `${esc(label)}：${fmtNet(p.prevNet)} → ${fmtNet(p.net)}　權利金 US$ ${fmt(prem, 0)}（≈ ${fmt(prem * rate)} 元）` +
+            (p.after ? `　均價 ${fmtMax(p.prevCost, 2)} → ${fmtMax(p.newCost, 2)}` : '（部位歸零，將移除）'),
+          ];
+          if (p.after && p.after.side === 'long' && v.side === 'buy') {
+            const be = v.opt_cp === 'put' ? num(v.opt_strike) - num(p.newCost) : num(v.opt_strike) + num(p.newCost);
+            lines.push(`到期最多賠 US$ ${fmt(p.after.lots * num(p.newCost) * USOPT_SIZE, 0)}　損益兩平：標的 ${fmtMax(be, 2)}`);
+          }
+          if (isNum(v.opt_fwd) && v.opt_fwd > 0) {
+            const d = usOptDeltaFrom(v.opt_fwd, v.opt_strike, v.price, v.opt_cp);
+            if (isNum(d)) lines.push(`delta ${fmtMax(d, 2)}　這一筆的 delta 曝險 ≈ ${fmt(Math.abs(d) * v.opt_fwd * v.quantity * USOPT_SIZE * rate)} 元`);
+          }
+          preview.innerHTML = lines.join('<br>');
+        } else if (v.market === 'option') {
           const notional = v.quantity * v.price * OPT_SIZE;
           preview.textContent =
             `${label}：${fmtNet(p.prevNet)} → ${fmtNet(p.net)}　權利金 ${fmt(notional)} 元` +
@@ -673,9 +735,25 @@ function openTradeForm(defaults = {}) {
 
       const rowSymbol = $('[data-row=symbol]', form);
       const rowOpt = $('[data-row=opt]', form);
+      const rowUo = $('[data-row=usopt]', form);
 
       const setKind = () => {
         const k = form.kind.value;
+        const isUo = k === 'usopt';
+        rowUo.hidden = !isUo;
+        if (isUo) {
+          rowOpt.hidden = true; rowSymbol.hidden = false; resolved.hidden = false; rowFutSize.hidden = true;
+          form.symbol.required = true;
+          $('[data-l=symbol]', form).textContent = '標的代號';
+          form.symbol.placeholder = 'NVDA';
+          $('[data-l=price]', form).textContent = '權利金（每股 USD）';
+          form.unit.innerHTML = '<option value="share">口</option>';
+          form.unit.disabled = true;
+          form.name.value = '';
+          resolved.textContent = '1 口 = 100 股；權利金填報價上的每股價格，例如 21.95';
+          updatePreview();
+          return;
+        }
         const isOpt = k === 'option';
         const isWarrant = k === 'warrant';
         const isStockFut = k === 'fut_stock', isIdxFut = k === 'fut_index';
@@ -716,7 +794,7 @@ function openTradeForm(defaults = {}) {
 
       attachLookup(form.symbol,
         () => (form.kind.value === 'fut_index' ? 'index'
-             : form.kind.value === 'us' || form.kind.value === 'warrant' ? 'none' : 'tw'),
+             : ['us', 'usopt', 'warrant'].includes(form.kind.value) ? 'none' : 'tw'),
         (m, picked) => {
           form.name.value = m.name || '';
           resolved.textContent = `${m.code}　${m.name || ''}`;
@@ -725,7 +803,7 @@ function openTradeForm(defaults = {}) {
         });
       form.symbol.addEventListener('input', () => {
         const k = form.kind.value;
-        if (k === 'option') return;
+        if (k === 'option' || k === 'usopt') return;
         if (k === 'warrant') {
           const c = norm(form.symbol.value);
           if (/^[0-9A-Z]{6}$/.test(c)) {
@@ -751,6 +829,11 @@ function openTradeForm(defaults = {}) {
     },
     collect: (fd) => {
       const values = readTradeForm(fd);
+      if (values.market === 'usopt') {
+        if (!values.symbol) { toast('請輸入標的代號', 2500); return undefined; }
+        if (!values.opt_expiry) { toast('請填到期日', 2500); return undefined; }
+        if (!(values.opt_strike > 0)) { toast('請輸入履約價', 2500); return undefined; }
+      }
       if (values.market === 'option') {
         if (!values.opt_expiry) { toast('請選擇到期', 2500); return undefined; }
         if (!(values.opt_strike > 0)) { toast('請輸入履約價', 2500); return undefined; }

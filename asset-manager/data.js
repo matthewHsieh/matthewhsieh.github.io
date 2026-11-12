@@ -49,6 +49,8 @@ const personalQueries = (uid) => ({
   snapshots:   () => sb.from('snapshots').select('*').order('snap_date', { ascending: false }).limit(730),
   trades:      () => sb.from('trades').select('*').order('trade_date', { ascending: false }).order('created_at', { ascending: false }).limit(500),
   options:     () => sb.from('options').select('*').order('expiry').order('strike'),
+  // 美股個股選擇權。表還沒建（42P01）時 runQueries 會放過，所以前端可以先上線。
+  usOpts:      () => sb.from('us_options').select('*').order('expiry').order('strike'),
   warrants:    () => sb.from('warrants').select('*').order('created_at'),
   ivHistory:   () => sb.from('warrant_iv_history').select('code,as_of,iv').gte('as_of', ivSince()).order('as_of'),
   _fwds:       () => sb.from('market_prices').select('symbol,price,as_of').eq('market', 'opt').like('symbol', 'FWD|%'),
@@ -175,6 +177,18 @@ export async function runStagedRefresh(onStage) {
     } catch (e) {
       console.warn('refresh ' + kind, e);
       done.push({ kind, label, ok: false, msg: e?.message || String(e), slow: isTimeout(e) });
+    }
+  }
+  // 美股選擇權不走 refresh_market（那支是全市場的分段），直接抓自己持有的那幾口
+  if ((state.usOpts || []).length) {
+    if (onStage) onStage('美股選擇權', done.length, REFRESH_STAGES.length + 1);
+    try {
+      const { data, error } = await sb.rpc('refresh_us_options', {});
+      if (error) throw error;
+      done.push({ kind: 'usopt', label: '美股選擇權', ok: true, rows: data ?? 0, cached: false });
+    } catch (e) {
+      console.warn('refresh usopt', e);
+      done.push({ kind: 'usopt', label: '美股選擇權', ok: false, msg: e?.message || String(e), slow: isTimeout(e) });
     }
   }
   return done;
@@ -309,6 +323,11 @@ export async function applyCachedPrices() {
   try { await sb.rpc('sync_my_positions'); } catch (e) { console.warn('sync_my_positions 失敗', e); }
 }
 
+// 美股選擇權沒有共用快取，新增／改部位後直接去 Yahoo 抓自己那幾口（失敗不擋存檔）
+export async function refreshUsOptions() {
+  try { await sb.rpc('refresh_us_options', {}); } catch (e) { console.warn('refresh_us_options 失敗', e); }
+}
+
 export async function saveSnapshot() {
   const c = compute();
   const date = todayISO();
@@ -318,7 +337,7 @@ export async function saveSnapshot() {
     user_id: state.user.id, snap_date: date,
     price_as_of: statusOf('tw')?.as_of ?? null,
     total_assets: round2(c.totalAssets), liabilities: round2(c.liabilities), net_assets: round2(c.netAssets),
-    stock_value: round2(c.stockValue), us_value: round2(c.usValue),
+    stock_value: round2(c.stockValue), us_value: round2(c.usValue + (c.usOptValue || 0)),   // 跟 auto_snapshot 一樣含美股選擇權
     futures_margin: round2(c.futEquity), futures_notional: round2(c.futGross), cash: round2(c.cash),
     leverage_asset: round2(c.leverageAsset), leverage_exposure: round2(c.leverageExposure),
     target_amount: round2(c.target), note: null,

@@ -110,6 +110,8 @@ export const autoPriceOk = (f) => (f.kind === 'stock' ? twKnown(f.symbol) : !!in
 export const tradeKey = (t) =>
   t.market === 'option'
     ? `${t.trade_date}|option|${String(t.opt_expiry ?? '').trim()}|${num(t.opt_strike)}|${t.opt_cp ?? ''}`
+  : t.market === 'usopt'
+    ? `${t.trade_date}|usopt|${norm(t.symbol)}|${String(t.opt_expiry ?? '').trim()}|${num(t.opt_strike)}|${t.opt_cp ?? ''}`
     // 台股與個股期貨都用解析後的代號，中文名稱與代號才不會被當成兩個標的
     : `${t.trade_date}|${t.market}|${
         t.market === 'tw' || t.fut_kind === 'stock' ? resolveTwSymbol(t.symbol) : norm(t.symbol)
