@@ -72,7 +72,7 @@ create or replace function public.refresh_us_options(p_user uuid default null)
 returns integer language plpgsql security definer set search_path = public, extensions as $fn$
 declare
   r record; body jsonb; ub jsonb; occ text;
-  px numeric; qt timestamptz; s numeric; t float8; x float8;
+  px numeric; qt timestamptz; s numeric; t float8; x float8; stale boolean;
   under jsonb := '{}'::jsonb; n integer := 0;
 begin
   if auth.uid() is not null then p_user := auth.uid(); end if;
@@ -98,7 +98,8 @@ begin
       s := (under ->> upper(r.symbol))::numeric;
 
       -- 用新的權利金；報價比部位舊就沿用部位上的
-      if not (px > 0) or (qt is not null and qt < r.created_at) then px := r.price_usd; end if;
+      stale := not coalesce(px > 0, false) or (qt is not null and qt < r.created_at);
+      if stale then px := r.price_usd; end if;
 
       -- 到期前還剩幾年：算到到期日美東 16:00，最少留半天，避免到期日當天 σ√T 變 0
       t := greatest(extract(epoch from ((r.expiry::timestamp + interval '16 hours') at time zone 'America/New_York') - now())
@@ -110,7 +111,8 @@ begin
              underlying_px = coalesce(s, o.underlying_px),
              delta         = coalesce(public.pm_delta(s::float8, r.strike::float8, x, r.cp = 'call'), o.delta),
              iv            = case when x > 0 then x / sqrt(t) end,
-             quote_at      = case when px = r.price_usd and o.quote_at is not null then o.quote_at else qt end
+             -- 沿用成交價的時候報價時間也不動，畫面才不會把成交價標成某個時間的報價
+             quote_at      = case when stale then o.quote_at else qt end
        where o.id = r.id;
       n := n + 1;
     exception when others then
