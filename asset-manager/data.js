@@ -337,7 +337,7 @@ export async function saveSnapshot() {
     user_id: state.user.id, snap_date: date,
     price_as_of: statusOf('tw')?.as_of ?? null,
     total_assets: round2(c.totalAssets), liabilities: round2(c.liabilities), net_assets: round2(c.netAssets),
-    stock_value: round2(c.stockValue), us_value: round2(c.usValue + (c.usOptValue || 0)),   // 跟 auto_snapshot 一樣含美股選擇權
+    stock_value: round2(c.stockValue), us_value: round2(c.usValue),
     futures_margin: round2(c.futEquity), futures_notional: round2(c.futGross), cash: round2(c.cash),
     leverage_asset: round2(c.leverageAsset), leverage_exposure: round2(c.leverageExposure),
     target_amount: round2(c.target), note: null,

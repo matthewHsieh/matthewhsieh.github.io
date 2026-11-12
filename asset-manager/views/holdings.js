@@ -211,7 +211,7 @@ export function renderHoldings(el) {
     section('複委託 (USD)', 'us', usRows,
       `US$ ${fmt(c.usValueUsd, 2)} <span class="${plClass(usPl)}">${signed(usPl, 2)}</span>　≈ ${fmt(c.usValue)}`) +
     section('美股選擇權 (USD)', 'usopt', usOptRows,
-      `市值 US$ ${fmt(c.usOptValueUsd, 0)}（≈ ${fmt(c.usOptValue)}，計入總資產）　delta 曝險 ${fmt(c.usOptExposure)}　${
+      `市值 US$ ${fmt(c.usOptValueUsd, 0)}（≈ ${fmt(c.usOptValue)}，已含在海期權益數、不另計總資產）　delta 曝險 ${fmt(c.usOptExposure)}　${
         c.usOptUnlimited ? '<span class="loss">最大虧損無上限</span>'
         : `到期最大虧損 US$ ${fmt(c.usOptMaxLossUsd, 0)}`}${
         c.usOptProfitUsd === null ? '' : `　<span class="${plClass(c.usOptProfitUsd)}">${signed(c.usOptProfitUsd, 0)}</span>`}${

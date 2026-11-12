@@ -157,7 +157,8 @@ export function compute() {
   const optNoDelta = opts.some((o) => !isNum(o.delta));
 
   // 美股個股選擇權（2026-11-12）
-  //   **市值進總資產**：權利金是從複委託現金付出去的，跟台指選擇權（已含在期貨權益數）不同。
+  //   **市值不進總資產**：部位在海期帳戶裡，券商回報的海期權益數已經含了未沖銷部位的浮動損益，
+  //   跟台指選擇權在期貨帳戶是同一回事（使用者 11/12 說明）。海期權益數記在「資金項目」的期貨帳戶權益數。
   //   曝險：delta × 標的價 × 100，買方淨、賣方毛。delta 還沒算出來的那幾口另外標，不用 0 假裝沒事。
   const uos = state.usOpts || [];
   const usOptValueUsdSum = sum(uos, usOptValueUsd);
@@ -196,7 +197,7 @@ export function compute() {
   // 期貨部位一直都沒有加（只進曝險），選擇權現在跟它一致。
   // optMarket 仍然算出來、仍然顯示在選擇權那一區，只是不進總資產。
   // ------------------------------------------------------------
-  const totalAssets = stockValue + usValue + usOptValue + futEquity + cash + warMarket;
+  const totalAssets = stockValue + usValue + futEquity + cash + warMarket;
   const netAssets = totalAssets - liabilities;
   const exposure = stockValue + usExposure + usOptExposure + futGross + optExposure + warExp;
 

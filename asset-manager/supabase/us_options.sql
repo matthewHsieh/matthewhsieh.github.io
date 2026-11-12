@@ -2,11 +2,9 @@
 -- 美股個股選擇權（複委託）  2026-11-12
 --
 --   跟台指選擇權（public.options）分開一張表，原因是幾乎每一個欄位的意義都不同：
---     幣別 USD、每口 100 股、標的是個股（要另外抓標的價）、到期日是真的日期、
---     而且**權利金是從複委託帳戶付出去的現金**——
---     台指選擇權的浮動損益已經含在期貨帳戶權益數裡（所以 11/4 起不進總資產），
---     美股選擇權買進後複委託現金就少了，選擇權本身的市值**必須**算進總資產，
---     否則買一口 call 總資產就憑空少掉權利金。
+--     幣別 USD、每口 100 股、標的是個股（要另外抓標的價）、到期日是真的日期。
+--   **市值不進總資產**：部位在海期帳戶，券商回報的海期權益數已經含了浮動損益，
+--     跟台指選擇權在期貨帳戶一樣（11/4 起不進總資產）。只進曝險。
 --
 --   報價：Yahoo chart 端點吃 OCC 代碼（NVDA261120C00155000），不用 crumb。
 --   delta：用標的價當遠期價，套跟台指選擇權同一支 Black-76 反推（pm_solve_x / pm_delta）。
@@ -139,9 +137,9 @@ end $$;
 -- ------------------------------------------------------------
 -- 每日快照：加進美股選擇權
 --   以 2026-11-12 線上版本為底（線上已經把台指選擇權拿出總資產，prices.sql 的檔案版本還沒同步，
---   這裡一併以線上為準）。改動只有兩處，都標了「usopt」：
---     1. 美股選擇權市值算進 us_value 與總資產（權利金是從複委託現金付出去的）
---     2. delta 曝險算進 us_exposure：買方淨、賣方毛，跟台指選擇權同一套規則
+--   這裡一併以線上為準）。改動只有一處，標了「usopt」：
+--     delta 曝險算進 us_exposure：買方淨、賣方毛，跟台指選擇權同一套規則。
+--   市值不加：已經含在海期權益數裡（記在 balances 的 futures_equity）。
 -- ------------------------------------------------------------
 create or replace function public.auto_snapshot()
 returns integer language plpgsql security definer set search_path = public as $$
@@ -151,10 +149,7 @@ begin
   s as (
     select u.id as user_id,
            coalesce((select sum(x.shares * x.price) from public.stocks x where x.user_id = u.id), 0) as stock_value,
-           coalesce((select sum(x.shares * x.price_usd) from public.us_stocks x where x.user_id = u.id), 0)
-           -- usopt：市值（買方正、賣方負）
-           + coalesce((select sum(x.lots * x.price_usd * x.size * case when x.side = 'short' then -1 else 1 end)
-                       from public.us_options x where x.user_id = u.id), 0) as us_usd,
+           coalesce((select sum(x.shares * x.price_usd) from public.us_stocks x where x.user_id = u.id), 0) as us_usd,
            coalesce((select sum(x.shares * x.price_usd * abs(public.pm_us_leverage(x.leverage, x.name)))
                      from public.us_stocks x where x.user_id = u.id), 0)
            -- usopt：delta 曝險，買方淨、賣方毛
@@ -205,7 +200,6 @@ begin
            -- 本來就含了未沖銷部位的浮動損益，再加 opt_value 就是同一筆錢算兩遍。
            -- 期貨部位一直都沒加（只進曝險），選擇權現在跟它一致。
            -- opt_value 仍然存進快照那一欄，只是不計入 total_assets。
-           -- （美股選擇權不一樣，已經含在 us_usd 裡，見上面 usopt。）
            b.stock_value + b.us_usd * b.rate + b.fut_equity + b.cash + b.war_value as total_assets
     from b
   ),
