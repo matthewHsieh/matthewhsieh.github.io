@@ -351,11 +351,9 @@ function allocBlock(c) {
       </label></div>
 
     ${sig ? `<p class="sub rc-sig">規則算出來是 <b>${fmtMax(sig.lev, 2)} 倍</b>
-      ＝ 趨勢 ${fmtMax(sig.base, 1)}（指數${sig.above ? '在' : '跌破'} MA200，
-      現在是均線的 ${fmtMax(sig.maRatio, 2)} 倍）
-      ＋ 回撤加碼 ${fmtMax(sig.add, 2)}（距 52 週高點 ${fmt(sig.dd * 100)}%）<br>
-      <span class="muted">只用趨勢濾網的話是 ${fmtMax(sig.levFilter, 1)} 倍。
-      2008 年完整規則 0.50x、只用濾網 0.82x——回撤加碼在真正的崩盤裡是加速器。</span></p>` : ''}
+      （純趨勢：指數${sig.above ? '在' : '跌破'} 200 日線，現在是均線的 ${fmtMax(sig.maRatio, 2)} 倍；
+      線上 1.3 倍、線下 0.5 倍）<br>
+      <span class="muted">2026-11-17 起拿掉回撤加碼：崩跌時它會把曝險往上加，舊公式最差的一天 −20%。</span></p>` : ''}
     <p class="sub muted">指數年化波動 ${fmt(ivol * 100)}%　→　目標組合波動 ${fmt(target * 100)}%</p>`;
 
   if (!sel.length) {

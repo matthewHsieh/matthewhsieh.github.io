@@ -26,7 +26,7 @@ import { resolveTwSymbol } from './symbols.js';
 export const BETA_WIN = 250;
 export const BETA_FALLBACK = 1.5;
 export const LEV_BAND = 0.3;          // 公式：差距超過 0.3 倍才調整
-export const LEV_CAP = 2.5;           // 公式的天花板
+export const LEV_CAP = 1.3;           // 純趨勢的天花板（200 日線之上）；之下是 0.5，見 risk.js indexSignal
 
 const cache = () => (state.retSeries ||= new Map());
 

@@ -589,7 +589,19 @@ function erfc(x) {
 }
 
 // ------------------------------------------------------------
-// 指數該開幾倍：MA200 趨勢 ＋ 回撤加碼
+// 指數該開幾倍：**純趨勢**（2026-11-17 改）
+//
+//   200 日線之上 1.3 倍、之下 0.5 倍。**不再做回撤加碼。**
+//
+//   為什麼改（2026-11-16 崩盤後、逐日計價 2017-12～2026-11）：
+//     舊公式（2 倍＋min(1, 4×回撤)，上限 2.5）  年化 35.8%、最大回撤 −41.7%、最差一天 −20.5%
+//     純趨勢 1.3／0.5                            年化 21.3%、最大回撤 −25.7%、最差一天 −10.9%
+//     大盤 1 倍抱著                              年化 18.0%、最大回撤 −31.6%
+//   10/14→11/12 大盤從高點直接崩、一路都在 200 日線之上，濾網沒有觸發；
+//   **回撤加碼在崩跌中把曝險往上加**，舊公式這一段 −31%。
+//   唯一真正有效的防護是低槓桿、不加碼。「最差的一天」要是人扛得住的大小。
+//
+//   以下是舊版留下的背景：
 //
 //   2026-09-17 用 25 年加權指數（2002-07~2026-09、5,557 個 18 個月滾動窗口）測的：
 //     固定 1.86 倍        終值 15.08x、最大回撤 −82.7%
@@ -609,6 +621,9 @@ const toPrices = (rets) => {
   return out;
 };
 
+export const TREND_ON = 1.3;    // 200 日線之上
+export const TREND_OFF = 0.5;   // 200 日線之下
+
 export function indexSignal(series, riskRow, win = 200) {
   const s = series?.get?.('TAIEX');
   if (!s || !s.rets || s.rets.length < win) return null;
@@ -624,13 +639,17 @@ export function indexSignal(series, riskRow, win = 200) {
   const hi = num(riskRow?.hi52);
   const px = num(riskRow?.last);
   const dd = hi > 0 && px > 0 ? Math.max(0, (hi - px) / hi) : 0;
-  const add = Math.min(1, 4 * dd);
+  // 月線（20 日）：空單守則用——月線之上不做空
+  const seg20 = p.slice(-20);
+  const ma20 = seg20.reduce((a, b) => a + b, 0) / seg20.length;
+  const base = above ? TREND_ON : TREND_OFF;
   return {
     above, maRatio: last / ma, dd, hi, px,
-    base: above ? 2 : 0,
-    add,
-    lev: (above ? 2 : 0) + add,      // 完整規則
-    levFilter: above ? 2 : 0,        // 只用濾網（2008 年表現比較好的那個）
+    above20: last >= ma20, ma20Ratio: last / ma20,
+    base,
+    add: 0,                          // 回撤加碼已拿掉（欄位留著，舊畫面不會壞）
+    lev: base,
+    levFilter: base,
   };
 }
 

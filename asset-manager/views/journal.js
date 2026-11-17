@@ -136,6 +136,28 @@ export function renderJournal(el) {
         而「不放空當天強勢股」這種要看盤中強弱的，事後無從判斷，只能當提醒靠自己記得。</p>
     </div>
 
+
+    <div class="card">
+      <div class="list-title" role="heading" aria-level="2">空單守則</div>
+      <p class="sub"><b>只有兩種空單，先分清楚是哪一種再下單。</b></p>
+      <p class="sub"><b>① 避險空單</b>：手上有個股被跌停鎖住、或怕隔夜跳空時用。</p>
+      <ul class="sub">
+        <li>只用<b>微台</b>（顆粒細、永遠有量）。<b>下單前確認商品是 TMF 微台</b>，不是大台。</li>
+        <li>口數 ＝ 多單的大盤等效 ÷（指數 × 10），四捨五入；<b>不能超過多單</b>，超過就變成方向性空單。</li>
+        <li>多單賣掉的那一刻，<b>空單一起平</b>。總覽頁會提醒「避險變裸空」。</li>
+      </ul>
+      <p class="sub"><b>② 方向性空單（開盤空）</b>：十年回測每次 +0.09%、只在空頭年賺錢。</p>
+      <ul class="sub">
+        <li>三個條件都成立才做：前一天收盤在<b>月線之下</b>、前一天波動在近 250 天排名 &gt; 40%、<b>08:45～09:00 收黑</b>。</li>
+        <li>09:00 進場，<b>微台 2～3 口</b>，不加碼、不攤平。</li>
+        <li><b>停損 1%</b>：15 分 K 收盤超過進場價 +1% 就出。沒停損就 13:40 左右全平，<b>不留夜盤</b>。</li>
+        <li>沒有停利，讓大跌日跑完。</li>
+      </ul>
+      <p class="sub"><b>兩種都不做的事</b>：不放空當天強勢的個股；不在急拉之後追空；空單被軋時不加碼。</p>
+      <p class="hint">App 會在你記錄大盤空單時檢查：開完之後如果變成淨空、而加權在月線之上，就記一筆違規（short_trend）。
+        當天平倉、1% 停損這兩件事進場時看不到，要靠這張卡跟收盤前的自己。</p>
+    </div>
+
     ${offListCap() !== null ? `<div class="card">
       <div class="list-title" role="heading" aria-level="2">名單外自選記分板</div>
       <div id="offlist-scores"><p class="muted">計算中…</p></div>

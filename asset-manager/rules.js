@@ -127,11 +127,14 @@ function sameDayReverse(t, before) {
 // 選擇權有自己的規則（opt_crash_call）時，不當沖這條不管選擇權。
 //   那條允許「大跌日買 call、當天 13:00 前出場」，這本來就是當沖；
 //   兩條一起算的話，照規矩做也會被記成違規，規則就失去意義了。
-const optOwnRule = (t) => t.market === 'option' && !!activeRule('opt_crash_call');
+const optOwnRule = (t) => t.market === 'option' && !!(activeRule('opt_crash_call') || activeRule('opt_budget'));
+// 2026-11-17：不當沖只管個股。指數期貨的當沖照「空單守則」（開盤空當天平倉）走，
+// 選擇權照固定額度走；兩邊一起算的話，照規矩做也會被記成違規。
+const dayExempt = (t) => optOwnRule(t) || (t.market === 'futures' && t.fut_kind !== 'stock');
 
 // 回傳 null 代表這筆沒問題
 function dayTradeBreak(t, before) {
-  if (optOwnRule(t)) return null;
+  if (dayExempt(t)) return null;
   if (t.is_day_trade) {
     return {
       kind: 'no_day_trade',
@@ -550,10 +553,11 @@ function optReplay(list) {
 }
 
 // 開倉的買 call 分成「筆」：跟前一列相隔 5 分鐘以內算同一筆
-function callClusters(replayed) {
+function callClusters(replayed, anyBuy = false) {
   const out = [];
   for (const r of replayed) {
-    if (!isBuyCall(r.t) || r.open <= 1e-9 || !r.t.created_at) continue;
+    const ok = anyBuy ? (r.t.market === 'option' && r.t.side === 'buy') : isBuyCall(r.t);
+    if (!ok || r.open <= 1e-9 || !r.t.created_at) continue;
     const at = Date.parse(r.t.created_at);
     const last = out[out.length - 1];
     const prem = optPremium(r.t, r.open);
@@ -572,41 +576,53 @@ function optRealizedBefore(dateISO, before) {
 const crashCap = (rule) => (isNum(rule?.amount) && num(rule.amount) > 0 ? num(rule.amount) : OPT_CRASH_BUDGET);
 
 // 記錄當下的檢查（t 可以是還沒存檔的）
+// ------------------------------------------------------------
+// 選擇權固定額度（opt_budget，2026-11-17）
+//   取代「只准大跌日買 call」。多空都可以做，但錢跟次數關住：
+//     一筆（5 分鐘內連續下的單算同一筆）權利金 ≤ 金額、一天最多 2 筆新倉、
+//     選擇權當天已實現虧滿金額就停、不做賣方；往下加碼由 no_add_losing 管。
+//   11/16～11/17 的證據：同樣是 10 口左右、分批出、只往賺錢方向加的那幾組都賺
+//   （41500 那組 +12.7 萬），攤到 20～40 口的那幾組把它們全部吐回去。
+// ------------------------------------------------------------
 function crashCallBreaks(t) {
-  const rule = activeRule('opt_crash_call');
+  const rule = activeRule('opt_budget') || activeRule('opt_crash_call');
   if (!rule || t.market !== 'option') return [];
+  const budget = rule.kind === 'opt_budget';
+  const K = rule.kind;
   const open = openingLots(t);
   if (open <= 1e-9) return [];                     // 純平倉
   const cap = crashCap(rule);
-  const why = '判斷可以用，但要有上限：大跌日才買 call、一筆不超過額度、一天兩筆、虧滿額度就停。'
-    + '做對的那幾次，問題也不在方向，而在權利金是額度的好幾倍；同樣的動作在失控的時候會把獲利吐回去。';
+  const why = budget
+    ? '多空都可以做，但要有額度：一筆不超過金額、一天兩筆、虧滿金額就停、不准往下加碼。賺錢的那幾組都是 10 口左右、分批出；虧大的都是攤平攤出來的。'
+    : '判斷可以用，但要有上限：大跌日才買 call、一筆不超過額度、一天兩筆、虧滿額度就停。'
+      + '做對的那幾次，問題也不在方向，而在權利金是額度的好幾倍；同樣的動作在失控的時候會把獲利吐回去。';
   if (t.side === 'sell') {
-    return [{ kind: 'opt_crash_call', text: `賣出${cpLabel(t.opt_cp)}＝做賣方`,
+    return [{ kind: K, text: `賣出${cpLabel(t.opt_cp)}＝做賣方`,
       why: '賣方的虧損沒有上限，一天的結算就能抵掉其他所有交易的獲利。這條沒有例外。' }];
   }
-  if (!isBuyCall(t)) return [];                    // 買 put：保險，隨時可以
+  if (!budget && !isBuyCall(t)) return [];         // 舊規則：買 put 是保險，隨時可以
   const out = [];
   const d = idxDay(t.trade_date);
-  if (d && d.low > -OPT_CRASH_PCT) {
-    out.push({ kind: 'opt_crash_call', why,
+  if (!budget && d && d.low > -OPT_CRASH_PCT) {
+    out.push({ kind: K, why,
       text: `今天加權盤中最低只跌 ${pct1(-d.low)}，不是大跌日（要跌超過 ${pct1(OPT_CRASH_PCT)}）` });
   }
   const today = optReplay(state.trades.filter((x) => x.trade_date === t.trade_date && x.market === 'option').sort(byCreated));
-  const cl = callClusters(today);
+  const cl = callClusters(today, budget);
   const last = cl[cl.length - 1];
   const joins = !!last && Date.now() - last.end <= OPT_CLUSTER_MS;
   const prem = optPremium(t, open) + (joins ? last.prem : 0);
   const count = cl.length + (joins ? 0 : 1);
   if (prem > cap + 1e-6) {
-    out.push({ kind: 'opt_crash_call', why,
+    out.push({ kind: K, why,
       text: `這一筆權利金 ${fmt(prem)} 元，超過一筆上限 ${fmt(cap)} 元（超出 ${fmt(prem - cap)} 元）` });
   }
   if (count > OPT_CRASH_MAX) {
-    out.push({ kind: 'opt_crash_call', why, text: `今天第 ${fmt(count)} 筆買 call，一天最多 ${fmt(OPT_CRASH_MAX)} 筆` });
+    out.push({ kind: K, why, text: `今天第 ${fmt(count)} 筆${budget ? '選擇權新倉' : '買 call'}，一天最多 ${fmt(OPT_CRASH_MAX)} 筆` });
   }
   const lost = optRealizedBefore(t.trade_date, null);
   if (lost <= -cap) {
-    out.push({ kind: 'opt_crash_call', why, text: `選擇權今天已實現 ${fmt(lost)}，虧滿 ${fmt(cap)} 就停` });
+    out.push({ kind: K, why, text: `選擇權今天已實現 ${fmt(lost)}，虧滿 ${fmt(cap)} 就停` });
   }
   return out;
 }
@@ -614,21 +630,23 @@ function crashCallBreaks(t) {
 // 事後檢討：依時間重播當天所有選擇權
 function crashCallAudit(day, dateISO, rule) {
   const cap = crashCap(rule);
+  const budget = rule.kind === 'opt_budget';
+  const K = rule.kind;
   const rep = optReplay(day.filter((t) => t.market === 'option').sort(byCreated));
   if (!rep.length) return [];
   const out = [];
   const shorts = rep.filter((r) => r.t.side === 'sell' && r.open > 1e-9);
   if (shorts.length) {
-    out.push({ kind: 'opt_crash_call', text: `做了選擇權賣方 ${shorts.length} 筆`,
+    out.push({ kind: K, text: `做了選擇權賣方 ${shorts.length} 筆`,
       detail: shorts.map((r) => `${tradeLabel(r.t)} ${fmt(r.open)} 口`).join('、') });
   }
-  const cl = callClusters(rep);
+  const cl = callClusters(rep, budget);
   if (cl.length) {
     const d = idxDay(dateISO);
     const bad = [];
     cl.forEach((c, i) => {
       const why = [];
-      if (d && d.low > -OPT_CRASH_PCT) why.push(`加權最低只跌 ${pct1(-d.low)}`);
+      if (!budget && d && d.low > -OPT_CRASH_PCT) why.push(`加權最低只跌 ${pct1(-d.low)}`);
       if (c.prem > cap + 1e-6) why.push(`權利金 ${fmt(c.prem)}，上限 ${fmt(cap)}`);
       if (i >= OPT_CRASH_MAX) why.push(`第 ${i + 1} 筆，一天最多 ${OPT_CRASH_MAX} 筆`);
       const lost = state.trades.filter((x) => x.trade_date === dateISO && x.market === 'option'
@@ -638,7 +656,7 @@ function crashCallAudit(day, dateISO, rule) {
       if (why.length) bad.push(`${new Date(c.start + TPE).toISOString().slice(11, 16)} ${
         [...new Set(c.rows.map(tradeLabel))].join('＋')}（${why.join('；')}）`);
     });
-    if (bad.length) out.push({ kind: 'opt_crash_call', text: `買 call 超出額度或次數 ${bad.length} 筆`, detail: bad.join('、') });
+    if (bad.length) out.push({ kind: K, text: `${budget ? '選擇權' : '買 call '}超出額度或次數 ${bad.length} 筆`, detail: bad.join('、') });
   }
   // 當天到期的：13:00 之後才出場、或抱到結算
   const late = [], held = new Map(), names = new Map();
@@ -653,7 +671,7 @@ function crashCallAudit(day, dateISO, rule) {
   }
   const toSettle = [...held].filter(([, v]) => v > 1e-9);
   if (late.length || toSettle.length) {
-    out.push({ kind: 'opt_crash_call', text: '當天到期的沒有在 13:00 前出場',
+    out.push({ kind: K, text: '當天到期的沒有在 13:00 前出場',
       detail: [...late, ...toSettle.map(([k, v]) => `${names.get(k)} 還有 ${fmt(v)} 口抱到結算`)].join('、') });
   }
   // 權利金跌一半沒出場：平倉的那一腳虧超過買進權利金的一半
@@ -669,7 +687,7 @@ function crashCallAudit(day, dateISO, rule) {
       if (num(r.t.price) < avg * 0.5 - 1e-9) stop.push(`${tradeLabel(r.t)} 買 ${fmtMax(avg, 1)}、賣 ${fmtMax(r.t.price, 1)}`);
     }
   }
-  if (stop.length) out.push({ kind: 'opt_crash_call', text: `權利金跌超過一半才出場 ${stop.length} 筆`, detail: stop.join('、') });
+  if (stop.length) out.push({ kind: K, text: `權利金跌超過一半才出場 ${stop.length} 筆`, detail: stop.join('、') });
   return out;
 }
 
@@ -806,7 +824,8 @@ function idxLevBreak(t) {
   const rule = activeRule('idx_lev_cap');
   // 只看買進：新開的空單會讓淨多方曝險變小，不會超過上限
   if (!rule || t.market === 'option' || t.side !== 'buy' || !isOpening(t)) return null;
-  const cap = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) : LEV_CAP;
+  // 2026-11-17：上限跟著趨勢走（200 日線之上 1.3、之下 0.5），規則列的金額只當絕對天花板
+  const ruleCap = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) : LEV_CAP;
   let sym = null, mult = 1;
   if (t.market === 'warrant') {
     const w = (state.warrants || []).find((x) => norm(x.code) === norm(t.symbol));
@@ -816,10 +835,12 @@ function idxLevBreak(t) {
   const v = tradeNotional(t) * mult;
   if (!(v > 0)) return null;
   const L = idxLevNow({ exposure: v, sym });
+  const cap = L.target === null ? ruleCap : Math.min(ruleCap, L.target);
   if (!(L.equity > 0) || !(L.lev > cap + 1e-9)) return null;
+  const trend = L.sig ? `（加權${L.sig.above ? '在 200 日線之上' : '跌破 200 日線'}）` : '';
   return {
     kind: 'idx_lev_cap',
-    text: `這筆之後大盤等效槓桿 ${fmtMax(L.lev, 2)} 倍（大跌時 ${fmtMax(L.levDown, 2)} 倍），超過上限 ${fmtMax(cap, 2)} 倍`,
+    text: `這筆之後大盤等效槓桿 ${fmtMax(L.lev, 2)} 倍（大跌時 ${fmtMax(L.levDown, 2)} 倍），超過上限 ${fmtMax(cap, 2)} 倍${trend}`,
     why: '上限是公式的天花板，不是目標。名目 × beta 才是大盤跌 1% 你會跌幾 %；'
       + '這類股票大盤大跌的時候跌得比 beta 還多，所以另外列「大跌時」。減碼與平倉不受這條限制。',
   };
@@ -1068,6 +1089,83 @@ function addLosingBreak(t) {
 }
 
 // 一筆交易（可以是還沒存檔的）違反了哪些規則
+// ------------------------------------------------------------
+// 個股上限（stock_cap，2026-11-17）
+//   所有個股（現股、個股期、權證，家人委託不算）的名目，不超過自有資金的 amount %（預設 25）。
+//   25% 的意思：**連續兩根跌停（約 −19%）也只傷自有資金的 5%**。
+//   11/16～11/17 的教訓：大盤跌 3% 個股就跌停、連兩天出不掉，名目 2 倍的個股期一天就是 −20%。
+//   平倉、減碼永遠放行；只看增加名目的那一邊（買進開倉、或放空開倉）。
+// ------------------------------------------------------------
+const STOCK_CAP_PCT = 25;
+const isStockTrade = (t) => t.market === 'tw' || t.market === 'warrant' || (t.market === 'futures' && t.fut_kind === 'stock');
+export function stockNotional() {
+  const sleeve = new Set((state.stocks || []).filter((s) => s.sleeve).map((s) => resolveTwSymbol(s.symbol)));
+  let v = 0;
+  for (const s of state.stocks || []) if (!s.sleeve) v += num(s.shares) * pxOf(s, s.symbol);
+  for (const f of state.futures || []) if (f.kind === 'stock') v += num(f.lots) * futPx(f) * num(f.size);
+  for (const w of state.warrants || []) { const e = warExposure(w); v += e !== null ? Math.abs(e) : warValue(w); }
+  return { v, sleeve };
+}
+function stockCapBreak(t) {
+  const rule = activeRule('stock_cap');
+  if (!rule || !isStockTrade(t) || !isOpening(t) || isRoll(t)) return null;
+  const { v, sleeve } = stockNotional();
+  if (t.market === 'tw' && sleeve.has(resolveTwSymbol(t.symbol))) return null;
+  const add = Math.abs(tradeNotional(t));
+  const L = idxLevNow();
+  if (!(L.equity > 0) || !(add > 0)) return null;
+  const pctCap = isNum(rule.amount) && num(rule.amount) > 0 ? num(rule.amount) : STOCK_CAP_PCT;
+  const after = v + add, share = after / L.equity;
+  if (share <= pctCap / 100 + 1e-9) return null;
+  return {
+    kind: 'stock_cap',
+    text: `這筆之後個股名目 ${fmt(after)} 元，是自有資金 ${fmt(L.equity)} 的 ${fmt(share * 100)}%，上限 ${fmt(pctCap)}%（約 ${fmt(L.equity * pctCap / 100)} 元）`,
+    why: '個股會一起跌停、連幾天出不掉。上限的意思是：連兩根跌停也只傷自有資金的 5%。主體用大盤，個股只當衛星。',
+  };
+}
+
+// ------------------------------------------------------------
+// 空單守則（short_trend，2026-11-17）
+//   開大盤空單（指數期貨放空開倉、或買進賣權）時檢查：
+//     • **避險空單**：開完之後大盤等效還是淨多（空單 ≤ 手上多單），放行。
+//       避險的大小照多單的大盤等效算，多單出掉的時候空單要一起平。
+//     • **方向性空單**（開完變淨空）：只准在月線（20 日均線）之下做——開盤空的趨勢濾網。
+//       十年回測：月線下開盤空每次 +0.07%、月線上 ≈ 0；加 1% 停損再翻一倍。
+//       當天平倉、不留夜盤、1% 停損，這三件事 App 在進場時看不到，寫在空單守則卡裡。
+// ------------------------------------------------------------
+const isIdxShortOpen = (t) => (t.market === 'futures' && t.fut_kind !== 'stock' && t.side === 'sell' && isOpening(t))
+  || (t.market === 'option' && t.side === 'buy' && t.opt_cp === 'put' && openingLots(t) > 1e-9);
+function idxShortExposure(t) {
+  if (t.market === 'futures') return num(t.quantity) * num(t.price) * num(t.fut_size || indexProduct(t.symbol)?.size || 0);
+  // 買 put：用 delta 0.5 粗估；履約價 × 50 × 口數 × 0.5
+  return num(t.quantity) * num(t.opt_strike) * OPT_SIZE * 0.5;
+}
+function shortTrendBreak(t) {
+  const rule = activeRule('short_trend');
+  if (!rule || !isIdxShortOpen(t)) return null;
+  const L = idxLevNow();
+  const after = L.exp - idxShortExposure(t);
+  if (after >= -1e-6) return null;                 // 還是淨多：避險
+  const s = L.sig;
+  if (!s || s.above20 === undefined) return null;  // 指數資料沒載入：不判定
+  if (!s.above20) return null;
+  return {
+    kind: 'short_trend',
+    text: `這筆之後變成淨空 ${fmt(-after)} 元，但加權在月線之上（月線的 ${fmtMax(s.ma20Ratio, 3)} 倍）`,
+    why: '方向性空單只在月線之下做。月線之上開盤空，十年平均是 0，等於丟銅板還付手續費。避險空單（不超過手上多單）不受這條限制。',
+  };
+}
+
+// 總覽頁用：大盤空單的狀態（淨空要提醒當天平倉；多單出清了空單還在＝避險變裸空）
+export function shortStatus() {
+  const idxShort = (state.futures || []).filter((f) => f.kind !== 'stock' && f.side === 'short')
+    .reduce((a, f) => a + num(f.lots) * futPx(f) * num(f.size), 0);
+  if (!(idxShort > 0)) return null;
+  const L = idxLevNow();
+  const longExp = L.exp + idxShort;                // 拿掉空單之後的多方大盤等效
+  return { idxShort, longExp, net: L.exp, naked: L.exp < -1e-6 };
+}
+
 export function checkRules(t) {
   const out = [];
   if (!t || !state.rules.length) return out;
@@ -1085,6 +1183,11 @@ export function checkRules(t) {
   // 2026-11-04：賠錢不加碼
   const al = addLosingBreak(t);
   if (al) out.push(al);
+  // 2026-11-17：個股上限、空單守則
+  const sc = stockCapBreak(t);
+  if (sc) out.push(sc);
+  const st = shortTrendBreak(t);
+  if (st) out.push(st);
 
   // 排第一個：這是 2026-09-23 之後最要緊的一條
   const hold = activeRule('no_day_trade');
@@ -1193,10 +1296,10 @@ export function breaksOn(dateISO) {
 
   if (hold && dateISO >= hold.started_on) {
     // 勾了當沖的直接算；沒勾的看同一檔當天有沒有一買一賣（轉倉不算）
-    const flagged = day.filter((t) => t.is_day_trade && !optOwnRule(t));
+    const flagged = day.filter((t) => t.is_day_trade && !dayExempt(t));
     const byKey = new Map();
     for (const t of day) {
-      if (t.is_day_trade || isRoll(t) || optOwnRule(t)) continue;
+      if (t.is_day_trade || isRoll(t) || dayExempt(t)) continue;
       const k = tradeKey(t);
       const e = byKey.get(k) || { t, buy: 0, sell: 0 };
       if (t.side === 'buy') e.buy += num(t.quantity); else e.sell += num(t.quantity);
@@ -1273,6 +1376,8 @@ export function breaksOn(dateISO) {
   }
   const crash = activeRule('opt_crash_call');
   if (crash && dateISO >= crash.started_on) out.push(...crashCallAudit(day, dateISO, crash));
+  const budgetRule = activeRule('opt_budget');
+  if (budgetRule && dateISO >= budgetRule.started_on) out.push(...crashCallAudit(day, dateISO, budgetRule));
 
   // 名單外：只檢討今天。過去那幾天的部位已經變了，拿現在的部位去算當時的佔比是錯的。
   const offRule = activeRule('off_list_cap');

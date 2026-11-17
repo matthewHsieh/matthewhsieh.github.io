@@ -7,7 +7,7 @@ import { renderDropWatch } from './riskcard.js';
 import { compute, exposureSlices } from '../portfolio.js';
 import { optPnlAt } from '../instruments.js';
 import { alertOf } from '../alerts.js';
-import { activeRule } from '../rules.js';
+import { activeRule, shortStatus, stockNotional } from '../rules.js';
 import { LEV_BAND, LEV_CAP, idxLevNow } from '../leverage.js';
 import { callOdds, marginShocks, marginState, requiredRiskPct } from '../risk.js';
 import { bindStockOpen } from './stock.js';
@@ -22,8 +22,10 @@ import { bindListActions, line, priceStamp, stalenessNote, stat, tradeButton } f
 function idxLevCard() {
   const L = idxLevNow();
   if (!(L.equity > 0) || !Number.isFinite(L.lev)) return '';
-  const cap = num(activeRule('idx_lev_cap')?.amount) || LEV_CAP;
   const t = L.target;
+  // 上限跟著趨勢走：200 日線之上 1.3、之下 0.5。規則列的金額只當絕對天花板。
+  const ruleCap = num(activeRule('idx_lev_cap')?.amount) || LEV_CAP;
+  const cap = t === null ? ruleCap : Math.min(ruleCap, t);
   let verdict = '公式目標算不出來（加權指數的報酬資料還沒載入）', cls = '';
   if (t !== null) {
     const gap = L.lev - t;
@@ -33,6 +35,19 @@ function idxLevCard() {
     else verdict = `在目標 ±${fmtX(LEV_BAND)} 以內，不用動`;
   }
   const s = L.sig;
+  // 空單提醒（空單守則）：淨空要當天平；多單沒了空單還在＝避險變裸空
+  const ss = shortStatus();
+  const shortLine = !ss ? '' : ss.naked
+    ? `<p class="sub loss"><b>大盤淨空 ${fmt(-ss.net)} 元。</b>${ss.longExp > 0
+      ? '空單已經比多單大，避險變成方向性空單：' : '多單已經出清，空單變成裸空：'}照空單守則，當天平倉、1% 停損、不留夜盤。</p>`
+    : `<p class="sub">大盤空單 ${fmt(ss.idxShort)} 元在避險（多單大盤等效 ${fmt(ss.longExp)}）。<b>多單賣掉時空單要一起平。</b></p>`;
+  // 個股上限
+  const sc = activeRule('stock_cap');
+  const stv = stockNotional().v;
+  const scPct = sc ? (num(sc.amount) || 25) : null;
+  const stockLine = sc && L.equity > 0
+    ? `<p class="sub ${stv / L.equity > scPct / 100 + 1e-9 ? 'loss' : ''}">個股名目 ${fmt(stv)}，自有資金的 ${fmt(stv / L.equity * 100)}%（上限 ${fmt(scPct)}%：連兩根跌停只傷 5%）</p>`
+    : '';
   return `<div class="card">
     <div class="list-title" role="heading" aria-level="2">大盤等效槓桿</div>
     <div class="grid3">
@@ -41,9 +56,11 @@ function idxLevCard() {
       <div class="stat"><div class="label">公式目標</div><div class="value">${t === null ? '–' : fmtX(t)}</div></div>
     </div>
     <p class="sub ${cls}">${esc(verdict)}</p>
+    ${shortLine}${stockLine}
     <p class="hint">名目 × 每一檔對加權的 beta（最近 250 個交易日），分母是總資產扣掉家人委託的部位${
       L.sleeve > 0 ? `（${fmt(L.sleeve)}）` : ''}。「大跌時」用只拿大盤下跌日估的 beta：這類股票大盤跌的時候跌得比平常的 beta 還多。
-      ${s ? `公式：加權${s.above ? '在' : '跌破'} 200 日線${s.above ? '之上 → 2 倍' : ' → 0 倍'}，離 52 週高點 ${pct(s.dd)} → 加 ${fmtX(s.add)}，上限 ${fmtX(LEV_CAP)}。` : ''}
+      ${s ? `規則：加權${s.above ? '在 200 日線之上 → 1.3 倍' : '跌破 200 日線 → 0.5 倍'}（純趨勢，不做回撤加碼；離 52 週高點 ${pct(s.dd)}）。${
+        s.above20 ? '' : '在月線之下：開盤空的趨勢濾網成立。'}` : ''}
       ${L.est ? '有部位算不出 beta 或 delta，用 1.5 倍或市值估計。' : ''}</p>
   </div>`;
 }
