@@ -1109,6 +1109,8 @@ export function stockNotional() {
 function stockCapBreak(t) {
   const rule = activeRule('stock_cap');
   if (!rule || !isStockTrade(t) || !isOpening(t) || isRoll(t)) return null;
+  // 當沖的回補／賣出那一腳是在平倉，不是新的曝險（部位表裡看不到當沖部位，isOpening 會誤判）
+  if (sameDayReverse(t, null).length) return null;
   const { v, sleeve } = stockNotional();
   if (t.market === 'tw' && sleeve.has(resolveTwSymbol(t.symbol))) return null;
   const add = Math.abs(tradeNotional(t));
@@ -1143,6 +1145,7 @@ function idxShortExposure(t) {
 function shortTrendBreak(t) {
   const rule = activeRule('short_trend');
   if (!rule || !isIdxShortOpen(t)) return null;
+  if (sameDayReverse(t, null).length) return null;   // 當天多單的賣出＝平倉
   const L = idxLevNow();
   const after = L.exp - idxShortExposure(t);
   if (after >= -1e-6) return null;                 // 還是淨多：避險
