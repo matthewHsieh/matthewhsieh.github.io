@@ -1097,11 +1097,12 @@ function addLosingBreak(t) {
 //   平倉、減碼永遠放行；只看增加名目的那一邊（買進開倉、或放空開倉）。
 // ------------------------------------------------------------
 const STOCK_CAP_PCT = 25;
-const isStockTrade = (t) => t.market === 'tw' || t.market === 'warrant' || (t.market === 'futures' && t.fut_kind === 'stock');
+// 大盤 ETF（0050、00631L 這類）是指數曝險，不算個股
+const isStockTrade = (t) => (t.market === 'tw' && !INDEX_ETFS.has(norm(t.symbol))) || t.market === 'warrant' || (t.market === 'futures' && t.fut_kind === 'stock');
 export function stockNotional() {
   const sleeve = new Set((state.stocks || []).filter((s) => s.sleeve).map((s) => resolveTwSymbol(s.symbol)));
   let v = 0;
-  for (const s of state.stocks || []) if (!s.sleeve) v += num(s.shares) * pxOf(s, s.symbol);
+  for (const s of state.stocks || []) if (!s.sleeve && !INDEX_ETFS.has(norm(s.symbol))) v += num(s.shares) * pxOf(s, s.symbol);
   for (const f of state.futures || []) if (f.kind === 'stock') v += num(f.lots) * futPx(f) * num(f.size);
   for (const w of state.warrants || []) { const e = warExposure(w); v += e !== null ? Math.abs(e) : warValue(w); }
   return { v, sleeve };
