@@ -575,6 +575,111 @@ function optRealizedBefore(dateISO, before) {
 
 const crashCap = (rule) => (isNum(rule?.amount) && num(rule.amount) > 0 ? num(rule.amount) : OPT_CRASH_BUDGET);
 
+// ------------------------------------------------------------
+// 價差（2026-11-23）
+//
+//   高 IV 的時候用買權價差抄底，風險已經封頂，
+//   App 卻記了兩筆違規——買進那一腳單獨算成全額權利金、賣出那一腳算成「做賣方」。
+//   **價差的風險在下單那一刻就封頂了，跟裸賣是兩回事。**
+//   所以同一個到期別、同一種買賣權，賣出的口數有買進的口數保護，就是價差：
+//     • 不算做賣方；
+//     • 額度看「整組最多虧多少」，不是看單腳權利金。
+//       每一對（買 KL 權利金 pL、賣 KS 權利金 pS）：
+//         最多虧 =（pL − pS）＋ max(0, 買權 KL − KS ／ 賣權 KS − KL)，再乘口數與每點 50 元。
+//       借方價差（買權買低賣高）＝ 淨付出；貸方價差（買權賣低買高）＝ 寬度 − 收到的錢。
+//   保護可以來自同一筆（5 分鐘內連續下的單）裡的買方腳，也可以來自手上原本就有的買方部位。
+//   **沒有保護的賣出照樣是做賣方。**
+// ------------------------------------------------------------
+const legGroup = (t) => `${norm(t.symbol)}|${String(t.opt_expiry)}|${t.opt_cp}`;
+const posGroup = (o) => `${norm(o.contract || 'TXO')}|${String(o.expiry)}|${o.cp}`;
+
+// legs: [{ t, open }]（只看開倉的口數）
+//   回傳 loss：配成對的價差＋單獨買方的最多虧損；naked：每一組沒有保護的賣方口數
+function spreadLoss(legs) {
+  const g = new Map();
+  for (const { t, open } of legs) {
+    if (!(open > 1e-9)) continue;
+    const k = legGroup(t);
+    if (!g.has(k)) g.set(k, { L: [], S: [] });
+    g.get(k)[t.side === 'buy' ? 'L' : 'S'].push({ k: num(t.opt_strike), p: num(t.price), q: open, cp: t.opt_cp });
+  }
+  let loss = 0, pairs = 0;
+  const naked = new Map();
+  for (const [key, { L, S }] of g) {
+    for (const s of S) {
+      while (s.q > 1e-9) {
+        const l = L.filter((x) => x.q > 1e-9).sort((a, b) => Math.abs(a.k - s.k) - Math.abs(b.k - s.k))[0];
+        if (!l) { naked.set(key, num(naked.get(key)) + s.q); s.q = 0; break; }
+        const q = Math.min(s.q, l.q);
+        const width = s.cp === 'call' ? l.k - s.k : s.k - l.k;
+        loss += q * OPT_SIZE * Math.max(0, l.p - s.p + Math.max(0, width));
+        s.q -= q; l.q -= q; pairs += q;
+      }
+    }
+    for (const l of L) loss += l.q * l.p * OPT_SIZE;
+  }
+  return { loss, naked, pairs };
+}
+
+// 手上原本的部位裡，這一組的淨買方口數（state.options；扣掉 exclude 這幾腳已經存進部位的部分）
+function posNetLong(key, exclude = []) {
+  let n = 0;
+  for (const o of state.options || []) if (posGroup(o) === key) n += (o.side === 'short' ? -1 : 1) * num(o.lots);
+  for (const { t, open } of exclude) if (legGroup(t) === key) n -= (t.side === 'buy' ? 1 : -1) * open;
+  return n;
+}
+
+// 開倉的選擇權（買或賣）分成「筆」：跟前一列相隔 5 分鐘以內算同一筆。
+//   每一筆記下開始前每一組的淨口數，事後檢討用來判斷賣方有沒有被原本的買方部位保護
+function optClusters(replayed) {
+  const out = [], keyNet = new Map();
+  const groupNet = () => { const m = new Map(); for (const [k, v] of keyNet) { const g = k.split('§')[1]; m.set(g, num(m.get(g)) + v); } return m; };
+  for (const r of replayed) {
+    const t = r.t, kk = `${tradeKey(t)}§${legGroup(t)}`;
+    if (!keyNet.has(kk)) keyNet.set(kk, isNum(t.prev_shares) ? num(t.prev_shares) : 0);
+    if (r.open > 1e-9 && t.created_at) {
+      const at = Date.parse(t.created_at);
+      const last = out[out.length - 1];
+      if (last && at - last.end <= OPT_CLUSTER_MS) { last.legs.push({ t, open: r.open }); last.end = at; }
+      else out.push({ start: at, end: at, legs: [{ t, open: r.open }], before: groupNet() });
+    }
+    keyNet.set(kk, keyNet.get(kk) + (t.side === 'buy' ? 1 : -1) * num(t.quantity));
+  }
+  for (const c of out) {
+    const s = spreadLoss(c.legs);
+    c.loss = s.loss; c.pairs = s.pairs;
+    // 被原本部位保護的賣方：風險是在減少，不算做賣方
+    c.uncovered = [...s.naked].filter(([g, q]) => num(c.before.get(g)) + 1e-9 < q);
+  }
+  return out;
+}
+
+// 記錄當下：這一腳跟同一筆裡已經存檔的腳合起來
+function spreadAtEntry(t, open) {
+  const today = optReplay(state.trades.filter((x) => x.trade_date === t.trade_date && x.market === 'option').sort(byCreated));
+  const cl = optClusters(today);
+  const last = cl[cl.length - 1];
+  const joins = !!last && Date.now() - last.end <= OPT_CLUSTER_MS;
+  const prior = joins ? last.legs : [];
+  const s = spreadLoss([...prior, { t, open }]);
+  const uncovered = [...s.naked].filter(([g, q]) => posNetLong(g, prior) + 1e-9 < q);
+  return { cl, joins, last, loss: s.loss, pairs: s.pairs, uncovered, priorLoss: joins ? spreadLoss(prior).loss : 0 };
+}
+
+// 存檔之前呼叫：這一腳把同一筆裡「單腳權利金超額」的違規變成合格的價差
+//   → 回傳那一筆開始的時間，讓存檔的地方撤銷那幾筆違規
+export function spreadClears(t) {
+  const rule = activeRule('opt_budget');
+  if (!rule || t.market !== 'option' || t.side !== 'sell') return null;
+  const open = openingLots(t);
+  if (open <= 1e-9) return null;
+  const e = spreadAtEntry(t, open);
+  if (!e.joins || e.uncovered.length || !(e.pairs > 0)) return null;
+  const cap = crashCap(rule);
+  if (e.priorLoss > cap + 1e-6 && e.loss <= cap + 1e-6) return new Date(e.last.start - 1000).toISOString();
+  return null;
+}
+
 // 記錄當下的檢查（t 可以是還沒存檔的）
 // ------------------------------------------------------------
 // 選擇權固定額度（opt_budget，2026-11-17）
@@ -596,6 +701,7 @@ function crashCallBreaks(t) {
     ? '多空都可以做，但要有額度：一筆不超過金額、一天兩筆、虧滿金額就停、不准往下加碼。賺錢的那幾組都是 10 口左右、分批出；虧大的都是攤平攤出來的。'
     : '判斷可以用，但要有上限：大跌日才買 call、一筆不超過額度、一天兩筆、虧滿額度就停。'
       + '做對的那幾次，問題也不在方向，而在權利金是額度的好幾倍；同樣的動作在失控的時候會把獲利吐回去。';
+  if (budget) return budgetBreaks(t, open, cap, K, why);
   if (t.side === 'sell') {
     return [{ kind: K, text: `賣出${cpLabel(t.opt_cp)}＝做賣方`,
       why: '賣方的虧損沒有上限，一天的結算就能抵掉其他所有交易的獲利。這條沒有例外。' }];
@@ -627,6 +733,32 @@ function crashCallBreaks(t) {
   return out;
 }
 
+// opt_budget 的記錄當下檢查：價差看整組
+function budgetBreaks(t, open, cap, K, why) {
+  const e = spreadAtEntry(t, open);
+  const out = [];
+  if (t.side === 'sell' && e.uncovered.length) {
+    out.push({ kind: K, text: `賣出${cpLabel(t.opt_cp)}＝做賣方（同到期、同買賣權沒有足夠的買方保護）`,
+      why: '賣方的虧損沒有上限，一天的結算就能抵掉其他所有交易的獲利。要做就做價差：先記買進那一腳（保護），再記賣出這一腳。' });
+    return out;
+  }
+  // 賣出那一腳由原本的部位保護、沒有跟新的買方湊成一筆：風險在減少，不吃額度
+  if (t.side === 'sell' && !e.joins) return out;
+  const isSpread = e.pairs > 0;
+  if (e.loss > cap + 1e-6) {
+    out.push({ kind: K,
+      why: isSpread ? why : why + '（如果這是價差的買進腳：5 分鐘內記上賣出腳，額度改看整組，這筆違規會自動撤銷）',
+      text: isSpread
+        ? `這一組價差最多虧 ${fmt(e.loss)} 元，超過一筆上限 ${fmt(cap)} 元（超出 ${fmt(e.loss - cap)} 元）`
+        : `這一筆權利金 ${fmt(e.loss)} 元，超過一筆上限 ${fmt(cap)} 元（超出 ${fmt(e.loss - cap)} 元）` });
+  }
+  const count = e.cl.length + (e.joins ? 0 : 1);
+  if (count > OPT_CRASH_MAX) out.push({ kind: K, why, text: `今天第 ${fmt(count)} 筆選擇權新倉，一天最多 ${fmt(OPT_CRASH_MAX)} 筆` });
+  const lost = optRealizedBefore(t.trade_date, null);
+  if (lost <= -cap) out.push({ kind: K, why, text: `選擇權今天已實現 ${fmt(lost)}，虧滿 ${fmt(cap)} 就停` });
+  return out;
+}
+
 // 事後檢討：依時間重播當天所有選擇權
 function crashCallAudit(day, dateISO, rule) {
   const cap = crashCap(rule);
@@ -635,12 +767,31 @@ function crashCallAudit(day, dateISO, rule) {
   const rep = optReplay(day.filter((t) => t.market === 'option').sort(byCreated));
   if (!rep.length) return [];
   const out = [];
-  const shorts = rep.filter((r) => r.t.side === 'sell' && r.open > 1e-9);
+  if (budget) {
+    const hm = (ms) => new Date(ms + TPE).toISOString().slice(11, 16);
+    const cls = optClusters(rep);
+    const naked = cls.flatMap((c) => c.uncovered.map(([g, q]) => `${hm(c.start)} ${g.split('|').slice(1).join(' ')} ${fmt(q)} 口`));
+    if (naked.length) out.push({ kind: K, text: `做了選擇權賣方（沒有買方保護）${naked.length} 筆`, detail: naked.join('、') });
+    const bad = [];
+    cls.forEach((c, i) => {
+      if (c.uncovered.length) return;
+      const why = [];
+      if (c.loss > cap + 1e-6) why.push(`${c.pairs > 0 ? '價差最多虧' : '權利金'} ${fmt(c.loss)}，上限 ${fmt(cap)}`);
+      if (i >= OPT_CRASH_MAX) why.push(`第 ${i + 1} 筆，一天最多 ${OPT_CRASH_MAX} 筆`);
+      const lost = state.trades.filter((x) => x.trade_date === dateISO && x.market === 'option'
+        && isNum(x.realized_pl) && x.created_at && Date.parse(x.created_at) < c.start)
+        .reduce((a, x) => a + num(x.realized_pl), 0);
+      if (lost <= -cap) why.push(`之前選擇權已實現 ${fmt(lost)}`);
+      if (why.length) bad.push(`${hm(c.start)} ${[...new Set(c.legs.map((l) => tradeLabel(l.t)))].join('＋')}（${why.join('；')}）`);
+    });
+    if (bad.length) out.push({ kind: K, text: `選擇權超出額度或次數 ${bad.length} 筆`, detail: bad.join('、') });
+  }
+  const shorts = budget ? [] : rep.filter((r) => r.t.side === 'sell' && r.open > 1e-9);
   if (shorts.length) {
     out.push({ kind: K, text: `做了選擇權賣方 ${shorts.length} 筆`,
       detail: shorts.map((r) => `${tradeLabel(r.t)} ${fmt(r.open)} 口`).join('、') });
   }
-  const cl = callClusters(rep, budget);
+  const cl = budget ? [] : callClusters(rep, budget);
   if (cl.length) {
     const d = idxDay(dateISO);
     const bad = [];

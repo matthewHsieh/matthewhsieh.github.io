@@ -1,7 +1,7 @@
 import { btrimEq, fail, fmtMax, isNum, norm, num, round2, sameSymbol, sb, state, sum, toast, todayISO } from './core.js';
 import { refresh, refreshUsOptions } from './data.js';
 import { OPT_SIZE, USOPT_SIZE, WAR_UNITS, fmtQty, futDisplayName, usOptDeltaFrom } from './instruments.js';
-import { checkRules, dayNet } from './rules.js';
+import { checkRules, dayNet, spreadClears } from './rules.js';
 import { TW_STOCKS, indexProduct, tradeKey } from './symbols.js';
 
 // 只認明確勾選的當沖。
@@ -647,6 +647,7 @@ export async function saveTrade(v) {
 
   // 破戒前先讓你停一秒。不阻止，只是要你自己按下去。
   const breaks = checkRules(v);
+  const clearFrom = spreadClears(v);   // 價差的賣出腳：同一筆裡「單腳權利金超額」的違規要撤銷
   if (breaks.length) {
     const NL = String.fromCharCode(10);
     const msg = breaks.map((x, i) => `${i + 1}. ${x.text}${NL}   ${x.why}`).join(NL + NL);
@@ -675,6 +676,10 @@ export async function saveTrade(v) {
       await sb.from('rule_breaks').insert(breaks.map((x) => ({
         user_id: state.user.id, break_date: v.trade_date, kind: x.kind, detail: x.text,
       })));
+    }
+    if (clearFrom) {
+      await sb.from('rule_breaks').delete().eq('user_id', state.user.id).eq('break_date', v.trade_date)
+        .eq('kind', 'opt_budget').like('detail', '這一筆權利金%').gte('created_at', clearFrom);
     }
     // 美股選擇權：記完順便去抓一次報價與 delta（比部位舊的報價不會蓋掉成交價）
     if (v.market === 'usopt') await refreshUsOptions();
